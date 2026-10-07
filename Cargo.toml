@@ -1,0 +1,13 @@
+[package]
+name = "api-test-extended"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[build-dependencies]
+bindgen = "0.71.0"
+syn = { version = "2", features = ["full"] }
