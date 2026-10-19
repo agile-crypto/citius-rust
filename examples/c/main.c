@@ -11,25 +11,27 @@
 
 #include "agc_key.h"
 
-static const char *or_null(const char *s) {
+static const char *or_null(const char *s)
+{
     return s ? s : "(null)";
 }
 
-int main(void) {
-    /* No agc_ctx_open on the Rust side yet, so there is no real context to
-     * pass. Any non-NULL pointer stands in for one until then. */
-    int dummy = 0;
-    agc_ctx *ctx = (agc_ctx *)&dummy;
-
+int main(void)
+{
+    agc_ctx_config cfg = {.struct_size = sizeof cfg};
+    agc_ctx *ctxt;
+    if (agc_ctx_open(&cfg, &ctxt)){
+        return 1;
+    }
     /* scope_spec is a const member, so it cannot be assigned after
      * AGC_INIT(); the whole request is set in the initializer instead. */
     agc_create_key_params params = {
         .struct_size = sizeof params,
-        .key_name    = "my-first-key",
+        .key_name = "my-first-key",
         .policy_name = "default",
-        .scope_spec  = {
+        .scope_spec = {
             .struct_size = sizeof(agc_scope_spec),
-            .kind        = AGC_SCOPE_KIND_AEAD,
+            .kind = AGC_SCOPE_KIND_AEAD,
         },
     };
 
@@ -39,16 +41,20 @@ int main(void) {
     agc_key_info_response resp;
     AGC_INIT(&resp);
     resp.storage.data = storage;
-    resp.storage.cap  = sizeof storage;
+    resp.storage.cap = sizeof storage;
 
-    agc_rc rc = agc_create_key(ctx, &params, &resp);
+    agc_rc rc = agc_create_key(ctxt, &params, &resp);
     printf("agc_create_key -> %d\n", (int)rc);
 
-    if (rc == AGC_ERR_BUFFER_TOO_SMALL) {
+    if (rc == AGC_ERR_BUFFER_TOO_SMALL)
+    {
         printf("storage too small: need %zu bytes, have %zu\n", resp.storage_used, sizeof storage);
+        agc_ctx_close(ctxt);
         return 1;
     }
-    if (rc != AGC_OK) {
+    if (rc != AGC_OK)
+    {
+        agc_ctx_close(ctxt);
         return 1;
     }
 
@@ -59,5 +65,6 @@ int main(void) {
     printf("provider_id:  %s\n", or_null(resp.key_info.provider_id));
     printf("policy_name:  %s\n", or_null(resp.key_info.policy_name));
     printf("version:      %u\n", resp.key_info.version);
+    agc_ctx_close(ctxt);
     return 0;
 }
