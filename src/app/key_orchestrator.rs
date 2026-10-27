@@ -58,42 +58,17 @@ impl KeyOrchestrator {
             implementation,
         };
 
-        let template = match &spec.template_id {
-            // Checked against the policy below, so that a disallowed template
-            // is a policy violation rather than "no match".
-            Some(id) => self.templates.select(&spec.scope_spec, &only_templates(vec![id.clone()]))?,
-            // Only the policy's templates, in its order, and of those only
-            // ones a qualifying provider serves.
-            None => {
-                let allowed = self.policy.allowed_templates(&spec.policy)?;
-                let servable: Vec<String> =
-                    allowed.iter().filter(|id| self.providers.select(&custody(id)).is_ok()).cloned().collect();
-                match self.templates.select(&spec.scope_spec, &only_templates(servable)) {
-                    Ok(t) => t,
-                    // Say which half failed: no template for the intent, or
-                    // templates but no provider that qualifies for any.
-                    Err(e) if e.code() == Code::NoMatchingTemplate => {
-                        let t = self.templates.select(&spec.scope_spec, &only_templates(allowed))?;
-                        return Err(self.providers.select(&custody(t.id())).err().unwrap_or(e).into());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        };
+        let template = self.choose_template(&spec.policy, spec.template_id.as_deref(), &spec.scope_spec, &custody)?;
 
         self.policy.validate_operation(&spec.policy, Operation::CreateKey, Some(template.id()))?;
-        self.policy.check_template_security(&spec.policy, &security_info(template, &spec))?;
+        self.policy.check_template_security(&spec.policy, &security_info(template, &spec.scope_spec))?;
 
         let provider = self.providers.select(&custody(template.id()))?;
         let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
         let material = provider.generate_key(algorithm)?.to_bytes();
         let provenance = Provenance {
             extractable: provider.releases_material(algorithm),
-            approved_lineage: crate::domain::provider::unmet(
-                &provider.implementation(),
-                &crate::domain::core::ProviderRequirements { approved_generation: true, ..Default::default() },
-            )
-            .is_empty(),
+            approved_lineage: approved(provider.as_ref()),
             origin: Origin::Generated,
         };
         let first = Version::new(
@@ -113,6 +88,147 @@ impl KeyOrchestrator {
         // provider that keeps keys inside itself would need compensation.
         self.keys.create(k)?;
         Ok(metadata)
+    }
+
+    /// A new version of a key under another template for the same intent, on
+    /// the same provider: algorithm agility (Go: TransformKey). Moving a key
+    /// to another provider is `migrate_key`.
+    ///
+    /// The material is regenerated, or with `retain` kept, if the target
+    /// template uses the same kind of key material. `admit` is checked
+    /// before anything is stored, as for `create_key_admitting`.
+    pub fn transform_key_admitting<E: From<Error>>(
+        &self,
+        spec: TransformSpec,
+        admit: impl FnOnce(&KeyMetadata) -> Result<(), E>,
+    ) -> Result<KeyMetadata, E> {
+        const OP: &str = "KeyOrchestrator::transform_key";
+        let mut k = self.keys.get_by_name(&spec.key_name)?.ok_or_else(|| not_found(OP, &spec.key_name))?;
+        k.can_originate()?;
+        let current = k.current().clone();
+
+        // A transform keeps the key's scope; without a specification, the one
+        // the current version was created for applies.
+        let scope_spec = match spec.scope_spec {
+            None => current.scope_spec().clone(),
+            Some(mut s) => {
+                if s.scope.kind() == current.scope_spec().scope.kind() && s.scope.is_any() {
+                    s.scope = current.scope_spec().scope;
+                }
+                if s.scope != current.scope_spec().scope {
+                    return Err(Error::new(
+                        Code::IncompatibleParameters,
+                        OP,
+                        format!("a transform keeps the key's scope ({:?})", current.scope_spec().scope),
+                    )
+                    .into());
+                }
+                s
+            }
+        };
+        if spec.retain && spec.template_id.is_none() {
+            return Err(Error::new(Code::InvalidArgument, OP, "retaining the material needs an explicit template").into());
+        }
+
+        // Custody: the current provider, under the policy's requirements.
+        let implementation = self.policy.provider_requirements(k.policy())?;
+        let custody = |template_id: &str| Requirements {
+            template_id: template_id.to_owned(),
+            pinned: Some(current.provider().to_owned()),
+            implementation,
+        };
+        let template = self.choose_template(k.policy(), spec.template_id.as_deref(), &scope_spec, &custody)?;
+        self.policy.validate_operation(k.policy(), Operation::CreateKey, Some(template.id()))?;
+        self.policy.check_template_security(k.policy(), &security_info(template, &scope_spec))?;
+        let provider = self.providers.select(&custody(template.id()))?;
+        let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
+
+        let (material, provenance) = if spec.retain {
+            let source = self.templates.get(current.template_id()).ok_or_else(|| {
+                Error::new(Code::TemplateNotFound, OP, format!("the key's template {} is gone", current.template_id()))
+            })?;
+            let source_algorithm = source.info().algorithm.as_ref().expect("templates always have an algorithm");
+            if material_profile(source_algorithm)? != material_profile(algorithm)? {
+                return Err(Error::new(
+                    Code::IncompatibleParameters,
+                    OP,
+                    format!("{} cannot use the key material of {}", template.id(), source.id()),
+                )
+                .into());
+            }
+            // Kept material carries its history: it never regains
+            // extractability or an approved lineage it lost.
+            let was = current.provenance();
+            if implementation.approved_generation && !was.approved_lineage {
+                return Err(Error::new(
+                    Code::PolicyViolation,
+                    OP,
+                    "the policy requires material of approved lineage; this key's material is not",
+                )
+                .into());
+            }
+            let provenance = Provenance {
+                extractable: was.extractable && provider.releases_material(algorithm),
+                approved_lineage: was.approved_lineage && approved(provider.as_ref()),
+                origin: Origin::Retained { source_version: current.number() },
+            };
+            (zeroize::Zeroizing::new(current.material().to_vec()), provenance)
+        } else {
+            let provenance = Provenance {
+                extractable: provider.releases_material(algorithm),
+                approved_lineage: approved(provider.as_ref()),
+                origin: Origin::Generated,
+            };
+            (provider.generate_key(algorithm)?.to_bytes(), provenance)
+        };
+
+        let next = Version::new(
+            current.number() + 1,
+            template.id().into(),
+            provider.name().into(),
+            scope_spec,
+            material,
+            provenance,
+            SystemTime::now(),
+        );
+        k.add_version(next)?;
+        let metadata = KeyMetadata::of(&k, k.current(), &self.providers);
+        admit(&metadata)?;
+        // Fails with CONCURRENT_ACCESS if the key changed since it was read.
+        self.keys.update(k)?;
+        Ok(metadata)
+    }
+
+    pub fn transform_key(&self, spec: TransformSpec) -> Result<KeyMetadata, Error> {
+        self.transform_key_admitting(spec, |_| Ok::<(), Error>(()))
+    }
+
+    /// The template for a new version: an explicit one (checked against the
+    /// policy by the caller, so that a disallowed template is a violation
+    /// rather than "no match"), or the first of the policy's templates, in
+    /// its order, that serves the intent and that a provider meeting
+    /// `custody` serves. When templates serve the intent but no provider
+    /// qualifies for any, the error says so.
+    fn choose_template(
+        &self,
+        policy: &str,
+        template_id: Option<&str>,
+        scope_spec: &ScopeSpecification,
+        custody: &dyn Fn(&str) -> Requirements,
+    ) -> Result<&Template, Error> {
+        if let Some(id) = template_id {
+            return self.templates.select(scope_spec, &only_templates(vec![id.to_owned()]));
+        }
+        let allowed = self.policy.allowed_templates(policy)?;
+        let servable: Vec<String> =
+            allowed.iter().filter(|id| self.providers.select(&custody(id)).is_ok()).cloned().collect();
+        match self.templates.select(scope_spec, &only_templates(servable)) {
+            Err(e) if e.code() == Code::NoMatchingTemplate => {
+                let t = self.templates.select(scope_spec, &only_templates(allowed))?;
+                Err(self.providers.select(&custody(t.id())).err().unwrap_or(e))
+            }
+            other => other,
+        }
     }
 
     /// One version of a key; `None` is the current one (Go: ReadKey). Reading
@@ -167,9 +283,28 @@ fn not_found(op: &'static str, name: &str) -> Error {
     Error::new(Code::KeyNotFound, op, format!("no key named {name}"))
 }
 
+/// What a transform asks for (Go: TransformKeySpec).
+#[derive(Debug, Clone)]
+pub struct TransformSpec {
+    pub key_name: String,
+    /// Keep the current material instead of generating new material.
+    pub retain: bool,
+    /// The intent; `None` keeps the current version's.
+    pub scope_spec: Option<ScopeSpecification>,
+    pub template_id: Option<String>,
+}
+
+/// Whether a provider is an approved (FIPS-validated) module, so that the
+/// material it generates or holds keeps an approved lineage.
+fn approved(provider: &dyn crate::domain::provider::Backend) -> bool {
+    let approved_generation =
+        crate::domain::core::ProviderRequirements { approved_generation: true, ..Default::default() };
+    crate::domain::provider::unmet(&provider.implementation(), &approved_generation).is_empty()
+}
+
 /// What the policy needs to know about the template, for this intent.
-fn security_info(template: &Template, spec: &KeyCreationSpec) -> TemplateSecurityInfo {
-    let sec = template.security_for(&spec.scope_spec).unwrap_or_default();
+fn security_info(template: &Template, scope_spec: &ScopeSpecification) -> TemplateSecurityInfo {
+    let sec = template.security_for(scope_spec).unwrap_or_default();
     TemplateSecurityInfo {
         template_id: template.id().to_owned(),
         status: template.status(),
@@ -393,6 +528,101 @@ mod tests {
         assert_eq!(names(&sigs), ["b-sig"]);
         assert!(names(&KeyFilter { policy: Some("other".into()), ..Default::default() }).is_empty());
         assert_eq!(names(&KeyFilter { provider: Some("rustcrypto".into()), ..Default::default() }).len(), 2);
+    }
+
+    // --- Transform ---
+
+    const AGILE: &str = r#"{"version": "1",
+        "allowed_templates": ["chacha20-poly1305", "xchacha20-poly1305", "aes-128-gcm-128-96",
+                              "aes-256-gcm-128-96", "ecdsa-p256-sha256-der", "ed25519"],
+        "allowed_operations": {"key_operations": ["create_key"]}}"#;
+
+    fn transform(name: &str, template: Option<&str>, retain: bool) -> TransformSpec {
+        TransformSpec { key_name: name.into(), retain, scope_spec: None, template_id: template.map(String::from) }
+    }
+
+    #[test]
+    fn transform_adds_a_version_under_another_template() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("sig", Scope::Signature(SignatureScope::Standard), None)).unwrap();
+        let t = ko.transform_key(transform("sig", Some("ed25519"), false)).unwrap();
+        assert_eq!((t.version, t.template_id.as_str(), t.provider.as_str()), (2, "ed25519", "rustcrypto"));
+
+        // Both versions stay readable: old signatures name version 1.
+        assert_eq!(ko.read_key("sig", Some(1)).unwrap().template_id, "ecdsa-p256-sha256-der");
+        assert_eq!(ko.read_key("sig", None).unwrap().version, 2);
+        let stored = ko.keys.get_by_name("sig").unwrap().unwrap();
+        assert_eq!(stored.current().provenance().origin, Origin::Generated);
+        assert_ne!(stored.version(1).unwrap().material(), stored.current().material());
+    }
+
+    #[test]
+    fn without_a_template_the_policys_first_choice_is_taken() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, Some("aes-256-gcm-128-96"))).unwrap();
+        assert_eq!(ko.transform_key(transform("k", None, false)).unwrap().template_id, "chacha20-poly1305");
+    }
+
+    #[test]
+    fn compatible_material_can_be_retained() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, Some("chacha20-poly1305"))).unwrap();
+        let t = ko.transform_key(transform("k", Some("xchacha20-poly1305"), true)).unwrap();
+        assert_eq!(t.template_id, "xchacha20-poly1305");
+        let stored = ko.keys.get_by_name("k").unwrap().unwrap();
+        assert_eq!(stored.version(1).unwrap().material(), stored.current().material());
+        assert_eq!(stored.current().provenance().origin, Origin::Retained { source_version: 1 });
+        assert!(stored.current().provenance().extractable);
+    }
+
+    #[test]
+    fn incompatible_retention_and_missing_template_are_refused() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, Some("aes-128-gcm-128-96"))).unwrap();
+        assert_eq!(code(ko.transform_key(transform("k", Some("aes-256-gcm-128-96"), true))), Code::IncompatibleParameters);
+        assert_eq!(code(ko.transform_key(transform("k", None, true))), Code::InvalidArgument);
+        assert_eq!(ko.read_key("k", None).unwrap().version, 1, "nothing was added");
+    }
+
+    #[test]
+    fn a_transform_keeps_the_scope() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, None)).unwrap();
+        let mut t = transform("k", Some("ed25519"), false);
+        t.scope_spec = Some(ScopeSpecification::any_of(Scope::Signature(SignatureScope::Standard)));
+        assert_eq!(code(ko.transform_key(t)), Code::IncompatibleParameters);
+        // "Any AEAD scope" means the key's own scope.
+        let mut t = transform("k", None, false);
+        t.scope_spec = Some(ScopeSpecification::any_of(Scope::Aead(AeadScope::Unspecified)));
+        assert_eq!(ko.transform_key(t).unwrap().version, 2);
+    }
+
+    #[test]
+    fn the_policy_governs_transforms_too() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, None)).unwrap();
+        assert_eq!(code(ko.transform_key(transform("k", Some("aes-192-gcm-128-96"), false))), Code::PolicyViolation);
+        assert_eq!(code(ko.transform_key(transform("nope", None, false))), Code::KeyNotFound);
+    }
+
+    #[test]
+    fn only_an_active_key_is_transformed() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, None)).unwrap();
+        let mut stored = ko.keys.get_by_name("k").unwrap().unwrap();
+        stored.transition(crate::proto::api::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
+        ko.keys.update(stored).unwrap();
+        assert_eq!(code(ko.transform_key(transform("k", None, false))), Code::KeyOperationNotAllowed);
+    }
+
+    #[test]
+    fn an_admit_failure_adds_no_version() {
+        let ko = orchestrator(AGILE);
+        ko.create_key(spec("k", AEAD, None)).unwrap();
+        let refused =
+            ko.transform_key_admitting(transform("k", None, false), |_| Err(Error::new(Code::Internal, "test", "no")));
+        assert_eq!(code(refused), Code::Internal);
+        assert_eq!(ko.read_key("k", None).unwrap().version, 1);
     }
 
     #[test]

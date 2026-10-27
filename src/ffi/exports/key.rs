@@ -2,7 +2,7 @@
 
 use std::ffi::c_char;
 
-use crate::app::{KeyFilter, KeyMetadata};
+use crate::app::{KeyFilter, KeyMetadata, TransformSpec};
 use crate::bindings::*;
 use crate::ffi::context::Context;
 use crate::ffi::error::FfiError;
@@ -27,32 +27,73 @@ pub unsafe extern "C" fn agc_create_key(
 
         // SAFETY: the pointers inside params are NULL or valid (agc_key.h contract).
         let spec = unsafe { spec_from_params(&params, ctx.default_policy.as_deref()) }?;
-        // The STORAGE CONTRACT for create operations: a region too small for
-        // the record fails before the key exists. The size is exact, as the
-        // key is complete (generated, not yet stored) when it is checked.
-        let storage = out.storage;
-        let mut needed = None;
-        let created = ctx.keys.create_key_admitting(spec, |k: &KeyMetadata| {
-            let n = key_info_size(k);
-            if storage.data.is_null() || storage.cap < n {
-                needed = Some(n);
-                return Err(FfiError::BufferTooSmall { needed: n });
-            }
-            Ok(())
-        });
-        let result = match created {
-            Ok(key) => fill_key_info_response(&mut out, &key),
-            Err(e) => {
-                if let Some(n) = needed {
-                    out.storage_used = n;
-                }
-                Err(e)
-            }
-        };
+        let result = admitted(&mut out, |admit| ctx.keys.create_key_admitting(spec, admit));
         // SAFETY: resp passed versioned::read above, so its struct_size is valid.
         unsafe { versioned::write_back(resp, &out) };
         result
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_transform_key(
+    ctx: *mut agc_ctx,
+    params: *const agc_transform_key_params,
+    resp: *mut agc_key_info_response,
+) -> agc_rc {
+    guard(|| {
+        // SAFETY: ctx is NULL or a live context (agc_core.h contract).
+        let ctx = unsafe { context(ctx) }?;
+        // SAFETY: params is NULL or the caller's struct with struct_size readable bytes.
+        let p = unsafe { versioned::read(params, "params") }?;
+        // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
+        let mut out = unsafe { versioned::read(resp, "resp") }?;
+        let spec = TransformSpec {
+            // SAFETY: the strings in params are NULL or valid C strings (agc_key.h contract).
+            key_name: unsafe { required_str(p.key_name, "key_name") }?.to_owned(),
+            retain: p.retain_key_bytes != 0,
+            // SAFETY: scope_spec is NULL or a valid agc_scope_spec (agc_key.h contract).
+            scope_spec: match unsafe { p.scope_spec.as_ref() } {
+                None => None,
+                // SAFETY: as above, including its additional_properties.
+                Some(s) => Some(unsafe { scope_spec(s) }?),
+            },
+            // SAFETY: as for key_name.
+            template_id: unsafe { optional_str(p.template_id, "template_id") }?.map(str::to_owned),
+        };
+        let result = admitted(&mut out, |admit| ctx.keys.transform_key_admitting(spec, admit));
+        // SAFETY: resp passed versioned::read above.
+        unsafe { versioned::write_back(resp, &out) };
+        result
+    })
+}
+
+/// Runs a mutating key operation under the STORAGE CONTRACT for mutations:
+/// a region too small for the resulting record fails before anything is
+/// stored, with the exact size needed (the record is complete, generated but
+/// not stored, when it is checked). Then fills `out`.
+fn admitted(
+    out: &mut agc_key_info_response,
+    run: impl FnOnce(&mut dyn FnMut(&KeyMetadata) -> Result<(), FfiError>) -> Result<KeyMetadata, FfiError>,
+) -> Result<(), FfiError> {
+    let storage = out.storage;
+    let mut needed = None;
+    let mut admit = |k: &KeyMetadata| {
+        let n = key_info_size(k);
+        if storage.data.is_null() || storage.cap < n {
+            needed = Some(n);
+            return Err(FfiError::BufferTooSmall { needed: n });
+        }
+        Ok(())
+    };
+    match run(&mut admit) {
+        Ok(key) => fill_key_info_response(out, &key),
+        Err(e) => {
+            if let Some(n) = needed {
+                out.storage_used = n;
+            }
+            Err(e)
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

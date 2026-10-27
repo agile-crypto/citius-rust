@@ -38,6 +38,7 @@ c_structs!(
     agc_provider_requirements,
     agc_key_info_response,
     agc_list_keys_params,
+    agc_transform_key_params,
     agc_create_policy_request,
     agc_update_policy_request,
     agc_read_policy_response,

@@ -27,6 +27,8 @@ pub enum Code {
     KeyOperationNotAllowed,
     /// The record changed since it was read; retry.
     ConcurrentAccess,
+    /// The request's parameters do not fit together or with the key.
+    IncompatibleParameters,
     /// Something this build does not offer.
     NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.

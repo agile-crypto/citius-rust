@@ -27,7 +27,6 @@ agc_envelope_split
 # agc_key.h (12)
 agc_delete_key
 agc_rotate_key
-agc_transform_key
 agc_update_key_policy
 agc_migrate_key
 agc_validate_key_operation
