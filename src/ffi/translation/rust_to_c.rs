@@ -1,8 +1,10 @@
 use std::ffi::c_char;
+use std::time::SystemTime;
 
 use crate::bindings::*;
 use crate::domain::core::ScopeKind;
 use crate::domain::key::Key;
+use crate::domain::policy::Policy;
 use crate::ffi::error::FfiError;
 
 /// Packs strings into the caller's storage region and hands back pointers
@@ -60,35 +62,55 @@ pub fn c_scope_kind(kind: ScopeKind) -> agc_scope_kind {
     }
 }
 
-/// Writes `key` into `resp` under the STORAGE CONTRACT (agc_key_types.h): the
-/// record's strings go into the caller's `resp.storage`; if it is NULL or too
-/// small, only `storage_used` is set and the result is `BufferTooSmall`.
+/// The STORAGE CONTRACT (agc_key_types.h and every *_types.h): a record's
+/// strings go into the caller's `storage` region, each NUL-terminated, and
+/// the record points into it. `storage_used` is always set to the size
+/// needed; if the region is NULL or smaller, nothing else is written and the
+/// result is `BufferTooSmall`.
 ///
-/// `resp` is this library's copy of the caller's struct (see `versioned`).
-pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &Key) -> Result<(), FfiError> {
-    let needed = key.get_name().len()
-        + 1
-        + key.get_id().as_str().len()
-        + 1
-        + key.get_template_id().len()
-        + 1
-        + key.get_provider().len()
-        + 1
-        + key.get_policy().len()
-        + 1;
-    resp.storage_used = needed;
-    if resp.storage.data.is_null() || resp.storage.cap < needed {
+/// Returns one pointer per string, in order.
+pub fn pack_strings<const N: usize>(
+    storage: agc_buf,
+    storage_used: &mut usize,
+    strings: [&str; N],
+) -> Result<[*const c_char; N], FfiError> {
+    let needed = strings.iter().map(|s| s.len() + 1).sum();
+    *storage_used = needed;
+    if storage.data.is_null() || storage.cap < needed {
         return Err(FfiError::BufferTooSmall { needed });
     }
     // SAFETY: by the STORAGE CONTRACT the caller's region holds `cap` writable
     // bytes for the duration of this call and nothing else uses it meanwhile.
-    let mut writer = unsafe { StorageWriter::new(resp.storage.data, resp.storage.cap) };
+    let mut writer = unsafe { StorageWriter::new(storage.data, storage.cap) };
+    Ok(strings.map(|s| writer.put_str(s)))
+}
+
+/// A time as the C API's optional timestamp.
+pub fn c_timestamp(t: SystemTime) -> agc_timestamp {
+    // Times before 1970 do not occur here (they come from the system clock).
+    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    agc_timestamp {
+        seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        nanos: d.subsec_nanos() as i32,
+        present: 1,
+    }
+}
+
+/// Writes `key` into `resp` under the STORAGE CONTRACT (see `pack_strings`).
+///
+/// `resp` is this library's copy of the caller's struct (see `versioned`).
+pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &Key) -> Result<(), FfiError> {
+    let [name, id, template, provider, policy] = pack_strings(
+        resp.storage,
+        &mut resp.storage_used,
+        [key.get_name(), key.get_id().as_str(), key.get_template_id(), key.get_provider(), key.get_policy()],
+    )?;
     let info = &mut resp.key_info;
-    info.key_name = writer.put_str(key.get_name());
-    info.key_id = writer.put_str(key.get_id().as_str());
-    info.template_id = writer.put_str(key.get_template_id());
-    info.provider_id = writer.put_str(key.get_provider());
-    info.policy_name = writer.put_str(key.get_policy());
+    info.key_name = name;
+    info.key_id = id;
+    info.template_id = template;
+    info.provider_id = provider;
+    info.policy_name = policy;
 
     info.struct_size = size_of::<agc_key_info>();
     info.version = key.get_version();
@@ -96,6 +118,26 @@ pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &Key) -> Re
     info.scope_spec.struct_size = size_of::<agc_scope_spec>();
     info.scope_spec.kind = c_scope_kind(key.get_scope_kind());
 
+    Ok(())
+}
+
+/// Writes `policy` into `resp` under the STORAGE CONTRACT.
+pub fn fill_read_policy_response(resp: &mut agc_read_policy_response, policy: &Policy) -> Result<(), FfiError> {
+    let [name, document] = pack_strings(resp.storage, &mut resp.storage_used, [policy.name(), policy.document()])?;
+    resp.name = name;
+    resp.policy_document = document;
+    Ok(())
+}
+
+/// Writes one policy summary (as listed) into `resp` under the STORAGE CONTRACT.
+pub fn fill_policy_summary_response(resp: &mut agc_policy_summary_response, policy: &Policy) -> Result<(), FfiError> {
+    let [name] = pack_strings(resp.storage, &mut resp.storage_used, [policy.name()])?;
+    resp.summary = agc_policy_summary {
+        struct_size: size_of::<agc_policy_summary>(),
+        name,
+        created_at: c_timestamp(policy.created_at()),
+        updated_at: c_timestamp(policy.updated_at()),
+    };
     Ok(())
 }
 

@@ -14,4 +14,6 @@ pub trait KeyRepository: Send + Sync {
     fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error>;
     /// Fails with `KeyNotFound` for an unknown id.
     fn delete(&self, id: &KeyId) -> Result<(), Error>;
+    /// Every key, ordered by name.
+    fn list(&self) -> Result<Vec<Key>, Error>;
 }

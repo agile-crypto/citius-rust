@@ -108,13 +108,6 @@ agc_encapsulate_key
 agc_decapsulate_key
 
 # agc_policy.h (9)
-agc_create_policy
-agc_update_policy
-agc_read_policy
-agc_delete_policy
-agc_list_policies
-agc_policy_iter_next
-agc_policy_iter_free
 agc_evaluate_policy
 agc_batch_evaluate_policy
 

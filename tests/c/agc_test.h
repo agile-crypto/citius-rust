@@ -37,6 +37,24 @@
         }                                                                    \
     } while (0)
 
+/* The policy every test context starts with, as "default". The order of
+ * allowed_templates is the policy's preference. */
+#define DEFAULT_POLICY                                                       \
+    "{\"version\": \"1\","                                                    \
+    " \"allowed_templates\": [\"aes-128-gcm-128-96\", \"chacha20-poly1305\","   \
+    "   \"ecdsa-p256-sha256-der\", \"ml-dsa-65\"],"                           \
+    " \"allowed_operations\": {\"key_operations\": [\"create_key\"]}}"
+
+static inline agc_rc create_policy(agc_ctx *ctx, const char *name, const char *document)
+{
+    agc_create_policy_request req;
+    AGC_INIT(&req);
+    req.name = name;
+    req.policy_document = document;
+    return agc_create_policy(ctx, &req);
+}
+
+/* A context with only the "default" policy (DEFAULT_POLICY). */
 static inline agc_ctx *open_embedded(void)
 {
     agc_ctx_config cfg;
@@ -45,6 +63,7 @@ static inline agc_ctx *open_embedded(void)
     agc_ctx *ctx = NULL;
     CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_OK);
     CHECK(ctx != NULL);
+    CHECK_RC(create_policy(ctx, "default", DEFAULT_POLICY), AGC_OK);
     return ctx;
 }
 

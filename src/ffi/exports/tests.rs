@@ -9,8 +9,15 @@ use std::ptr;
 use crate::bindings::*;
 // Explicit, so the names mean our implementations, not bindgen's declarations.
 use super::{
-    agc_create_key, agc_ctx_close, agc_ctx_open, agc_last_error, agc_rc_message, agc_rc_name,
+    agc_create_key, agc_create_policy, agc_ctx_close, agc_ctx_open, agc_delete_policy, agc_last_error,
+    agc_list_policies, agc_policy_iter_free, agc_policy_iter_next, agc_rc_message, agc_rc_name, agc_read_policy,
+    agc_update_policy,
 };
+
+/// The policy `open()` creates as "default": AEAD keys with one template.
+const DEFAULT_POLICY: &CStr = cr#"{"version": "1",
+    "allowed_templates": ["aes-128-gcm-128-96"],
+    "allowed_operations": {"key_operations": ["create_key"]}}"#;
 
 fn s(p: *const c_char) -> &'static str {
     assert!(!p.is_null());
@@ -25,14 +32,30 @@ fn zeroed<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
+fn open_with(cfg: &agc_ctx_config) -> *mut agc_ctx {
+    let mut ctx = ptr::null_mut();
+    // SAFETY: cfg and ctx are live locals.
+    assert_eq!(unsafe { agc_ctx_open(cfg, &mut ctx) }, AGC_OK as agc_rc);
+    assert!(!ctx.is_null());
+    ctx
+}
+
+/// A context with the policy "default" (DEFAULT_POLICY).
 fn open() -> *mut agc_ctx {
     let mut cfg: agc_ctx_config = zeroed();
     cfg.struct_size = size_of::<agc_ctx_config>();
-    let mut ctx = ptr::null_mut();
-    // SAFETY: cfg and ctx are live locals.
-    assert_eq!(unsafe { agc_ctx_open(&cfg, &mut ctx) }, AGC_OK as agc_rc);
-    assert!(!ctx.is_null());
+    let ctx = open_with(&cfg);
+    assert_eq!(create_policy(ctx, c"default", DEFAULT_POLICY), AGC_OK as agc_rc);
     ctx
+}
+
+fn create_policy(ctx: *mut agc_ctx, name: &CStr, document: &CStr) -> agc_rc {
+    let mut req: agc_create_policy_request = zeroed();
+    req.struct_size = size_of::<agc_create_policy_request>();
+    req.name = name.as_ptr();
+    req.policy_document = document.as_ptr();
+    // SAFETY: ctx is open; req and its strings are live.
+    unsafe { agc_create_policy(ctx, &req) }
 }
 
 fn close(ctx: *mut agc_ctx) {
@@ -182,4 +205,134 @@ fn rc_helpers_return_static_strings() {
     assert_eq!(s(agc_rc_name(AGC_ERR_INTERNAL)), "AGC_ERR_INTERNAL");
     assert_eq!(s(agc_rc_message(AGC_OK as agc_rc)), "success");
     assert_eq!(s(agc_rc_name(424242)), "(unknown agc_rc)");
+}
+
+// --- Policies ---------------------------------------------------------------
+
+#[test]
+fn policy_crud() {
+    let ctx = open();
+    assert_eq!(create_policy(ctx, c"p", c"{}"), AGC_OK as agc_rc);
+    assert_eq!(create_policy(ctx, c"p", c"{}"), AGC_ERR_ALREADY_EXISTS);
+    assert_eq!(create_policy(ctx, c"bad", c"{"), AGC_ERR_INVALID_ARGUMENT);
+
+    let mut storage = [0u8; 256];
+    let mut resp: agc_read_policy_response = zeroed();
+    resp.struct_size = size_of::<agc_read_policy_response>();
+    resp.storage = agc_buf { data: storage.as_mut_ptr(), cap: storage.len() };
+    // SAFETY: ctx is open; resp and its storage are live.
+    assert_eq!(unsafe { agc_read_policy(ctx, c"p".as_ptr(), &mut resp) }, AGC_OK as agc_rc);
+    assert_eq!((s(resp.name), s(resp.policy_document)), ("p", "{}"));
+
+    let mut upd: agc_update_policy_request = zeroed();
+    upd.struct_size = size_of::<agc_update_policy_request>();
+    upd.name = c"p".as_ptr();
+    upd.policy_document = c"".as_ptr(); // an empty document is valid: it allows nothing
+    // SAFETY: ctx is open; upd and its strings are live.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd) }, AGC_OK as agc_rc);
+    upd.name = c"missing".as_ptr();
+    // SAFETY: as above.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd) }, AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
+
+    // SAFETY: ctx is open; the names are static.
+    unsafe {
+        assert_eq!(agc_delete_policy(ctx, c"p".as_ptr()), AGC_OK as agc_rc);
+        assert_eq!(agc_delete_policy(ctx, c"p".as_ptr()), AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
+        assert_eq!(agc_read_policy(ctx, c"p".as_ptr(), &mut resp), AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
+    }
+    close(ctx);
+}
+
+#[test]
+fn a_policy_with_keys_cannot_be_deleted() {
+    let ctx = open();
+    let mut storage = [0u8; 256];
+    let mut resp = response(&mut storage);
+    assert_eq!(create(ctx, &params(c"k"), &mut resp), AGC_OK as agc_rc);
+    // SAFETY: ctx is open; the name is static.
+    assert_eq!(unsafe { agc_delete_policy(ctx, c"default".as_ptr()) }, AGC_ERR_CRYPTO_POLICY_VIOLATION);
+    assert!(s(last_error().message).contains("still bound"));
+    close(ctx);
+}
+
+#[test]
+fn listing_policies_by_prefix_and_retrying_a_small_buffer() {
+    let ctx = open();
+    for name in [c"team-b", c"team-a", c"other"] {
+        assert_eq!(create_policy(ctx, name, c"{}"), AGC_OK as agc_rc);
+    }
+    let mut req: agc_list_policies_request = zeroed();
+    req.struct_size = size_of::<agc_list_policies_request>();
+    req.name_prefix = c"team-".as_ptr();
+    let mut it = ptr::null_mut();
+    // SAFETY: ctx is open; req and it are live.
+    assert_eq!(unsafe { agc_list_policies(ctx, &req, &mut it) }, AGC_OK as agc_rc);
+
+    let mut out: agc_policy_summary_response = zeroed();
+    out.struct_size = size_of::<agc_policy_summary_response>();
+    let mut names = Vec::new();
+    let mut storage = [0u8; 64];
+    // A NULL region first: BUFFER_TOO_SMALL, and the cursor stays.
+    // SAFETY: it is live; out is a live local.
+    assert_eq!(unsafe { agc_policy_iter_next(it, &mut out) }, AGC_ERR_BUFFER_TOO_SMALL);
+    assert_eq!(out.storage_used, "team-a".len() + 1);
+    out.storage = agc_buf { data: storage.as_mut_ptr(), cap: storage.len() };
+    loop {
+        // SAFETY: as above; out.storage points to `storage`.
+        match unsafe { agc_policy_iter_next(it, &mut out) } {
+            rc if rc == AGC_OK as agc_rc => {
+                assert_eq!(out.summary.created_at.present, 1);
+                names.push(s(out.summary.name).to_owned());
+            }
+            rc => {
+                assert_eq!(rc, AGC_ERR_ITERATOR_EXHAUSTED);
+                break;
+            }
+        }
+    }
+    assert_eq!(names, ["team-a", "team-b"]);
+    // SAFETY: it came from agc_list_policies; freeing NULL is allowed.
+    unsafe {
+        agc_policy_iter_free(it);
+        agc_policy_iter_free(ptr::null_mut());
+    }
+    close(ctx);
+}
+
+#[test]
+fn an_iterator_outlives_its_context() {
+    let ctx = open();
+    let mut req: agc_list_policies_request = zeroed();
+    req.struct_size = size_of::<agc_list_policies_request>();
+    let mut it = ptr::null_mut();
+    // SAFETY: ctx is open; req and it are live.
+    assert_eq!(unsafe { agc_list_policies(ctx, &req, &mut it) }, AGC_OK as agc_rc);
+    close(ctx);
+
+    let mut storage = [0u8; 64];
+    let mut out: agc_policy_summary_response = zeroed();
+    out.struct_size = size_of::<agc_policy_summary_response>();
+    out.storage = agc_buf { data: storage.as_mut_ptr(), cap: storage.len() };
+    // SAFETY: it holds a snapshot, not the closed context.
+    assert_eq!(unsafe { agc_policy_iter_next(it, &mut out) }, AGC_OK as agc_rc);
+    assert_eq!(s(out.summary.name), "default");
+    // SAFETY: freed once.
+    unsafe { agc_policy_iter_free(it) };
+}
+
+#[test]
+fn the_configured_default_policy_applies_when_a_call_names_none() {
+    let mut cfg: agc_ctx_config = zeroed();
+    cfg.struct_size = size_of::<agc_ctx_config>();
+    cfg.default_policy = c"fallback".as_ptr();
+    let ctx = open_with(&cfg);
+    assert_eq!(create_policy(ctx, c"fallback", DEFAULT_POLICY), AGC_OK as agc_rc);
+
+    let mut storage = [0u8; 256];
+    let mut resp = response(&mut storage);
+    let mut p = params(c"k");
+    p.policy_name = ptr::null();
+    assert_eq!(create(ctx, &p, &mut resp), AGC_OK as agc_rc);
+    assert_eq!(s(resp.key_info.policy_name), "fallback");
+    close(ctx);
 }

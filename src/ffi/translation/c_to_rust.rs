@@ -199,19 +199,26 @@ pub unsafe fn scope_spec(s: &agc_scope_spec) -> Result<ScopeSpecification, FfiEr
     })
 }
 
-/// Converts the C request into a `KeyCreationSpec` and validates it.
+/// Converts the C request into a `KeyCreationSpec` and validates it. A
+/// request that names no policy gets `default_policy`
+/// (`agc_ctx_config.default_policy`); with neither, it is invalid.
 ///
 /// # Safety
 /// `key_name`, `policy_name` and `template_id` in `p` must each be NULL or a valid
 /// NUL-terminated string, and `scope_spec` must follow the `scope_spec`
 /// contract, for the duration of the call.
-pub unsafe fn spec_from_params(p: &agc_create_key_params) -> Result<KeyCreationSpec, FfiError> {
+pub unsafe fn spec_from_params(
+    p: &agc_create_key_params,
+    default_policy: Option<&str>,
+) -> Result<KeyCreationSpec, FfiError> {
     // SAFETY: forwarded from this function's contract.
     let scope_spec = unsafe { scope_spec(&p.scope_spec) }?;
     // SAFETY: key_name is NULL or a valid C string (this function's contract).
     let name = unsafe { required_str(p.key_name, "key_name") }?;
     // SAFETY: policy_name is NULL or a valid C string (this function's contract).
-    let policy = unsafe { required_str(p.policy_name, "policy_name") }?;
+    let policy = unsafe { optional_str(p.policy_name, "policy_name") }?
+        .or(default_policy)
+        .ok_or_else(|| FfiError::invalid("policy_name is required (no agc_ctx_config.default_policy is set)"))?;
     // SAFETY: template_id is NULL or a valid C string (this function's contract).
     let template_id = unsafe { optional_str(p.template_id, "template_id") }?;
 
@@ -230,7 +237,7 @@ mod tests {
 
     fn convert(p: &agc_create_key_params) -> Result<KeyCreationSpec, FfiError> {
         // SAFETY: test params hold only NULL or 'static C string literals.
-        unsafe { spec_from_params(p) }
+        unsafe { spec_from_params(p, None) }
     }
 
     fn params() -> agc_create_key_params {
@@ -269,6 +276,19 @@ mod tests {
         p.key_name = std::ptr::null();
         assert!(matches!(convert(&p), Err(FfiError::InvalidArgument(_))));
         p.key_name = c"".as_ptr();
+        assert!(matches!(convert(&p), Err(FfiError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn the_default_policy_applies_only_when_none_is_named() {
+        let mut p = params();
+        // SAFETY: as in `convert`.
+        let with_default = |p: &agc_create_key_params| unsafe { spec_from_params(p, Some("fallback")) };
+        assert_eq!(with_default(&p).unwrap().policy, "default");
+        p.policy_name = std::ptr::null();
+        assert_eq!(with_default(&p).unwrap().policy, "fallback");
+        p.policy_name = c"".as_ptr();
+        assert_eq!(with_default(&p).unwrap().policy, "fallback");
         assert!(matches!(convert(&p), Err(FfiError::InvalidArgument(_))));
     }
 

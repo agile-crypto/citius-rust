@@ -16,6 +16,9 @@ pub enum Code {
     TemplateDeprecated,
     TemplateForbidden,
     NoMatchingTemplate,
+    PolicyNotFound,
+    /// The policy denies the operation; also a policy still bound to keys.
+    PolicyViolation,
     /// An invariant the library itself is responsible for was broken, e.g. a
     /// lock poisoned by an earlier panic.
     Internal,

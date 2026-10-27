@@ -60,6 +60,14 @@ impl KeyRepository for InMemoryKeyRepository {
         s.names.remove(k.get_name());
         Ok(())
     }
+
+    fn list(&self) -> Result<Vec<Key>, Error> {
+        let s = self.state.read().map_err(|_| poisoned("InMemoryKeyRepository.list"))?;
+        // `names` is a HashMap; order by name explicitly.
+        let mut keys: Vec<Key> = s.keys.values().cloned().collect();
+        keys.sort_by(|a, b| a.get_name().cmp(b.get_name()));
+        Ok(keys)
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +160,16 @@ mod tests {
         assert!(r.get_by_name("my-key").unwrap().is_none());
         // The name index was cleaned up too, so the name can be used again.
         r.create(key("key-2", "my-key")).unwrap();
+    }
+
+    #[test]
+    fn list_is_ordered_by_name() {
+        let r = InMemoryKeyRepository::new();
+        for (id, name) in [("1", "c"), ("2", "a"), ("3", "b")] {
+            r.create(key(id, name)).unwrap();
+        }
+        let names: Vec<_> = r.list().unwrap().iter().map(|k| k.get_name().to_owned()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
     }
 
     #[test]

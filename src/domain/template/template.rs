@@ -1,4 +1,4 @@
-use crate::domain::core::{Code, Error, Scope, ScopeSpecification};
+use crate::domain::core::{Code, Error, Scope, ScopeSpecification, SecurityProperties};
 use crate::proto::api;
 
 /// An algorithm template: a fully specified algorithm, the scopes it serves
@@ -74,6 +74,12 @@ impl Template {
     /// Whether any of the template's scopes satisfies `want` (Go: MatchesScope).
     pub fn matches(&self, want: &ScopeSpecification) -> bool {
         self.capabilities.iter().any(|c| c.spec.satisfies(want))
+    }
+
+    /// The security properties of the first capability that satisfies `want`:
+    /// what the template provides for that intent.
+    pub fn security_for(&self, want: &ScopeSpecification) -> Option<SecurityProperties> {
+        self.capabilities.iter().find(|c| c.spec.satisfies(want)).and_then(|c| c.spec.security)
     }
 
     /// Whether the template allows `operation` in `scope` (Go: SupportsOperation).

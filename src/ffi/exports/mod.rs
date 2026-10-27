@@ -4,10 +4,12 @@
 
 mod core;
 mod key;
+mod policy;
 mod types;
 
 pub use self::core::*;
 pub use self::key::*;
+pub use self::policy::*;
 pub use self::types::*;
 
 #[cfg(test)]

@@ -18,6 +18,8 @@ pub enum FfiError {
     AbiMismatch(&'static str),
     BufferTooSmall { needed: usize },
     NotImplemented(&'static str),
+    /// The normal end of a listing.
+    IteratorExhausted,
 }
 
 impl From<Error> for FfiError {
@@ -38,6 +40,7 @@ impl FfiError {
             FfiError::AbiMismatch(_) => AGC_ERR_ABI_MISMATCH,
             FfiError::BufferTooSmall { .. } => AGC_ERR_BUFFER_TOO_SMALL,
             FfiError::NotImplemented(_) => AGC_ERR_NOT_IMPLEMENTED,
+            FfiError::IteratorExhausted => AGC_ERR_ITERATOR_EXHAUSTED,
         }
     }
 
@@ -50,6 +53,7 @@ impl FfiError {
             FfiError::AbiMismatch(what) => format!("{what}: struct_size is not one this library accepts"),
             FfiError::BufferTooSmall { needed } => format!("storage too small: {needed} bytes needed"),
             FfiError::NotImplemented(what) => format!("{what} is not implemented"),
+            FfiError::IteratorExhausted => "no more items".to_owned(),
         }
     }
 }
@@ -63,6 +67,8 @@ fn code_rc(code: Code) -> agc_rc {
         Code::TemplateDeprecated => AGC_ERR_CRYPTO_TEMPLATE_DEPRECATED,
         Code::TemplateForbidden => AGC_ERR_CRYPTO_TEMPLATE_FORBIDDEN,
         Code::NoMatchingTemplate => AGC_ERR_CRYPTO_NO_MATCHING_TEMPLATE,
+        Code::PolicyNotFound => AGC_ERR_CRYPTO_POLICY_NOT_FOUND,
+        Code::PolicyViolation => AGC_ERR_CRYPTO_POLICY_VIOLATION,
         Code::Internal => AGC_ERR_INTERNAL,
     }
 }
@@ -95,6 +101,8 @@ mod tests {
             Code::TemplateDeprecated,
             Code::TemplateForbidden,
             Code::NoMatchingTemplate,
+            Code::PolicyNotFound,
+            Code::PolicyViolation,
             Code::Internal,
         ];
         let mut rcs: Vec<_> = codes.iter().map(|&c| code_rc(c)).collect();

@@ -21,7 +21,7 @@ pub unsafe extern "C" fn agc_create_key(
         let mut out = unsafe { versioned::read(resp, "resp") }?;
 
         // SAFETY: the string pointers inside params are NULL or valid C strings (agc_key.h contract).
-        let spec = unsafe { spec_from_params(&params) }?;
+        let spec = unsafe { spec_from_params(&params, ctx.default_policy.as_deref()) }?;
         // Known gap: the key is stored before we know whether `resp.storage` is big
         // enough. On BUFFER_TOO_SMALL the key exists anyway, unlike what the STORAGE
         // CONTRACT asks for create operations (agc_key_types.h).

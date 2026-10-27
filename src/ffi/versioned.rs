@@ -36,6 +36,11 @@ c_structs!(
     agc_error_detail,
     agc_create_key_params,
     agc_key_info_response,
+    agc_create_policy_request,
+    agc_update_policy_request,
+    agc_read_policy_response,
+    agc_list_policies_request,
+    agc_policy_summary_response,
 );
 
 const SIZE_FIELD: usize = size_of::<usize>();

@@ -68,7 +68,8 @@ pub unsafe extern "C" fn agc_ctx_open(cfg: *const agc_ctx_config, out_ctx: *mut 
         }
         // SAFETY: cfg is NULL or the caller's config with struct_size accessible bytes.
         let cfg = unsafe { versioned::read(cfg, "cfg") }?;
-        let ctx = Box::new(Context::open(&cfg)?);
+        // SAFETY: cfg's strings are NULL or valid C strings (agc_core.h contract).
+        let ctx = Box::new(unsafe { Context::open(&cfg) }?);
         // SAFETY: out_ctx is non-null (checked above) and points to the caller's agc_ctx* variable.
         unsafe { out_ctx.write(Box::into_raw(ctx).cast::<agc_ctx>()) };
         Ok(())

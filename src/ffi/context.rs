@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use crate::adapters::storage::{InMemoryKeyRepository, InMemoryTemplateRegistry};
-use crate::app::KeyOrchestrator;
+use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
+use crate::app::{KeyOrchestrator, PolicyAdmin};
+use crate::domain::policy::Enforcer;
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
+use crate::ffi::translation::optional_str;
 
 /// What an `agc_ctx*` really points to (see `agc_ctx_open`).
 ///
@@ -12,12 +14,18 @@ use crate::ffi::error::FfiError;
 /// `&mut Context`, and everything it holds is `Send + Sync`.
 pub struct Context {
     pub keys: KeyOrchestrator,
+    pub policies: PolicyAdmin,
+    /// `agc_ctx_config.default_policy`: used when a call names no policy.
+    pub default_policy: Option<String>,
 }
 
 impl Context {
     /// Builds a context from the caller's configuration: the composition
     /// root, like `WireFactorySet` in the Go server, run once per context.
-    pub fn open(cfg: &agc_ctx_config) -> Result<Context, FfiError> {
+    ///
+    /// # Safety
+    /// The string fields of `cfg` are NULL or valid C strings.
+    pub unsafe fn open(cfg: &agc_ctx_config) -> Result<Context, FfiError> {
         if cfg.mode != agc_mode_AGC_MODE_EMBEDDED {
             return Err(FfiError::NotImplemented("AGC_MODE_LOCAL/AGC_MODE_REMOTE"));
         }
@@ -26,11 +34,16 @@ impl Context {
         if cfg.require_locked_memory != 0 {
             return Err(FfiError::NotImplemented("require_locked_memory"));
         }
+        // SAFETY: default_policy is NULL or a C string (agc_core.h contract;
+        // the configuration is copied, so it need not outlive this call).
+        let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
+
+        let keys = Arc::new(InMemoryKeyRepository::new());
+        let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
         Ok(Context {
-            keys: KeyOrchestrator::new(
-                Arc::new(InMemoryKeyRepository::new()),
-                Arc::new(InMemoryTemplateRegistry::standard()),
-            ),
+            keys: KeyOrchestrator::new(keys.clone(), Arc::new(InMemoryTemplateRegistry::standard()), policy.clone()),
+            policies: PolicyAdmin::new(policy, keys),
+            default_policy,
         })
     }
 }
