@@ -64,11 +64,15 @@ Why the sanitizers are set up this way:
 
 ## Before pushing
 
-`.githooks/pre-push` runs clippy, `cargo test` and `cargo xtask all`, which is
-everything CI runs. Enable it once per clone:
+`.githooks/pre-push` runs clippy, `cargo test` and `cargo xtask test-c`
+(a minute or two). Miri and TSan take several minutes; run them with
+`AGC_FULL_CHECKS=1 git push` or `cargo xtask all` at the end of each phase
+and before releases. Enable the hook once per clone:
 
 ```sh
 git config core.hooksPath .githooks
+# A long hook can outlast the server's idle timeout on the push connection:
+git config core.sshCommand "ssh -o ServerAliveInterval=15"
 ```
 
 ## CI

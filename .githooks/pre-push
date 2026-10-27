@@ -1,5 +1,10 @@
 #!/bin/sh
-# Runs what CI would run, before anything leaves this machine.
+# Runs the fast checks before anything leaves this machine: clippy, cargo
+# test, and the C tests (plain and ASan+UBSan) with the exported-symbol
+# check. Miri and TSan take several minutes; they run with
+#   AGC_FULL_CHECKS=1 git push        (or: cargo xtask all)
+# at the end of each phase and before releases.
+#
 # Enable once per clone:   git config core.hooksPath .githooks
 # Skip in an emergency:    git push --no-verify
 set -e
@@ -11,5 +16,10 @@ cargo clippy --quiet --workspace --all-targets -- -D warnings -A dead_code
 echo "pre-push: cargo test" >&2
 cargo test --quiet --workspace
 
-echo "pre-push: cargo xtask all (C tests, symbols, Miri, TSan)" >&2
-cargo xtask all
+if [ -n "$AGC_FULL_CHECKS" ]; then
+    echo "pre-push: cargo xtask all (C tests, symbols, Miri, TSan)" >&2
+    cargo xtask all
+else
+    echo "pre-push: cargo xtask test-c (set AGC_FULL_CHECKS=1 for Miri and TSan)" >&2
+    cargo xtask test-c
+fi
