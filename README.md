@@ -62,6 +62,15 @@ Why the sanitizers are set up this way:
   runtime: on macOS the C tests link Rust's (`librustc-nightly_rt.tsan`),
   not clang's.
 
+## Before pushing
+
+`.githooks/pre-push` runs clippy, `cargo test` and `cargo xtask all`, which is
+everything CI runs. Enable it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## CI
 
 `.github/workflows/ci.yml` checks out this repository and citius-c-api (at
@@ -69,6 +78,9 @@ Why the sanitizers are set up this way:
 test-c`, Miri and TSan (on a pinned nightly, `XTASK_NIGHTLY`), and `cargo
 audit`. It needs a repository secret `CITIUS_C_API_SSH_KEY`: the private half
 of a read-only deploy key on citius-c-api.
+
+GitHub Actions is currently disabled for the repository, so the pre-push hook
+is the gate until it is enabled.
 
 ## Build and run the C example
 
