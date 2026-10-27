@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use zeroize::Zeroizing;
 
-use super::{Backend, Capability, Encoding, GeneratedKey};
+use super::{Backend, Capability, Channels, Encoding, GeneratedKey, Transfer};
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -13,6 +13,7 @@ pub struct FakeProvider {
     name: &'static str,
     templates: Vec<&'static str>,
     implementation: api::ImplementationProperties,
+    transfer: Transfer,
     generated: AtomicU32,
 }
 
@@ -22,12 +23,23 @@ impl FakeProvider {
             name,
             templates: templates.to_vec(),
             implementation: api::ImplementationProperties::default(),
+            // Like a stateless software provider: its (raw) material is the
+            // payload the core stores.
+            transfer: Transfer {
+                emit: Channels { stored_payload: vec![Encoding::Raw], ..Default::default() },
+                accept: Channels { stored_payload: vec![Encoding::Raw], ..Default::default() },
+            },
             generated: AtomicU32::new(0),
         }
     }
 
     pub fn with(mut self, f: impl FnOnce(&mut api::ImplementationProperties)) -> Self {
         f(&mut self.implementation);
+        self
+    }
+
+    pub fn with_transfer(mut self, t: Transfer) -> Self {
+        self.transfer = t;
         self
     }
 }
@@ -60,8 +72,8 @@ impl Backend for FakeProvider {
         self.implementation.clone()
     }
 
-    fn releases_material(&self, _algorithm: &api::AlgorithmDetails) -> bool {
-        true
+    fn transfer(&self, _algorithm: &api::AlgorithmDetails) -> Transfer {
+        self.transfer.clone()
     }
 
     fn generate_key(&self, _algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error> {

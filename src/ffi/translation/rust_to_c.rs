@@ -30,8 +30,13 @@ pub struct Packer {
 }
 
 impl Packer {
-    fn measuring() -> Self {
+    pub fn measuring() -> Self {
         Packer { base: ptr::null_mut(), cap: usize::MAX, pos: 0, measuring: true }
+    }
+
+    /// The bytes laid out so far (while measuring: the size needed).
+    pub fn used(&self) -> usize {
+        self.pos
     }
 
     /// Reserves `len` bytes aligned to `align`, returning where they start

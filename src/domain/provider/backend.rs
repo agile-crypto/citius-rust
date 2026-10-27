@@ -1,4 +1,4 @@
-use super::GeneratedKey;
+use super::{GeneratedKey, Transfer};
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -74,10 +74,9 @@ pub trait Backend: Send + Sync {
     /// New key material for the algorithm a template describes.
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error>;
 
-    /// Whether material for `algorithm` leaves this provider in plaintext:
-    /// stored by the core, or exportable. A stateless software provider's
-    /// material does; an HSM's non-extractable keys do not. Decides whether
-    /// a version is extractable (Go: `releasesMaterial` over the provider's
-    /// transfer description).
-    fn releases_material(&self, algorithm: &api::AlgorithmDetails) -> bool;
+    /// How material for `algorithm` can leave and enter this provider (Go:
+    /// `TransferDescriber`). Use `transfer_of`, which applies the FIPS rules.
+    /// A stateless software provider emits and accepts its stored payload;
+    /// an HSM's non-extractable keys emit nothing.
+    fn transfer(&self, algorithm: &api::AlgorithmDetails) -> Transfer;
 }

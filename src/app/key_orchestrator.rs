@@ -5,17 +5,17 @@ use super::KeyMetadata;
 use crate::domain::core::{Code, Error, KeyCreationSpec, Operation, ScopeSpecification};
 use crate::domain::key::*;
 use crate::domain::policy::{Evaluator, TemplateSecurityInfo};
-use crate::domain::provider::{ProviderRegistry, Requirements};
+use crate::domain::provider::{GeneratedKey, ProviderRegistry, Requirements, transfer_of};
 use crate::domain::template::*;
 
 /// Runs the key lifecycle use cases. Holds no state of its own: everything
 /// it touches is behind a shared domain interface, so one orchestrator serves
 /// every thread of a context.
 pub struct KeyOrchestrator {
-    keys: Arc<dyn KeyRepository>,
-    templates: Arc<dyn TemplateRegistry>,
-    providers: Arc<ProviderRegistry>,
-    policy: Arc<dyn Evaluator>,
+    pub(super) keys: Arc<dyn KeyRepository>,
+    pub(super) templates: Arc<dyn TemplateRegistry>,
+    pub(super) providers: Arc<ProviderRegistry>,
+    pub(super) policy: Arc<dyn Evaluator>,
 }
 
 impl KeyOrchestrator {
@@ -67,7 +67,7 @@ impl KeyOrchestrator {
         let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
         let material = provider.generate_key(algorithm)?.to_bytes();
         let provenance = Provenance {
-            extractable: provider.releases_material(algorithm),
+            extractable: transfer_of(provider.as_ref(), algorithm).releases_material(),
             approved_lineage: approved(provider.as_ref()),
             origin: Origin::Generated,
         };
@@ -102,8 +102,44 @@ impl KeyOrchestrator {
         spec: TransformSpec,
         admit: impl FnOnce(&KeyMetadata) -> Result<(), E>,
     ) -> Result<KeyMetadata, E> {
+        let plan = self.plan_transform(spec)?;
+        let TransformPlan { mut key, template_id, provider, scope_spec, retained } = plan;
+        let template = self.templates.get(&template_id).expect("planned with this template");
+        let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
+        let current = key.current().clone();
+        let (material, provenance) = match retained {
+            Some(provenance) => (zeroize::Zeroizing::new(current.material().to_vec()), provenance),
+            None => (
+                provider.generate_key(algorithm)?.to_bytes(),
+                Provenance {
+                    extractable: transfer_of(provider.as_ref(), algorithm).releases_material(),
+                    approved_lineage: approved(provider.as_ref()),
+                    origin: Origin::Generated,
+                },
+            ),
+        };
+        let next = Version::new(
+            current.number() + 1,
+            template_id,
+            provider.name().into(),
+            scope_spec,
+            material,
+            provenance,
+            SystemTime::now(),
+        );
+        key.add_version(next)?;
+        let metadata = KeyMetadata::of(&key, key.current(), &self.providers);
+        admit(&metadata)?;
+        // Fails with CONCURRENT_ACCESS if the key changed since it was read.
+        self.keys.update(key)?;
+        Ok(metadata)
+    }
+
+    /// Everything a transform checks, with no side effect: what
+    /// `transform_key` would do, or why it cannot. Generates no material.
+    pub fn plan_transform(&self, spec: TransformSpec) -> Result<TransformPlan, Error> {
         const OP: &str = "KeyOrchestrator::transform_key";
-        let mut k = self.keys.get_by_name(&spec.key_name)?.ok_or_else(|| not_found(OP, &spec.key_name))?;
+        let k = self.keys.get_by_name(&spec.key_name)?.ok_or_else(|| not_found(OP, &spec.key_name))?;
         k.can_originate()?;
         let current = k.current().clone();
 
@@ -120,14 +156,13 @@ impl KeyOrchestrator {
                         Code::IncompatibleParameters,
                         OP,
                         format!("a transform keeps the key's scope ({:?})", current.scope_spec().scope),
-                    )
-                    .into());
+                    ));
                 }
                 s
             }
         };
         if spec.retain && spec.template_id.is_none() {
-            return Err(Error::new(Code::InvalidArgument, OP, "retaining the material needs an explicit template").into());
+            return Err(Error::new(Code::InvalidArgument, OP, "retaining the material needs an explicit template"));
         }
 
         // Custody: the current provider, under the policy's requirements.
@@ -143,7 +178,7 @@ impl KeyOrchestrator {
         let provider = self.providers.select(&custody(template.id()))?;
         let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
 
-        let (material, provenance) = if spec.retain {
+        let retained = if spec.retain {
             let source = self.templates.get(current.template_id()).ok_or_else(|| {
                 Error::new(Code::TemplateNotFound, OP, format!("the key's template {} is gone", current.template_id()))
             })?;
@@ -153,8 +188,17 @@ impl KeyOrchestrator {
                     Code::IncompatibleParameters,
                     OP,
                     format!("{} cannot use the key material of {}", template.id(), source.id()),
-                )
-                .into());
+                ));
+            }
+            // The provider must take the stored material for the new template
+            // (Go: retainFeasibility).
+            let encoding = GeneratedKey::from_bytes(current.material())?.private_encoding;
+            if !transfer_of(provider.as_ref(), algorithm).accept.stored_payload.contains(&encoding) {
+                return Err(Error::new(
+                    Code::IncompatibleParameters,
+                    OP,
+                    format!("provider {} does not take {encoding:?} material for {}", provider.name(), template.id()),
+                ));
             }
             // Kept material carries its history: it never regains
             // extractability or an approved lineage it lost.
@@ -164,39 +208,17 @@ impl KeyOrchestrator {
                     Code::PolicyViolation,
                     OP,
                     "the policy requires material of approved lineage; this key's material is not",
-                )
-                .into());
+                ));
             }
-            let provenance = Provenance {
-                extractable: was.extractable && provider.releases_material(algorithm),
+            Some(Provenance {
+                extractable: was.extractable && transfer_of(provider.as_ref(), algorithm).releases_material(),
                 approved_lineage: was.approved_lineage && approved(provider.as_ref()),
                 origin: Origin::Retained { source_version: current.number() },
-            };
-            (zeroize::Zeroizing::new(current.material().to_vec()), provenance)
+            })
         } else {
-            let provenance = Provenance {
-                extractable: provider.releases_material(algorithm),
-                approved_lineage: approved(provider.as_ref()),
-                origin: Origin::Generated,
-            };
-            (provider.generate_key(algorithm)?.to_bytes(), provenance)
+            None
         };
-
-        let next = Version::new(
-            current.number() + 1,
-            template.id().into(),
-            provider.name().into(),
-            scope_spec,
-            material,
-            provenance,
-            SystemTime::now(),
-        );
-        k.add_version(next)?;
-        let metadata = KeyMetadata::of(&k, k.current(), &self.providers);
-        admit(&metadata)?;
-        // Fails with CONCURRENT_ACCESS if the key changed since it was read.
-        self.keys.update(k)?;
-        Ok(metadata)
+        Ok(TransformPlan { template_id: template.id().to_owned(), provider, scope_spec, retained, key: k })
     }
 
     pub fn transform_key(&self, spec: TransformSpec) -> Result<KeyMetadata, Error> {
@@ -279,8 +301,18 @@ impl KeyFilter {
     }
 }
 
-fn not_found(op: &'static str, name: &str) -> Error {
+pub(super) fn not_found(op: &'static str, name: &str) -> Error {
     Error::new(Code::KeyNotFound, op, format!("no key named {name}"))
+}
+
+/// A checked transform, ready to run: the key as read, the target, and for
+/// retained material its provenance.
+pub struct TransformPlan {
+    key: Key,
+    template_id: String,
+    provider: Arc<dyn crate::domain::provider::Backend>,
+    scope_spec: ScopeSpecification,
+    retained: Option<Provenance>,
 }
 
 /// What a transform asks for (Go: TransformKeySpec).
@@ -296,14 +328,14 @@ pub struct TransformSpec {
 
 /// Whether a provider is an approved (FIPS-validated) module, so that the
 /// material it generates or holds keeps an approved lineage.
-fn approved(provider: &dyn crate::domain::provider::Backend) -> bool {
+pub(super) fn approved(provider: &dyn crate::domain::provider::Backend) -> bool {
     let approved_generation =
         crate::domain::core::ProviderRequirements { approved_generation: true, ..Default::default() };
     crate::domain::provider::unmet(&provider.implementation(), &approved_generation).is_empty()
 }
 
 /// What the policy needs to know about the template, for this intent.
-fn security_info(template: &Template, scope_spec: &ScopeSpecification) -> TemplateSecurityInfo {
+pub(super) fn security_info(template: &Template, scope_spec: &ScopeSpecification) -> TemplateSecurityInfo {
     let sec = template.security_for(scope_spec).unwrap_or_default();
     TemplateSecurityInfo {
         template_id: template.id().to_owned(),

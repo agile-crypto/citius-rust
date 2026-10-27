@@ -28,8 +28,6 @@ agc_envelope_split
 agc_delete_key
 agc_rotate_key
 agc_update_key_policy
-agc_migrate_key
-agc_validate_key_operation
 agc_export_key
 agc_import_key
 

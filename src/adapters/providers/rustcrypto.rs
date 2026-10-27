@@ -4,7 +4,7 @@ use ml_dsa::signature::Keypair;
 use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error};
-use crate::domain::provider::{Backend, Capability, Encoding, GeneratedKey};
+use crate::domain::provider::{Backend, Capability, Channels, Encoding, GeneratedKey, Transfer};
 use crate::proto::api::{self, algorithm_details::Algorithm};
 
 /// The software provider, built on the RustCrypto crates. Stateless: the
@@ -71,9 +71,20 @@ impl Backend for RustCrypto {
         }
     }
 
-    /// Stateless: every key it generates is handed to the core to store.
-    fn releases_material(&self, _algorithm: &api::AlgorithmDetails) -> bool {
-        true
+    /// Stateless: every key it generates is the payload the core stores, and
+    /// it takes such payloads back, in the encoding it generates them in.
+    /// No plaintext export or import, no key wrapping (yet).
+    fn transfer(&self, algorithm: &api::AlgorithmDetails) -> Transfer {
+        let encoding = match algorithm.algorithm.as_ref() {
+            Some(Algorithm::Ecdsa(_)) => Encoding::Sec1Der,
+            Some(Algorithm::Ed25519(_) | Algorithm::MlDsa(_)) => Encoding::Pkcs8Der,
+            Some(Algorithm::AesGcm(_) | Algorithm::AesCbc(_) | Algorithm::AesCtr(_) | Algorithm::Chacha20Poly1305(_)) => {
+                Encoding::Raw
+            }
+            _ => return Transfer::default(),
+        };
+        let stored = Channels { stored_payload: vec![encoding], ..Default::default() };
+        Transfer { emit: stored.clone(), accept: stored }
     }
 
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error> {

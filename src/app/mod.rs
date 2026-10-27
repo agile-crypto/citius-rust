@@ -3,11 +3,13 @@
 //! `ffi`.
 
 mod key_metadata;
+mod key_migration;
 mod key_orchestrator;
 mod policy_admin;
 mod startup;
 
 pub use key_metadata::*;
+pub use key_migration::*;
 pub use key_orchestrator::*;
 pub use policy_admin::*;
 pub use startup::*;

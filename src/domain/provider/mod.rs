@@ -4,9 +4,11 @@
 mod backend;
 mod material;
 mod registry;
+mod transfer;
 #[cfg(test)]
 pub(crate) mod testing;
 
 pub use backend::*;
 pub use material::*;
 pub use registry::*;
+pub use transfer::*;

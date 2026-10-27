@@ -29,6 +29,10 @@ pub enum Code {
     ConcurrentAccess,
     /// The request's parameters do not fit together or with the key.
     IncompatibleParameters,
+    /// A migration cannot be carried out (strategy, providers or material).
+    MigrationNotFeasible,
+    /// The key's material may not leave its provider.
+    KeyNotExtractable,
     /// Something this build does not offer.
     NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.
