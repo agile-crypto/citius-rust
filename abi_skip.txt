@@ -25,10 +25,6 @@ agc_metadata_max_encoded_len
 agc_envelope_split
 
 # agc_key.h (12)
-agc_read_key
-agc_list_keys
-agc_key_iter_next
-agc_key_iter_free
 agc_delete_key
 agc_rotate_key
 agc_transform_key

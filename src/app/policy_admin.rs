@@ -38,7 +38,7 @@ impl PolicyAdmin {
     /// a policy that no longer exists. Its operations then fail with
     /// `PolicyNotFound` (fail closed). A transactional store closes the gap.
     pub fn delete(&self, name: &str) -> Result<(), Error> {
-        let bound = self.keys.list()?.iter().filter(|k| k.get_policy() == name).count();
+        let bound = self.keys.list()?.iter().filter(|k| k.policy() == name).count();
         if bound > 0 {
             return Err(Error::new(
                 Code::PolicyViolation,
@@ -54,8 +54,7 @@ impl PolicyAdmin {
 mod tests {
     use super::*;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository};
-    use crate::domain::core::ScopeKind;
-    use crate::domain::key::{Key, KeyId};
+    use crate::domain::key::testing::key;
     use crate::domain::policy::Enforcer;
 
     #[test]
@@ -64,15 +63,14 @@ mod tests {
         let admin = PolicyAdmin::new(Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new()))), keys.clone());
         admin.create("p", "{}").unwrap();
         admin.create("unused", "{}").unwrap();
-        keys.create(Key::new(KeyId::new("k1"), "k".into(), 1, "t".into(), "pr".into(), "p".into(), vec![].into(), ScopeKind::Aead))
-            .unwrap();
+        let k = keys.create(key("k1", "k")).unwrap(); // bound to policy "p"
 
         let err = admin.delete("p").unwrap_err();
         assert_eq!(err.code(), Code::PolicyViolation);
         assert!(err.message().contains("1 key"), "{}", err.message());
         admin.delete("unused").unwrap();
 
-        keys.delete(&KeyId::new("k1")).unwrap();
+        keys.delete(k.id()).unwrap();
         admin.delete("p").unwrap();
     }
 }

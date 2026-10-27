@@ -71,6 +71,11 @@ impl Backend for RustCrypto {
         }
     }
 
+    /// Stateless: every key it generates is handed to the core to store.
+    fn releases_material(&self, _algorithm: &api::AlgorithmDetails) -> bool {
+        true
+    }
+
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error> {
         const OP: &str = "RustCrypto::generate_key";
         match algorithm.algorithm.as_ref() {
@@ -195,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "third-party crypto: uses CPU intrinsics Miri cannot run; covered natively")]
+    #[cfg_attr(miri, ignore = "third-party asymmetric key generation: far too slow under Miri; covered natively")]
     fn every_advertised_template_generates_a_key() {
         for id in TEMPLATES {
             let a = generate(id);
@@ -213,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "third-party crypto: uses CPU intrinsics Miri cannot run; covered natively")]
+    #[cfg_attr(miri, ignore = "third-party asymmetric key generation: far too slow under Miri; covered natively")]
     fn ed25519_is_pkcs8_and_spki() {
         let k = generate("ed25519");
         assert_eq!(k.private_encoding, Encoding::Pkcs8Der);
@@ -224,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "third-party crypto: uses CPU intrinsics Miri cannot run; covered natively")]
+    #[cfg_attr(miri, ignore = "third-party asymmetric key generation: far too slow under Miri; covered natively")]
     fn ecdsa_is_sec1_and_spki_on_the_right_curve() {
         fn check<C>(id: &str)
         where
@@ -246,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "third-party crypto: uses CPU intrinsics Miri cannot run; covered natively")]
+    #[cfg_attr(miri, ignore = "third-party asymmetric key generation: far too slow under Miri; covered natively")]
     fn ml_dsa_is_a_pkcs8_seed_and_a_raw_public_key() {
         fn check<P>(id: &str)
         where

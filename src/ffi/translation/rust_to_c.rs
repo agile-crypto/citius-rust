@@ -1,47 +1,140 @@
 use std::ffi::c_char;
+use std::ptr;
 use std::time::SystemTime;
 
+use crate::app::KeyMetadata;
 use crate::bindings::*;
-use crate::domain::core::ScopeKind;
-use crate::domain::key::Key;
+use crate::domain::core::{Scope, ScopeKind, ScopeSpecification, SecurityProperties};
 use crate::domain::policy::Policy;
+use crate::domain::provider::Encoding;
 use crate::ffi::error::FfiError;
+use crate::proto::api;
 
-/// Packs strings into the caller's storage region and hands back pointers
-/// into it, which the caller reads after we return.
+/// Lays out a record's variable-length data (strings, byte strings, arrays)
+/// in the caller's storage region, and hands back pointers into it, which
+/// the caller reads after we return.
 ///
-/// Every write and every returned pointer derives from the one raw `base`
-/// pointer. Going through a `&mut [u8]` instead would make each returned
-/// pointer a reborrow that the next write invalidates (found by Miri).
-struct StorageWriter {
+/// It runs twice over the same code: first measuring, with no memory behind
+/// it, then writing. Running the same code both times is what keeps the
+/// reported size and the written layout in step. The measure pass assumes
+/// the worst alignment padding, so the write pass always fits.
+///
+/// Every write and returned pointer derives from the one raw `base` pointer.
+/// Going through a `&mut [u8]` instead would make each returned pointer a
+/// reborrow that the next write invalidates (found by Miri).
+pub struct Packer {
     base: *mut u8,
     cap: usize,
     pos: usize,
+    measuring: bool,
 }
 
-impl StorageWriter {
-    /// # Safety
-    /// `base` points to `cap` bytes the caller lets us write during this call,
-    /// which nothing else accesses until we return.
-    unsafe fn new(base: *mut u8, cap: usize) -> Self {
-        StorageWriter { base, cap, pos: 0 }
+impl Packer {
+    fn measuring() -> Self {
+        Packer { base: ptr::null_mut(), cap: usize::MAX, pos: 0, measuring: true }
     }
 
-    fn put_str(&mut self, s: &str) -> *const c_char {
-        let end = self.pos + s.len() + 1;
-        // Callers size the region first; running past it is a bug in this library.
-        assert!(end <= self.cap, "storage writer overflow");
-        // SAFETY: pos..end lies within the cap bytes `new` was given, and s is
-        // a separate Rust allocation.
-        let start = unsafe { self.base.add(self.pos) };
-        // SAFETY: as above; start + s.len() is the last byte before end.
-        unsafe {
-            std::ptr::copy_nonoverlapping(s.as_ptr(), start, s.len());
-            start.add(s.len()).write(0);
+    /// Reserves `len` bytes aligned to `align`, returning where they start
+    /// (NULL while measuring).
+    fn reserve(&mut self, len: usize, align: usize) -> *mut u8 {
+        if self.measuring {
+            // Unknown base alignment: assume the worst padding.
+            self.pos += align - 1 + len;
+            return ptr::null_mut();
         }
+        let addr = self.base as usize + self.pos;
+        let start = self.pos + (addr.next_multiple_of(align) - addr);
+        let end = start + len;
+        // `pack` sized the region with the measure pass; overflow is a bug here.
+        assert!(end <= self.cap, "storage packer overflow");
         self.pos = end;
-        start.cast_const().cast()
+        // SAFETY: start..end lies within the cap bytes the region holds.
+        unsafe { self.base.add(start) }
     }
+
+    /// A NUL-terminated copy of `s`.
+    pub fn str(&mut self, s: &str) -> *const c_char {
+        let p = self.reserve(s.len() + 1, 1);
+        if !p.is_null() {
+            // SAFETY: p has s.len() + 1 writable bytes (reserve); s is a
+            // separate Rust allocation.
+            unsafe {
+                ptr::copy_nonoverlapping(s.as_ptr(), p, s.len());
+                p.add(s.len()).write(0);
+            }
+        }
+        p.cast_const().cast()
+    }
+
+    /// A copy of `b` as a slice; empty is `{NULL, 0}`.
+    pub fn bytes(&mut self, b: &[u8]) -> agc_slice {
+        if b.is_empty() {
+            return agc_slice { data: ptr::null(), len: 0 };
+        }
+        let p = self.reserve(b.len(), 1);
+        if !p.is_null() {
+            // SAFETY: p has b.len() writable bytes (reserve).
+            unsafe { ptr::copy_nonoverlapping(b.as_ptr(), p, b.len()) };
+        }
+        agc_slice { data: p.cast_const(), len: b.len() }
+    }
+
+    /// An array of `T`; empty is NULL.
+    pub fn array<T: Copy>(&mut self, items: &[T]) -> *const T {
+        if items.is_empty() {
+            return ptr::null();
+        }
+        let p = self.reserve(size_of_val(items), align_of::<T>()).cast::<T>();
+        if !p.is_null() {
+            // SAFETY: p is aligned for T and has room for items.len() elements (reserve).
+            unsafe { ptr::copy_nonoverlapping(items.as_ptr(), p, items.len()) };
+        }
+        p.cast_const()
+    }
+
+    /// A key-value list of copied strings.
+    pub fn kv_list<'a>(&mut self, kvs: impl Iterator<Item = (&'a String, &'a String)>) -> agc_kv_list {
+        let entries: Vec<agc_kv> = kvs.map(|(k, v)| agc_kv { key: self.str(k), value: self.str(v) }).collect();
+        agc_kv_list { items: self.array(&entries), count: entries.len() }
+    }
+}
+
+/// The STORAGE CONTRACT (agc_key_types.h and every *_types.h): a record's
+/// variable-length data goes into the caller's `storage` region and the
+/// record points into it. `storage_used` is always set: to the size needed
+/// if the region is NULL or too small (then nothing else is written and the
+/// result is `BufferTooSmall`), else to the bytes used.
+///
+/// `fill` lays the data out with the `Packer` it is given and returns what
+/// to write into the record; it runs once to measure and once to write.
+pub fn pack<R>(storage: agc_buf, storage_used: &mut usize, fill: impl Fn(&mut Packer) -> R) -> Result<R, FfiError> {
+    let mut m = Packer::measuring();
+    fill(&mut m);
+    let needed = m.pos;
+    *storage_used = needed;
+    if storage.data.is_null() || storage.cap < needed {
+        return Err(FfiError::BufferTooSmall { needed });
+    }
+    let mut w = Packer { base: storage.data, cap: storage.cap, pos: 0, measuring: false };
+    let r = fill(&mut w);
+    *storage_used = w.pos;
+    Ok(r)
+}
+
+/// `pack` for a fixed set of strings, returning one pointer per string.
+pub fn pack_strings<const N: usize>(
+    storage: agc_buf,
+    storage_used: &mut usize,
+    strings: [&str; N],
+) -> Result<[*const c_char; N], FfiError> {
+    pack(storage, storage_used, |p| strings.map(|s| p.str(s)))
+}
+
+/// A time as the C API's optional timestamp.
+pub fn c_timestamp(t: SystemTime) -> agc_timestamp {
+    // Times before 1970 do not occur here (they come from the system clock).
+    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    agc_timestamp { seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX), nanos: d.subsec_nanos() as i32, present: 1 }
 }
 
 /// The C value of a domain scope kind.
@@ -62,63 +155,130 @@ pub fn c_scope_kind(kind: ScopeKind) -> agc_scope_kind {
     }
 }
 
-/// The STORAGE CONTRACT (agc_key_types.h and every *_types.h): a record's
-/// strings go into the caller's `storage` region, each NUL-terminated, and
-/// the record points into it. `storage_used` is always set to the size
-/// needed; if the region is NULL or smaller, nothing else is written and the
-/// result is `BufferTooSmall`.
-///
-/// Returns one pointer per string, in order.
-pub fn pack_strings<const N: usize>(
-    storage: agc_buf,
-    storage_used: &mut usize,
-    strings: [&str; N],
-) -> Result<[*const c_char; N], FfiError> {
-    let needed = strings.iter().map(|s| s.len() + 1).sum();
-    *storage_used = needed;
-    if storage.data.is_null() || storage.cap < needed {
-        return Err(FfiError::BufferTooSmall { needed });
-    }
-    // SAFETY: by the STORAGE CONTRACT the caller's region holds `cap` writable
-    // bytes for the duration of this call and nothing else uses it meanwhile.
-    let mut writer = unsafe { StorageWriter::new(storage.data, storage.cap) };
-    Ok(strings.map(|s| writer.put_str(s)))
-}
-
-/// A time as the C API's optional timestamp.
-pub fn c_timestamp(t: SystemTime) -> agc_timestamp {
-    // Times before 1970 do not occur here (they come from the system clock).
-    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    agc_timestamp {
-        seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        nanos: d.subsec_nanos() as i32,
-        present: 1,
+pub fn c_tribool(v: Option<bool>) -> agc_tribool {
+    match v {
+        None => agc_tribool_AGC_UNSET,
+        Some(false) => agc_tribool_AGC_FALSE,
+        Some(true) => agc_tribool_AGC_TRUE,
     }
 }
 
-/// Writes `key` into `resp` under the STORAGE CONTRACT (see `pack_strings`).
+fn c_security(s: Option<&SecurityProperties>) -> agc_security_properties {
+    let s = s.copied().unwrap_or_default();
+    agc_security_properties {
+        security_strength_bits: s.strength_bits,
+        // agc_types.h is generated from the proto: the numbers are the same.
+        nist_security_level: s.nist_level as u32,
+        quantum_safe: c_tribool(s.quantum_safe),
+        nist_status: s.nist_status as u32,
+        fips_approved: c_tribool(s.fips_approved),
+    }
+}
+
+/// The C form of a scope specification; its additional properties go into
+/// storage.
+pub fn c_scope_spec(spec: &ScopeSpecification, p: &mut Packer) -> agc_scope_spec {
+    // SAFETY: all-zero is a valid agc_scope_spec (integers and raw pointers).
+    let mut c: agc_scope_spec = unsafe { std::mem::zeroed() };
+    c.struct_size = size_of::<agc_scope_spec>();
+    c.kind = c_scope_kind(spec.scope.kind());
+    let security = c_security(spec.security.as_ref());
+    let additional = p.kv_list(spec.additional.iter());
+    let scope = spec.scope.value() as u32;
+    let props = &spec.properties;
+    // Writing a union member is safe; `kind` above names the one written.
+    macro_rules! set {
+        ($field:ident { $($extra:ident: $value:expr),* }) => {{
+            c.u.$field.scope = scope;
+            c.u.$field.security = security;
+            c.u.$field.additional_properties = additional;
+            $(c.u.$field.$extra = $value;)*
+        }};
+    }
+    match spec.scope {
+        Scope::Signature(_) => set!(signature {
+            non_malleable: c_tribool(props.non_malleable),
+            deterministic: c_tribool(props.deterministic)
+        }),
+        Scope::Aead(_) => set!(aead { nonce_misuse_resistant: c_tribool(props.nonce_misuse_resistant) }),
+        Scope::KeyAgreement(_) => set!(key_agreement { forward_secrecy: c_tribool(props.forward_secrecy) }),
+        Scope::Kdf(_) => set!(kdf { memory_hard: c_tribool(props.memory_hard) }),
+        Scope::Mac(_) => set!(mac {}),
+        Scope::Kem(_) => set!(kem {}),
+        Scope::Hash(_) => set!(hash {}),
+        Scope::KeyWrapping(_) => set!(key_wrapping {}),
+        Scope::SymmetricCipher(_) => set!(symmetric_cipher {}),
+        Scope::GenericSecret(_) => set!(generic_secret {}),
+        Scope::DiskEncryption(_) => set!(disk_encryption {}),
+        Scope::AsymmetricEncryption(_) => set!(asymmetric_encryption {}),
+    }
+    c
+}
+
+pub fn c_key_format(e: Encoding) -> agc_key_format {
+    match e {
+        Encoding::Raw => agc_key_format_AGC_KEY_FORMAT_RAW,
+        Encoding::Sec1Der => agc_key_format_AGC_KEY_FORMAT_SEC1,
+        Encoding::Pkcs8Der => agc_key_format_AGC_KEY_FORMAT_PKCS8,
+        Encoding::SpkiDer => agc_key_format_AGC_KEY_FORMAT_SPKI,
+    }
+}
+
+/// The C summary of a provider's implementation properties; the language
+/// string goes into storage.
+pub fn c_impl_props(i: &api::ImplementationProperties, p: &mut Packer) -> agc_impl_props {
+    let fips = i.fips_140.as_ref().filter(|f| f.certified);
+    agc_impl_props {
+        fips_certified: i32::from(fips.is_some()),
+        fips_level: fips.map_or(0, |f| f.level as u32),
+        formally_verified: c_tribool(i.formally_verified),
+        memory_safe_language: c_tribool(i.memory_safe_language),
+        implementation_language: p.str(&i.implementation_language),
+        constant_time: c_tribool(i.constant_time),
+        side_channel_hardened: c_tribool(i.side_channel_hardened),
+        hardware_accelerated: c_tribool(i.hardware_accelerated),
+    }
+}
+
+/// The C record of a key version, its variable-length data in storage.
+pub fn c_key_info(k: &KeyMetadata, p: &mut Packer) -> agc_key_info {
+    let (public_key, public_key_format) = match &k.public_key {
+        Some((bytes, enc)) => (p.bytes(bytes), c_key_format(*enc)),
+        None => (agc_slice { data: ptr::null(), len: 0 }, agc_key_format_AGC_KEY_FORMAT_UNSPECIFIED),
+    };
+    agc_key_info {
+        struct_size: size_of::<agc_key_info>(),
+        key_name: p.str(&k.name),
+        version: k.version,
+        key_id: p.str(k.id.as_str()),
+        template_id: p.str(&k.template_id),
+        provider_id: p.str(&k.provider),
+        policy_name: p.str(&k.policy),
+        created_time: c_timestamp(k.created_at),
+        updated_time: c_timestamp(k.updated_at),
+        extractable: i32::from(k.extractable),
+        lifecycle_state: k.state as u32,
+        scope_spec: c_scope_spec(&k.scope_spec, p),
+        public_key,
+        public_key_format,
+        provider_metadata: agc_kv_list { items: ptr::null(), count: 0 },
+        implementation_props: c_impl_props(&k.implementation, p),
+    }
+}
+
+/// Writes `key` into `resp` under the STORAGE CONTRACT (see `pack`).
 ///
 /// `resp` is this library's copy of the caller's struct (see `versioned`).
-pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &Key) -> Result<(), FfiError> {
-    let [name, id, template, provider, policy] = pack_strings(
-        resp.storage,
-        &mut resp.storage_used,
-        [key.get_name(), key.get_id().as_str(), key.get_template_id(), key.get_provider(), key.get_policy()],
-    )?;
-    let info = &mut resp.key_info;
-    info.key_name = name;
-    info.key_id = id;
-    info.template_id = template;
-    info.provider_id = provider;
-    info.policy_name = policy;
-
-    info.struct_size = size_of::<agc_key_info>();
-    info.version = key.get_version();
-    info.lifecycle_state = agc_key_lifecycle_state_AGC_KEY_LIFECYCLE_STATE_ACTIVE;
-    info.scope_spec.struct_size = size_of::<agc_scope_spec>();
-    info.scope_spec.kind = c_scope_kind(key.get_scope_kind());
-
+pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &KeyMetadata) -> Result<(), FfiError> {
+    resp.key_info = pack(resp.storage, &mut resp.storage_used, |p| c_key_info(key, p))?;
     Ok(())
+}
+
+/// The storage `fill_key_info_response` needs for `key`.
+pub fn key_info_size(key: &KeyMetadata) -> usize {
+    let mut m = Packer::measuring();
+    c_key_info(key, &mut m);
+    m.pos
 }
 
 /// Writes `policy` into `resp` under the STORAGE CONTRACT.
@@ -143,125 +303,132 @@ pub fn fill_policy_summary_response(resp: &mut agc_policy_summary_response, poli
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::domain::key::KeyId;
+    use std::collections::BTreeMap;
     use std::ffi::CStr;
 
-    fn key() -> Key {
-        Key::new(
-            KeyId::new("key-0"),
-            String::from("my-key"),
-            1,
-            String::from("aes-256-gcm"),
-            String::from("stub"),
-            String::from("default"),
-            vec![0; 32].into(),
-            ScopeKind::Aead,
-        )
+    use super::*;
+    use crate::domain::key::KeyId;
+    use crate::ffi::translation::scope_spec;
+    use crate::proto::api::{AeadScope, KeyLifecycleState, SignatureScope};
+
+    fn metadata() -> KeyMetadata {
+        let mut spec = ScopeSpecification::any_of(Scope::Signature(SignatureScope::Prehashed));
+        spec.properties.deterministic = Some(true);
+        spec.security = Some(SecurityProperties { strength_bits: 128, quantum_safe: Some(false), ..Default::default() });
+        spec.additional = BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]);
+        KeyMetadata {
+            id: KeyId::new("key-0"),
+            name: "my-key".into(),
+            policy: "default".into(),
+            state: KeyLifecycleState::Active,
+            created_at: SystemTime::UNIX_EPOCH + std::time::Duration::new(10, 5),
+            updated_at: SystemTime::UNIX_EPOCH + std::time::Duration::new(20, 0),
+            version: 3,
+            template_id: "ed25519ph".into(),
+            provider: "fake".into(),
+            scope_spec: spec,
+            extractable: true,
+            public_key: Some((vec![0xAB; 44], Encoding::SpkiDer)),
+            implementation: api::ImplementationProperties {
+                implementation_language: "rust".into(),
+                memory_safe_language: Some(true),
+                ..Default::default()
+            },
+        }
     }
 
     /// What the C caller does: AGC_INIT(&resp), then point `storage` at its own buffer.
-    /// `storage` must outlive every use of `resp` (the raw pointer is not tracked by the borrow checker).
     fn response(storage: &mut [u8]) -> agc_key_info_response {
-        // SAFETY: agc_key_info_response consists only of integers, raw pointers and C enums,
-        // for which all-zero bytes are valid; this is exactly what AGC_INIT's memset does.
+        // SAFETY: integers and raw pointers only; all zeros is AGC_INIT's state.
         let mut resp: agc_key_info_response = unsafe { std::mem::zeroed() };
         resp.struct_size = size_of::<agc_key_info_response>();
-        resp.storage.data = storage.as_mut_ptr();
-        resp.storage.cap = storage.len();
+        resp.storage = agc_buf { data: storage.as_mut_ptr(), cap: storage.len() };
         resp
     }
 
-    /// Reads a C string written by fill_key_info_response.
     fn read(p: *const c_char) -> &'static str {
         assert!(!p.is_null(), "pointer field was not set");
-        // SAFETY: only called on pointers into a test's storage buffer that is still alive,
-        // and put_str NUL-terminates every string.
+        // SAFETY: only called on pointers into a test's live storage buffer;
+        // every string the packer writes is NUL-terminated.
         unsafe { CStr::from_ptr(p) }.to_str().unwrap()
     }
 
-    // "my-key\0" + "key-0\0" + "aes-256-gcm\0" + "stub\0" + "default\0"
-    const NEEDED: usize = 7 + 6 + 12 + 5 + 8;
-
     #[test]
-    fn fills_strings_and_scalars() {
-        let mut storage = [0xAAu8; 64];
+    fn fills_every_field() {
+        let mut storage = [0u8; 512];
         let mut resp = response(&mut storage);
+        fill_key_info_response(&mut resp, &metadata()).unwrap();
 
-        fill_key_info_response(&mut resp, &key()).unwrap();
-
-        let info = &resp.key_info;
-        assert_eq!(read(info.key_name), "my-key");
-        assert_eq!(read(info.key_id), "key-0");
-        assert_eq!(read(info.template_id), "aes-256-gcm");
-        assert_eq!(read(info.provider_id), "stub");
-        assert_eq!(read(info.policy_name), "default");
-
-        assert_eq!(info.struct_size, size_of::<agc_key_info>());
-        assert_eq!(info.version, 1);
-        assert_eq!(info.lifecycle_state, agc_key_lifecycle_state_AGC_KEY_LIFECYCLE_STATE_ACTIVE);
-        assert_eq!(info.scope_spec.struct_size, size_of::<agc_scope_spec>());
-        assert_eq!(info.scope_spec.kind, agc_scope_kind_AGC_SCOPE_KIND_AEAD);
-        assert_eq!(resp.storage_used, NEEDED);
+        let i = &resp.key_info;
+        assert_eq!((read(i.key_name), read(i.key_id), read(i.template_id)), ("my-key", "key-0", "ed25519ph"));
+        assert_eq!((read(i.provider_id), read(i.policy_name)), ("fake", "default"));
+        assert_eq!(
+            (i.version, i.extractable, i.lifecycle_state),
+            (3, 1, agc_key_lifecycle_state_AGC_KEY_LIFECYCLE_STATE_ACTIVE)
+        );
+        assert_eq!((i.created_time.seconds, i.created_time.nanos, i.created_time.present), (10, 5, 1));
+        assert_eq!(i.updated_time.seconds, 20);
+        assert_eq!((i.public_key.len, i.public_key_format), (44, agc_key_format_AGC_KEY_FORMAT_SPKI));
+        // SAFETY: the slice points into `storage`, which is alive.
+        assert!(unsafe { std::slice::from_raw_parts(i.public_key.data, 44) }.iter().all(|&b| b == 0xAB));
+        let props = &i.implementation_props;
+        assert_eq!((read(props.implementation_language), props.memory_safe_language), ("rust", agc_tribool_AGC_TRUE));
+        assert_eq!(props.fips_certified, 0);
+        assert!(resp.storage_used <= storage.len());
     }
 
     #[test]
-    fn strings_are_packed_into_storage_in_order() {
-        let mut storage = [0xAAu8; 64];
+    fn the_scope_spec_round_trips_through_c() {
+        let mut storage = [0u8; 512];
         let mut resp = response(&mut storage);
-        fill_key_info_response(&mut resp, &key()).unwrap();
-        let base = storage.as_ptr();
+        let k = metadata();
+        fill_key_info_response(&mut resp, &k).unwrap();
+        // SAFETY: the record points into `storage`, which is alive.
+        assert_eq!(unsafe { scope_spec(&resp.key_info.scope_spec) }.unwrap(), k.scope_spec);
 
-        // Every pointer points into the caller's storage, at the expected offset.
-        let offset = |p: *const c_char| {
-            // SAFETY: both pointers are into the same `storage` array.
-            unsafe { p.cast::<u8>().offset_from(base) }
-        };
-        assert_eq!(offset(resp.key_info.key_name), 0);
-        assert_eq!(offset(resp.key_info.key_id), 7);
-        assert_eq!(offset(resp.key_info.template_id), 13);
-        assert_eq!(offset(resp.key_info.provider_id), 25);
-        assert_eq!(offset(resp.key_info.policy_name), 30);
-
-        assert_eq!(&storage[..NEEDED], b"my-key\0key-0\0aes-256-gcm\0stub\0default\0");
-        // Nothing written past what storage_used reports.
-        assert!(storage[NEEDED..].iter().all(|&b| b == 0xAA));
+        let aead = ScopeSpecification::any_of(Scope::Aead(AeadScope::Streaming));
+        let mut p = Packer::measuring();
+        let c = c_scope_spec(&aead, &mut p);
+        assert_eq!(p.pos, 0, "nothing to store");
+        // SAFETY: no pointers to follow (empty lists).
+        assert_eq!(unsafe { scope_spec(&c) }.unwrap(), aead);
     }
 
     #[test]
-    fn exact_size_buffer_is_enough() {
-        let mut storage = [0u8; NEEDED];
-        let mut resp = response(&mut storage);
-        fill_key_info_response(&mut resp, &key()).unwrap();
-        assert_eq!(read(resp.key_info.policy_name), "default");
-    }
-
-    #[test]
-    fn too_small_buffer_reports_needed_and_writes_nothing_else() {
-        let mut storage = [0xAAu8; NEEDED - 1];
-        let mut resp = response(&mut storage);
-
-        let r = fill_key_info_response(&mut resp, &key());
-
-        assert!(matches!(r, Err(FfiError::BufferTooSmall { needed: NEEDED })));
-        assert_eq!(resp.storage_used, NEEDED);
-        // STORAGE CONTRACT: "writes no other field of the record".
+    fn the_measured_size_is_enough_and_one_byte_less_is_not() {
+        let k = metadata();
+        let needed = key_info_size(&k);
+        let mut exact = vec![0u8; needed];
+        fill_key_info_response(&mut response(&mut exact), &k).unwrap();
+        let mut short = vec![0xAAu8; needed - 1];
+        let mut resp = response(&mut short);
+        let r = fill_key_info_response(&mut resp, &k);
+        assert!(matches!(r, Err(FfiError::BufferTooSmall { needed: n }) if n == needed));
+        // STORAGE CONTRACT: nothing else written.
         assert!(resp.key_info.key_name.is_null());
-        assert_eq!(resp.key_info.struct_size, 0);
-        assert_eq!(resp.key_info.lifecycle_state, agc_key_lifecycle_state_AGC_KEY_LIFECYCLE_STATE_UNSPECIFIED);
-        assert!(storage.iter().all(|&b| b == 0xAA));
+        assert!(short.iter().all(|&b| b == 0xAA));
     }
 
     #[test]
     fn null_storage_is_a_size_query() {
         let mut resp = response(&mut []);
-        resp.storage.data = std::ptr::null_mut();
-        resp.storage.cap = 0;
+        resp.storage = agc_buf { data: ptr::null_mut(), cap: 0 };
+        let r = fill_key_info_response(&mut resp, &metadata());
+        assert!(matches!(r, Err(FfiError::BufferTooSmall { .. })));
+        assert_eq!(resp.storage_used, key_info_size(&metadata()));
+    }
 
-        let r = fill_key_info_response(&mut resp, &key());
-
-        assert!(matches!(r, Err(FfiError::BufferTooSmall { needed: NEEDED })));
-        assert_eq!(resp.storage_used, NEEDED);
+    #[test]
+    fn arrays_are_aligned_whatever_the_region_alignment() {
+        // An odd start for the region forces padding before the kv array.
+        let k = metadata();
+        let mut storage = vec![0u8; key_info_size(&k) + 1];
+        let mut resp = response(&mut storage[1..]);
+        fill_key_info_response(&mut resp, &k).unwrap();
+        // SAFETY: reading the union member kind selects.
+        let kvs = unsafe { resp.key_info.scope_spec.u.signature.additional_properties };
+        assert_eq!(kvs.items as usize % align_of::<agc_kv>(), 0);
+        assert_eq!(kvs.count, 2);
     }
 
     #[test]

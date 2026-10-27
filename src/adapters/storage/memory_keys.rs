@@ -6,7 +6,7 @@ use std::sync::RwLock;
 /// Keys held in process memory: lost when the context is closed.
 ///
 /// One lock guards both maps, so the name index can never disagree with the
-/// keys, and the check-then-insert in `create` is atomic.
+/// keys, and every check-then-write is atomic.
 pub struct InMemoryKeyRepository {
     state: RwLock<State>,
 }
@@ -19,25 +19,43 @@ struct State {
 
 impl InMemoryKeyRepository {
     pub fn new() -> Self {
-        InMemoryKeyRepository {
-            state: RwLock::new(State::default()),
-        }
+        InMemoryKeyRepository { state: RwLock::new(State::default()) }
     }
 }
 
 impl KeyRepository for InMemoryKeyRepository {
-    fn create(&self, k: Key) -> Result<(), Error> {
+    fn create(&self, mut k: Key) -> Result<Key, Error> {
         const OP: &str = "InMemoryKeyRepository.create";
         let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        if s.keys.contains_key(k.get_id()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key id {} exists", k.get_id().as_str())));
+        if s.keys.contains_key(k.id()) {
+            return Err(Error::new(Code::AlreadyExists, OP, format!("key id {} exists", k.id().as_str())));
         }
-        if s.names.contains_key(k.get_name()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key name {} exists", k.get_name())));
+        if s.names.contains_key(k.name()) {
+            return Err(Error::new(Code::AlreadyExists, OP, format!("key name {} exists", k.name())));
         }
-        s.names.insert(k.get_name().into(), k.get_id().clone());
-        s.keys.insert(k.get_id().clone(), k);
-        Ok(())
+        k.set_revision(1);
+        s.names.insert(k.name().into(), k.id().clone());
+        s.keys.insert(k.id().clone(), k.clone());
+        Ok(k)
+    }
+
+    fn update(&self, mut k: Key) -> Result<Key, Error> {
+        const OP: &str = "InMemoryKeyRepository.update";
+        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
+        let stored = s
+            .keys
+            .get_mut(k.id())
+            .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("no key with id {}", k.id().as_str())))?;
+        if stored.revision() != k.revision() {
+            return Err(Error::new(
+                Code::ConcurrentAccess,
+                OP,
+                format!("key {} changed since it was read; retry", k.name()),
+            ));
+        }
+        k.set_revision(k.revision() + 1);
+        *stored = k.clone();
+        Ok(k)
     }
 
     fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error> {
@@ -57,15 +75,14 @@ impl KeyRepository for InMemoryKeyRepository {
             return Err(Error::new(Code::KeyNotFound, OP, format!("no key with id {}", id.as_str())));
         };
         // Keep the name index consistent with `keys`.
-        s.names.remove(k.get_name());
+        s.names.remove(k.name());
         Ok(())
     }
 
     fn list(&self) -> Result<Vec<Key>, Error> {
         let s = self.state.read().map_err(|_| poisoned("InMemoryKeyRepository.list"))?;
-        // `names` is a HashMap; order by name explicitly.
         let mut keys: Vec<Key> = s.keys.values().cloned().collect();
-        keys.sort_by(|a, b| a.get_name().cmp(b.get_name()));
+        keys.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(keys)
     }
 }
@@ -73,93 +90,79 @@ impl KeyRepository for InMemoryKeyRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::core::ScopeKind;
-
-    fn key(id: &str, name: &str) -> Key {
-        Key::new(
-            KeyId::new(id),
-            String::from(name),
-            1,
-            String::from("aes-256-gcm"),
-            String::from("stub"),
-            String::from("default"),
-            vec![0; 32].into(),
-            ScopeKind::Aead,
-        )
-    }
+    use crate::domain::key::testing::{key, version};
 
     fn code<T: std::fmt::Debug>(r: Result<T, Error>) -> Code {
         r.unwrap_err().code()
     }
 
     #[test]
-    fn create_then_get_by_name() {
+    fn create_then_get_by_name_and_id() {
         let r = InMemoryKeyRepository::new();
-        r.create(key("key-1", "my-key")).unwrap();
-        let found = r.get_by_name("my-key").unwrap().expect("key should be found by its name");
-        assert_eq!(found.get_id().as_str(), "key-1");
-        assert_eq!(found.get_name(), "my-key");
-    }
-
-    #[test]
-    fn get_by_name_misses_unknown() {
-        let r = InMemoryKeyRepository::new();
-        r.create(key("key-1", "my-key")).unwrap();
+        let stored = r.create(key("key-1", "my-key")).unwrap();
+        assert_eq!(stored.revision(), 1);
+        assert_eq!(r.get_by_name("my-key").unwrap().unwrap().id().as_str(), "key-1");
+        assert_eq!(r.get_by_id(&KeyId::new("key-1")).unwrap().unwrap().name(), "my-key");
         assert!(r.get_by_name("unknown").unwrap().is_none());
-    }
-
-    #[test]
-    fn same_name_twice_is_rejected() {
-        let r = InMemoryKeyRepository::new();
-        r.create(key("key-1", "my-key")).unwrap();
-        assert_eq!(code(r.create(key("key-2", "my-key"))), Code::AlreadyExists);
-        // The first key is kept, not overwritten.
-        assert_eq!(r.get_by_name("my-key").unwrap().unwrap().get_id().as_str(), "key-1");
-    }
-
-    #[test]
-    fn different_names_are_both_kept() {
-        let r = InMemoryKeyRepository::new();
-        r.create(key("key-1", "a")).unwrap();
-        r.create(key("key-2", "b")).unwrap();
-        assert!(r.get_by_name("a").unwrap().is_some());
-        assert!(r.get_by_name("b").unwrap().is_some());
-    }
-
-    #[test]
-    fn create_then_get_by_id() {
-        let r = InMemoryKeyRepository::new();
-        r.create(key("key-1", "my-key")).unwrap();
-
-        let found = r.get_by_id(&KeyId::new("key-1")).unwrap().expect("key should be found by its id");
-        assert_eq!(found.get_name(), "my-key");
-
         assert!(r.get_by_id(&KeyId::new("key-2")).unwrap().is_none());
     }
 
     #[test]
-    fn same_id_twice_is_rejected() {
+    fn same_name_or_id_twice_is_rejected_and_nothing_changes() {
         let r = InMemoryKeyRepository::new();
         r.create(key("key-1", "first")).unwrap();
-
+        assert_eq!(code(r.create(key("key-2", "first"))), Code::AlreadyExists);
         assert_eq!(code(r.create(key("key-1", "second"))), Code::AlreadyExists);
-
-        // Nothing changed: the original key is still there, and "second" was not indexed.
-        assert_eq!(r.get_by_id(&KeyId::new("key-1")).unwrap().unwrap().get_name(), "first");
+        assert_eq!(r.get_by_id(&KeyId::new("key-1")).unwrap().unwrap().name(), "first");
         assert!(r.get_by_name("second").unwrap().is_none());
+    }
+
+    #[test]
+    fn update_is_optimistic() {
+        let r = InMemoryKeyRepository::new();
+        let mut a = r.create(key("key-1", "k")).unwrap();
+        let mut b = a.clone(); // read by someone else at the same revision
+
+        a.add_version(version(2)).unwrap();
+        let a = r.update(a).unwrap();
+        assert_eq!((a.revision(), r.get_by_name("k").unwrap().unwrap().current().number()), (2, 2));
+
+        // b is stale: its change would silently drop a's version 2.
+        b.add_version(version(2)).unwrap();
+        assert_eq!(code(r.update(b)), Code::ConcurrentAccess);
+
+        r.delete(a.id()).unwrap();
+        assert_eq!(code(r.update(a)), Code::KeyNotFound);
+    }
+
+    #[test]
+    fn concurrent_updates_of_one_key_admit_exactly_one() {
+        let r = InMemoryKeyRepository::new();
+        let k = r.create(key("key-1", "k")).unwrap();
+        let ok = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let mut mine = k.clone();
+                    let r = &r;
+                    s.spawn(move || {
+                        mine.add_version(version(2)).unwrap();
+                        r.update(mine).is_ok()
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).filter(|&ok| ok).count()
+        });
+        assert_eq!(ok, 1);
     }
 
     #[test]
     fn delete_removes_key_and_frees_its_name() {
         let r = InMemoryKeyRepository::new();
         r.create(key("key-1", "my-key")).unwrap();
-
         r.delete(&KeyId::new("key-1")).unwrap();
-
-        assert!(r.get_by_id(&KeyId::new("key-1")).unwrap().is_none());
         assert!(r.get_by_name("my-key").unwrap().is_none());
-        // The name index was cleaned up too, so the name can be used again.
         r.create(key("key-2", "my-key")).unwrap();
+        assert_eq!(code(r.delete(&KeyId::new("key-1"))), Code::KeyNotFound);
     }
 
     #[test]
@@ -168,29 +171,8 @@ mod tests {
         for (id, name) in [("1", "c"), ("2", "a"), ("3", "b")] {
             r.create(key(id, name)).unwrap();
         }
-        let names: Vec<_> = r.list().unwrap().iter().map(|k| k.get_name().to_owned()).collect();
+        let names: Vec<_> = r.list().unwrap().iter().map(|k| k.name().to_owned()).collect();
         assert_eq!(names, ["a", "b", "c"]);
-    }
-
-    #[test]
-    fn delete_unknown_id_is_not_found() {
-        let r = InMemoryKeyRepository::new();
-        assert_eq!(code(r.delete(&KeyId::new("key-1"))), Code::KeyNotFound);
-    }
-
-    #[test]
-    fn concurrent_creates_of_one_name_admit_exactly_one() {
-        let r = InMemoryKeyRepository::new();
-        let ok = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..16)
-                .map(|i| {
-                    let r = &r;
-                    s.spawn(move || r.create(key(&format!("key-{i}"), "contended")).is_ok())
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).filter(|&ok| ok).count()
-        });
-        assert_eq!(ok, 1);
     }
 
     #[test]

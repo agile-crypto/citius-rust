@@ -7,3 +7,5 @@ mod repository;
 
 pub use key::*;
 pub use repository::*;
+#[cfg(test)]
+pub(crate) use key::testing;

@@ -73,4 +73,11 @@ pub trait Backend: Send + Sync {
 
     /// New key material for the algorithm a template describes.
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error>;
+
+    /// Whether material for `algorithm` leaves this provider in plaintext:
+    /// stored by the core, or exportable. A stateless software provider's
+    /// material does; an HSM's non-extractable keys do not. Decides whether
+    /// a version is extractable (Go: `releasesMaterial` over the provider's
+    /// transfer description).
+    fn releases_material(&self, algorithm: &api::AlgorithmDetails) -> bool;
 }

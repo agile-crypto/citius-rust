@@ -25,6 +25,9 @@ reason. Anything that differs and is not listed here is a bug.
 | G15 | Provider matching fails with `ProviderNotFound` (or `FailedPrecondition` for a pinned provider's unmet requirements). | `ProviderNotFound` (unknown name), `ProviderIncompatible` (a pinned provider that does not serve the template), `NoMatchingProvider` (requirements unmet). When templates match the intent but no provider qualifies, creation reports `NoMatchingProvider`, not "no template". | The C API has the specific codes; the caller learns which half to change. |
 | G16 | The software provider serves RSA-PSS and RSA PKCS#1 v1.5. | The rustcrypto provider does not. | The RustCrypto `rsa` crate has an open timing side channel (RUSTSEC-2023-0071). |
 | G17 | The software provider reports implementation properties freely. | rustcrypto claims only memory safety: no FIPS validation, audit, constant-time or CVE claims. | A provider must not claim what an audit would contradict (Go's own rule). |
+| G18 | Repositories are built per request with their own lock, so a read-modify-write of a key by two requests can lose one change. | `KeyRepository::update` is optimistic: it stores a key only at the revision it was read at, else `AGC_ERR_CRYPTO_CONCURRENT_ACCESS`. | Lost updates to key versions are not acceptable; the C API has the code. |
+| G19 | `CreateKey` stores the key, then the response is built. | The response size is checked against the caller's region after the key is generated and before it is stored; a region too small creates nothing and reports the exact size needed. | The STORAGE CONTRACT for create operations (agc_key_types.h). |
+| G20 | `KeyMetadata` (the read model) is assembled from the key and its version, both of which carry material. | `app::KeyMetadata` carries no private material; listings and iterators hold only metadata. | Secrets should not travel further than the operation that needs them. |
 
 ## From the C stub (citius-c-api/src)
 

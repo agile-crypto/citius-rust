@@ -60,6 +60,10 @@ impl Backend for FakeProvider {
         self.implementation.clone()
     }
 
+    fn releases_material(&self, _algorithm: &api::AlgorithmDetails) -> bool {
+        true
+    }
+
     fn generate_key(&self, _algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error> {
         let n = self.generated.fetch_add(1, Ordering::Relaxed);
         Ok(GeneratedKey {

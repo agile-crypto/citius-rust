@@ -9,9 +9,9 @@ use std::ptr;
 use crate::bindings::*;
 // Explicit, so the names mean our implementations, not bindgen's declarations.
 use super::{
-    agc_create_key, agc_create_policy, agc_ctx_close, agc_ctx_open, agc_delete_policy, agc_last_error,
-    agc_list_policies, agc_policy_iter_free, agc_policy_iter_next, agc_rc_message, agc_rc_name, agc_read_policy,
-    agc_update_policy,
+    agc_create_key, agc_create_policy, agc_ctx_close, agc_ctx_open, agc_delete_policy, agc_key_iter_free,
+    agc_key_iter_next, agc_last_error, agc_list_keys, agc_list_policies, agc_policy_iter_free, agc_policy_iter_next,
+    agc_rc_message, agc_rc_name, agc_read_key, agc_read_policy, agc_update_policy,
 };
 
 /// The policy `open()` creates as "default": AEAD keys with one template.
@@ -335,4 +335,56 @@ fn the_configured_default_policy_applies_when_a_call_names_none() {
     assert_eq!(create(ctx, &p, &mut resp), AGC_OK as agc_rc);
     assert_eq!(s(resp.key_info.policy_name), "fallback");
     close(ctx);
+}
+
+// --- Reading and listing keys ----------------------------------------------
+
+#[test]
+fn a_too_small_region_creates_nothing() {
+    let ctx = open();
+    let mut small = [0u8; 8];
+    let mut resp = response(&mut small);
+    assert_eq!(create(ctx, &params(c"k"), &mut resp), AGC_ERR_BUFFER_TOO_SMALL);
+    let needed = resp.storage_used;
+    assert!(needed > small.len());
+
+    let mut room = vec![0u8; needed];
+    let mut resp = response(&mut room);
+    assert_eq!(create(ctx, &params(c"k"), &mut resp), AGC_OK as agc_rc, "the name is still free");
+    assert_eq!(resp.storage_used, needed, "the size reported was exact");
+    close(ctx);
+}
+
+#[test]
+fn read_and_list_keys() {
+    let ctx = open();
+    let mut storage = [0u8; 512];
+    for name in [c"b", c"a"] {
+        let mut resp = response(&mut storage);
+        assert_eq!(create(ctx, &params(name), &mut resp), AGC_OK as agc_rc);
+    }
+
+    let mut resp = response(&mut storage);
+    // SAFETY: ctx is open; the name is static; resp points to live storage.
+    assert_eq!(unsafe { agc_read_key(ctx, c"a".as_ptr(), 0, &mut resp) }, AGC_OK as agc_rc);
+    assert_eq!((s(resp.key_info.key_name), resp.key_info.version), ("a", 1));
+    // SAFETY: as above.
+    assert_eq!(unsafe { agc_read_key(ctx, c"a".as_ptr(), 2, &mut resp) }, AGC_ERR_CRYPTO_KEY_NOT_FOUND);
+
+    let mut p: agc_list_keys_params = zeroed();
+    p.struct_size = size_of::<agc_list_keys_params>();
+    let mut it = ptr::null_mut();
+    // SAFETY: ctx is open; p and it are live.
+    assert_eq!(unsafe { agc_list_keys(ctx, &p, &mut it) }, AGC_OK as agc_rc);
+    close(ctx); // the iterator holds a snapshot, not the context
+
+    let mut names = Vec::new();
+    let mut resp = response(&mut storage);
+    // SAFETY: it is live until freed below; resp points to live storage.
+    while unsafe { agc_key_iter_next(it, &mut resp) } == AGC_OK as agc_rc {
+        names.push(s(resp.key_info.key_name).to_owned());
+    }
+    assert_eq!(names, ["a", "b"]);
+    // SAFETY: freed once.
+    unsafe { agc_key_iter_free(it) };
 }

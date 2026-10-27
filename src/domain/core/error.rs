@@ -23,6 +23,10 @@ pub enum Code {
     NoMatchingProvider,
     /// The OS could not supply random bytes.
     InsufficientEntropy,
+    /// The key's lifecycle state does not allow the operation.
+    KeyOperationNotAllowed,
+    /// The record changed since it was read; retry.
+    ConcurrentAccess,
     /// Something this build does not offer.
     NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.

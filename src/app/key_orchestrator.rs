@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use crate::domain::core::{Code, Error, KeyCreationSpec, Operation};
+use super::KeyMetadata;
+use crate::domain::core::{Code, Error, KeyCreationSpec, Operation, ScopeSpecification};
 use crate::domain::key::*;
 use crate::domain::policy::{Evaluator, TemplateSecurityInfo};
 use crate::domain::provider::{ProviderRegistry, Requirements};
@@ -30,10 +32,23 @@ impl KeyOrchestrator {
     /// provider (custody), pick a template the policy allows for the intent
     /// that a qualifying provider serves, check the policy allows creating a
     /// key with it, have the provider generate the material, store the key.
-    pub fn create_key(&self, spec: KeyCreationSpec) -> Result<Key, Error> {
+    pub fn create_key(&self, spec: KeyCreationSpec) -> Result<KeyMetadata, Error> {
+        self.create_key_admitting(spec, |_| Ok::<(), Error>(()))
+    }
+
+    /// `create_key` with a last check on the finished key before it is
+    /// stored: if `admit` fails, nothing is stored and its error is returned.
+    /// The C layer uses it to refuse a response region too small for the
+    /// key's record before the key exists (agc_key_types.h, STORAGE
+    /// CONTRACT for create operations).
+    pub fn create_key_admitting<E: From<Error>>(
+        &self,
+        spec: KeyCreationSpec,
+        admit: impl FnOnce(&KeyMetadata) -> Result<(), E>,
+    ) -> Result<KeyMetadata, E> {
         const OP: &str = "KeyOrchestrator::create_key";
         if spec.name.is_empty() || spec.policy.is_empty() {
-            return Err(Error::new(Code::InvalidArgument, OP, "key name and policy are required"));
+            return Err(Error::new(Code::InvalidArgument, OP, "key name and policy are required").into());
         }
         // A request may add provider requirements but never relax the policy's.
         let implementation = self.policy.provider_requirements(&spec.policy)?.merge(&spec.provider_requirements);
@@ -59,9 +74,9 @@ impl KeyOrchestrator {
                     // templates but no provider that qualifies for any.
                     Err(e) if e.code() == Code::NoMatchingTemplate => {
                         let t = self.templates.select(&spec.scope_spec, &only_templates(allowed))?;
-                        return Err(self.providers.select(&custody(t.id())).err().unwrap_or(e));
+                        return Err(self.providers.select(&custody(t.id())).err().unwrap_or(e).into());
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(e.into()),
                 }
             }
         };
@@ -72,23 +87,84 @@ impl KeyOrchestrator {
         let provider = self.providers.select(&custody(template.id()))?;
         let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
         let material = provider.generate_key(algorithm)?.to_bytes();
-
-        let k = Key::new(
-            KeyId::generate(),
-            spec.name,
+        let provenance = Provenance {
+            extractable: provider.releases_material(algorithm),
+            approved_lineage: crate::domain::provider::unmet(
+                &provider.implementation(),
+                &crate::domain::core::ProviderRequirements { approved_generation: true, ..Default::default() },
+            )
+            .is_empty(),
+            origin: Origin::Generated,
+        };
+        let first = Version::new(
             1,
             template.id().into(),
             provider.name().into(),
-            spec.policy,
+            spec.scope_spec,
             material,
-            spec.scope_spec.scope.kind(),
+            provenance,
+            SystemTime::now(),
         );
+        let k = Key::new(KeyId::generate(), &spec.name, &spec.policy, first)?;
+        let metadata = KeyMetadata::of(&k, k.current(), &self.providers);
+        admit(&metadata)?;
         // Known gap (as in Go): if storing fails after generation, nothing
         // undoes it. Harmless for stateless providers like rustcrypto; a
         // provider that keeps keys inside itself would need compensation.
-        self.keys.create(k.clone())?;
-        Ok(k)
+        self.keys.create(k)?;
+        Ok(metadata)
     }
+
+    /// One version of a key; `None` is the current one (Go: ReadKey). Reading
+    /// metadata involves no key material, so, as in Go, it is not a policy
+    /// decision.
+    pub fn read_key(&self, name: &str, version: Option<u32>) -> Result<KeyMetadata, Error> {
+        const OP: &str = "KeyOrchestrator::read_key";
+        let k = self.keys.get_by_name(name)?.ok_or_else(|| not_found(OP, name))?;
+        let v = match version {
+            None => k.current(),
+            Some(n) => k
+                .version(n)
+                .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("key {name} has no version {n}")))?,
+        };
+        Ok(KeyMetadata::of(&k, v, &self.providers))
+    }
+
+    /// The current version of every key that passes `filter`, ordered by
+    /// name (Go: ListKeys, with the C API's filters).
+    pub fn list_keys(&self, filter: &KeyFilter) -> Result<Vec<KeyMetadata>, Error> {
+        Ok(self
+            .keys
+            .list()?
+            .iter()
+            .filter(|k| filter.admits(k))
+            .map(|k| KeyMetadata::of(k, k.current(), &self.providers))
+            .collect())
+    }
+}
+
+/// Which keys a listing returns; every field narrows, `None` admits all.
+#[derive(Debug, Clone, Default)]
+pub struct KeyFilter {
+    /// The current version must serve this intent.
+    pub scope_spec: Option<ScopeSpecification>,
+    pub provider: Option<String>,
+    pub policy: Option<String>,
+    pub state: Option<crate::proto::api::KeyLifecycleState>,
+}
+
+impl KeyFilter {
+    fn admits(&self, k: &Key) -> bool {
+        let v = k.current();
+        self.scope_spec.as_ref().is_none_or(|want| v.scope_spec().satisfies(want))
+            && self.provider.as_deref().is_none_or(|p| v.provider() == p)
+            && self.policy.as_deref().is_none_or(|p| k.policy() == p)
+            && self.state.is_none_or(|s| k.state() == s)
+    }
+}
+
+fn not_found(op: &'static str, name: &str) -> Error {
+    Error::new(Code::KeyNotFound, op, format!("no key named {name}"))
 }
 
 /// What the policy needs to know about the template, for this intent.
@@ -154,7 +230,7 @@ mod tests {
         }
     }
 
-    fn code(r: Result<Key, Error>) -> Code {
+    fn code(r: Result<KeyMetadata, Error>) -> Code {
         r.unwrap_err().code()
     }
 
@@ -162,10 +238,12 @@ mod tests {
     fn the_policys_first_matching_template_is_chosen() {
         let ko = orchestrator(&allowing(&["chacha20-poly1305", "aes-256-gcm-128-96"], &["create_key"]));
         let k = ko.create_key(spec("my-key", AEAD, None)).unwrap();
-        assert_eq!((k.get_name(), k.get_template_id(), k.get_policy()), ("my-key", "chacha20-poly1305", "p"));
-        assert_eq!((k.get_version(), k.get_provider()), (1, "rustcrypto"));
+        assert_eq!((k.name.as_str(), k.template_id.as_str(), k.policy.as_str()), ("my-key", "chacha20-poly1305", "p"));
+        assert_eq!((k.version, k.provider.as_str()), (1, "rustcrypto"));
+        assert!(k.extractable && k.public_key.is_none());
         // The provider's material, stored as its opaque bytes.
-        let material = GeneratedKey::from_bytes(k.get_material()).unwrap();
+        let stored = ko.keys.get_by_name("my-key").unwrap().unwrap();
+        let material = GeneratedKey::from_bytes(stored.current().material()).unwrap();
         assert_eq!(material.private.len(), 32);
     }
 
@@ -228,7 +306,7 @@ mod tests {
         // Only the second template has a provider.
         let ko = with_providers(TWO_AEADS, vec![Arc::new(FakeProvider::new("f", &["aes-256-gcm-128-96"]))]);
         let k = ko.create_key(spec("k", AEAD, None)).unwrap();
-        assert_eq!((k.get_template_id(), k.get_provider()), ("aes-256-gcm-128-96", "f"));
+        assert_eq!((k.template_id.as_str(), k.provider.as_str()), ("aes-256-gcm-128-96", "f"));
     }
 
     #[test]
@@ -240,10 +318,10 @@ mod tests {
                 Arc::new(FakeProvider::new("ct", &["chacha20-poly1305"]).with(|i| i.constant_time = Some(true))),
             ],
         );
-        assert_eq!(ko.create_key(spec("a", AEAD, None)).unwrap().get_provider(), "plain");
+        assert_eq!(ko.create_key(spec("a", AEAD, None)).unwrap().provider, "plain");
         let mut s = spec("b", AEAD, None);
         s.provider_requirements.constant_time = true;
-        assert_eq!(ko.create_key(s).unwrap().get_provider(), "ct");
+        assert_eq!(ko.create_key(s).unwrap().provider, "ct");
     }
 
     #[test]
@@ -262,13 +340,59 @@ mod tests {
         );
         let mut s = spec("a", AEAD, None);
         s.provider_id = Some("other".into());
-        assert_eq!(ko.create_key(s.clone()).unwrap().get_provider(), "other");
+        assert_eq!(ko.create_key(s.clone()).unwrap().provider, "other");
         s.name = "b".into();
         s.provider_id = Some("nope".into());
         assert_eq!(code(ko.create_key(s.clone())), Code::ProviderNotFound);
         s.provider_id = Some("other".into());
         s.template_id = Some("aes-256-gcm-128-96".into());
         assert_eq!(code(ko.create_key(s)), Code::ProviderIncompatible);
+    }
+
+    // --- Reading and listing ---
+
+    const SIGS_AND_AEAD: &str = r#"{"version": "1",
+        "allowed_templates": ["chacha20-poly1305", "ed25519", "ml-dsa-65"],
+        "allowed_operations": {"key_operations": ["create_key"]}}"#;
+
+    #[test]
+    fn an_admit_failure_stores_nothing() {
+        let ko = orchestrator(SIGS_AND_AEAD);
+        let refused = ko.create_key_admitting(spec("k", AEAD, None), |_| Err(Error::new(Code::Internal, "test", "no")));
+        assert_eq!(code(refused), Code::Internal);
+        assert_eq!(code(ko.read_key("k", None)), Code::KeyNotFound);
+        ko.create_key(spec("k", AEAD, None)).unwrap(); // the name is still free
+    }
+
+    #[test]
+    fn reading_returns_the_public_key_and_implementation() {
+        let ko = orchestrator(SIGS_AND_AEAD);
+        ko.create_key(spec("sig", Scope::Signature(SignatureScope::Standard), None)).unwrap();
+        let k = ko.read_key("sig", None).unwrap();
+        assert_eq!((k.template_id.as_str(), k.version), ("ed25519", 1));
+        let (public, enc) = k.public_key.unwrap();
+        assert_eq!((public.len(), enc), (44, crate::domain::provider::Encoding::SpkiDer)); // SPKI of Ed25519
+        assert_eq!(k.implementation.memory_safe_language, Some(true));
+        assert_eq!(ko.read_key("sig", Some(1)).unwrap().version, 1);
+        assert_eq!(code(ko.read_key("sig", Some(2))), Code::KeyNotFound);
+        assert_eq!(code(ko.read_key("nope", None)), Code::KeyNotFound);
+    }
+
+    #[test]
+    fn listing_filters_and_orders_by_name() {
+        let ko = orchestrator(SIGS_AND_AEAD);
+        ko.create_key(spec("b-sig", Scope::Signature(SignatureScope::Standard), None)).unwrap();
+        ko.create_key(spec("a-aead", AEAD, None)).unwrap();
+        let names = |f: &KeyFilter| ko.list_keys(f).unwrap().into_iter().map(|k| k.name).collect::<Vec<_>>();
+
+        assert_eq!(names(&KeyFilter::default()), ["a-aead", "b-sig"]);
+        let sigs = KeyFilter {
+            scope_spec: Some(ScopeSpecification::any_of(Scope::Signature(SignatureScope::Unspecified))),
+            ..Default::default()
+        };
+        assert_eq!(names(&sigs), ["b-sig"]);
+        assert!(names(&KeyFilter { policy: Some("other".into()), ..Default::default() }).is_empty());
+        assert_eq!(names(&KeyFilter { provider: Some("rustcrypto".into()), ..Default::default() }).len(), 2);
     }
 
     #[test]

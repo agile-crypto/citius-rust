@@ -66,17 +66,29 @@ static void no_template_is_a_crypto_error_with_reason(agc_ctx *ctx)
     CHECK_STR(d.reason, "CRYPTO_ERROR_NO_MATCHING_TEMPLATE");
 }
 
-static void too_small_storage_reports_the_size(agc_ctx *ctx)
+static void too_small_storage_creates_nothing(agc_ctx *ctx)
 {
+    /* STORAGE CONTRACT for create operations: a region too small for the
+     * record fails before the key exists, and reports the size needed. */
     uint8_t storage[4];
     agc_key_info_response resp;
     CHECK_RC(create(ctx, "small", storage, sizeof storage, &resp), AGC_ERR_BUFFER_TOO_SMALL);
     CHECK(resp.storage_used > sizeof storage);
     CHECK(resp.key_info.key_name == NULL);
 
+    /* The key was not created, so the same call with room succeeds... */
+    size_t needed = resp.storage_used;
+    uint8_t *room = malloc(needed);
+    CHECK_RC(create(ctx, "small", room, needed, &resp), AGC_OK);
+    CHECK_STR(resp.key_info.key_name, "small");
+    free(room);
+
+    /* ...and a NULL region is a size query that creates nothing either. */
     agc_key_info_response query;
     CHECK_RC(create(ctx, "small-query", NULL, 0, &query), AGC_ERR_BUFFER_TOO_SMALL);
     CHECK(query.storage_used > 0);
+    uint8_t enough[512];
+    CHECK_RC(create(ctx, "small-query", enough, sizeof enough, &query), AGC_OK);
 }
 
 static void invalid_arguments(agc_ctx *ctx)
@@ -119,7 +131,7 @@ static agc_rc create_with(agc_ctx *ctx, agc_create_key_params *p, agc_key_info_r
 
 static void selection_by_intent(agc_ctx *ctx)
 {
-    uint8_t storage[512];
+    uint8_t storage[4096]; /* an ML-DSA-65 public key alone is 1952 bytes */
     agc_key_info_response resp;
 
     /* Signatures that must be quantum safe: a classical template no longer qualifies. */
@@ -230,7 +242,7 @@ int main(void)
     creates_an_aead_key(ctx);
     duplicate_name_is_rejected(ctx);
     no_template_is_a_crypto_error_with_reason(ctx);
-    too_small_storage_reports_the_size(ctx);
+    too_small_storage_creates_nothing(ctx);
     invalid_arguments(ctx);
     older_params_struct_is_accepted(ctx);
     selection_by_intent(ctx);

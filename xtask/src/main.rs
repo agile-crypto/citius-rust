@@ -217,13 +217,20 @@ fn test_c() -> Result<(), String> {
 
 /// The library's unit tests under Miri, which detects undefined behaviour in
 /// unsafe code (and data races between Rust threads). Isolation is off
-/// because minting key ids reads the clock and OS randomness.
+/// because minting key ids reads the clock and OS randomness. SHA-2 uses its
+/// portable code: Miri cannot run the CPU's SHA instructions (Miri builds in
+/// its own target directory, so normal builds keep them).
 fn miri() -> Result<(), String> {
     let n = nightly()?;
     let mut flags = env::var("MIRIFLAGS").unwrap_or_default();
     flags.push_str(" -Zmiri-disable-isolation");
+    let mut rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+    rustflags.push_str(r#" --cfg sha2_backend="soft""#);
     run(
-        n.cargo().env("MIRIFLAGS", flags.trim()).args(["miri", "test", "--lib", "--package", PACKAGE]),
+        n.cargo()
+            .env("MIRIFLAGS", flags.trim())
+            .env("RUSTFLAGS", rustflags.trim())
+            .args(["miri", "test", "--lib", "--package", PACKAGE]),
         "cargo miri test",
     )
 }
