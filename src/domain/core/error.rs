@@ -17,6 +17,14 @@ pub enum Code {
     TemplateForbidden,
     NoMatchingTemplate,
     PolicyNotFound,
+    ProviderNotFound,
+    /// A named provider does not serve the template.
+    ProviderIncompatible,
+    NoMatchingProvider,
+    /// The OS could not supply random bytes.
+    InsufficientEntropy,
+    /// Something this build does not offer.
+    NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.
     PolicyViolation,
     /// An invariant the library itself is responsible for was broken, e.g. a

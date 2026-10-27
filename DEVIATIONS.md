@@ -20,6 +20,11 @@ reason. Anything that differs and is not listed here is a bug.
 | G10 | The rules JSON is re-parsed on every evaluation, through a pluggable `RulesEvaluator`. | Rules are parsed and validated once, when the policy is written, and stored parsed. There is no strategy trait yet. | One rules language exists; a trait for a second one is easy to add when it does. |
 | G11 | `Enforcer.CreatePolicy` checks for an existing name, then puts. | The repository's `create` and `update` are atomic. | Two concurrent creates of one name could both succeed. |
 | G12 | `DeletePolicy` deletes regardless of keys. | `agc_delete_policy` fails with `AGC_ERR_CRYPTO_POLICY_VIOLATION` while keys are bound to the policy (an application-layer check). | Required by agc_policy.h; the error code follows the C stub. |
+| G13 | The provider contract uses the `caas.provider.v1` messages (`providerpb`) for wire identity with remote providers. | `provider::Backend` takes and returns Rust types. | Providers here are in process; an adapter for a remote provider would translate. |
+| G14 | The stored key material is the serialized `GenerateKeyResponse`. | A small versioned format of the private bytes, the public bytes and their encodings (`GeneratedKey::to_bytes`). | No `providerpb` (G13). The encodings match Go's software provider: SEC1 or PKCS#8 private keys, SPKI or raw public keys. |
+| G15 | Provider matching fails with `ProviderNotFound` (or `FailedPrecondition` for a pinned provider's unmet requirements). | `ProviderNotFound` (unknown name), `ProviderIncompatible` (a pinned provider that does not serve the template), `NoMatchingProvider` (requirements unmet). When templates match the intent but no provider qualifies, creation reports `NoMatchingProvider`, not "no template". | The C API has the specific codes; the caller learns which half to change. |
+| G16 | The software provider serves RSA-PSS and RSA PKCS#1 v1.5. | The rustcrypto provider does not. | The RustCrypto `rsa` crate has an open timing side channel (RUSTSEC-2023-0071). |
+| G17 | The software provider reports implementation properties freely. | rustcrypto claims only memory safety: no FIPS validation, audit, constant-time or CVE claims. | A provider must not claim what an audit would contradict (Go's own rule). |
 
 ## From the C stub (citius-c-api/src)
 

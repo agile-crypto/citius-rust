@@ -1,3 +1,5 @@
+use zeroize::Zeroizing;
+
 use crate::domain::core::{ScopeKind, new_id};
 use std::fmt::Debug;
 
@@ -9,7 +11,8 @@ pub struct Key {
     template_id: String,
     provider: String,
     policy: String,
-    material: Vec<u8>,
+    /// Opaque: only the provider that made it can interpret it.
+    material: Zeroizing<Vec<u8>>,
     scope_kind: ScopeKind,
 }
 
@@ -42,7 +45,7 @@ impl Key {
         template_id: String,
         provider: String,
         policy: String,
-        material: Vec<u8>,
+        material: Zeroizing<Vec<u8>>,
         scope_kind: ScopeKind,
     ) -> Self {
         Key {

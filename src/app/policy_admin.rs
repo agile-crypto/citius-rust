@@ -64,7 +64,7 @@ mod tests {
         let admin = PolicyAdmin::new(Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new()))), keys.clone());
         admin.create("p", "{}").unwrap();
         admin.create("unused", "{}").unwrap();
-        keys.create(Key::new(KeyId::new("k1"), "k".into(), 1, "t".into(), "pr".into(), "p".into(), vec![], ScopeKind::Aead))
+        keys.create(Key::new(KeyId::new("k1"), "k".into(), 1, "t".into(), "pr".into(), "p".into(), vec![].into(), ScopeKind::Aead))
             .unwrap();
 
         let err = admin.delete("p").unwrap_err();

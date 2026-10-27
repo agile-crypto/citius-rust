@@ -185,6 +185,45 @@ static void invalid_scope_values(agc_ctx *ctx)
     CHECK_RC(create_with(ctx, &bad_kv, &resp, storage, sizeof storage), AGC_ERR_INVALID_ARGUMENT);
 }
 
+static void providers(agc_ctx *ctx)
+{
+    uint8_t storage[512];
+    agc_key_info_response resp;
+
+    agc_create_key_params p = AEAD_KEY_PARAMS("prov-1");
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_OK);
+    CHECK_STR(resp.key_info.provider_id, "rustcrypto");
+
+    /* Pinned: used, or the call fails. */
+    p.key_name = "prov-2";
+    p.provider_id = "rustcrypto";
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_OK);
+    p.key_name = "prov-3";
+    p.provider_id = "hsm-that-is-not-there";
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_ERR_CRYPTO_PROVIDER_NOT_FOUND);
+    p.provider_id = NULL;
+
+    /* rustcrypto makes no FIPS claim, so a FIPS requirement finds no provider. */
+    agc_provider_requirements req;
+    AGC_INIT(&req);
+    req.min_fips_level = AGC_FIPS_140_LEVEL_3;
+    p.provider_requirements = &req;
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_ERR_CRYPTO_NO_MATCHING_PROVIDER);
+    /* ...but memory safety, which it does substantiate, is met. */
+    AGC_INIT(&req);
+    req.memory_safe = AGC_TRUE;
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_OK);
+
+    /* What the library cannot honour is refused, not ignored. */
+    agc_kv kv[] = {{"vendor-flag", "1"}};
+    p.key_name = "prov-4";
+    req.additional = (agc_kv_list){kv, 1};
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_ERR_NOT_IMPLEMENTED);
+    p.provider_requirements = NULL;
+    p.provider_configuration = (agc_kv_list){kv, 1};
+    CHECK_RC(create_with(ctx, &p, &resp, storage, sizeof storage), AGC_ERR_NOT_IMPLEMENTED);
+}
+
 int main(void)
 {
     agc_ctx *ctx = open_embedded();
@@ -196,6 +235,7 @@ int main(void)
     older_params_struct_is_accepted(ctx);
     selection_by_intent(ctx);
     invalid_scope_values(ctx);
+    providers(ctx);
     agc_ctx_close(ctx);
     return 0;
 }

@@ -3,7 +3,8 @@ use std::ffi::{CStr, c_char};
 
 use crate::bindings::*;
 use crate::domain::core::{
-    KeyCreationSpec, PrimitiveProperties, Scope, ScopeKind, ScopeSpecification, SecurityProperties,
+    KeyCreationSpec, PrimitiveProperties, ProviderRequirements, Scope, ScopeKind, ScopeSpecification,
+    SecurityProperties,
 };
 use crate::ffi::error::FfiError;
 
@@ -199,14 +200,49 @@ pub unsafe fn scope_spec(s: &agc_scope_spec) -> Result<ScopeSpecification, FfiEr
     })
 }
 
+/// The caller's provider requirements; NULL requires nothing. A `false`
+/// tribool requires nothing either: these are minimums, never "must not".
+/// `additional` requirements cannot be checked by this library and are
+/// rejected rather than ignored.
+///
+/// # Safety
+/// `p` is NULL or a versioned struct with `struct_size` readable bytes.
+pub unsafe fn provider_requirements(p: *const agc_provider_requirements) -> Result<ProviderRequirements, FfiError> {
+    if p.is_null() {
+        return Ok(ProviderRequirements::default());
+    }
+    // SAFETY: forwarded from this function's contract.
+    let r = unsafe { crate::ffi::versioned::read(p, "provider_requirements") }?;
+    if r.additional.count != 0 {
+        return Err(FfiError::NotImplemented("provider_requirements.additional"));
+    }
+    let yes = |v, what| Ok::<_, FfiError>(tribool(v, what)? == Some(true));
+    Ok(ProviderRequirements {
+        fips_140_certified: yes(r.fips_140_certified, "provider_requirements.fips_140_certified")?,
+        min_fips_140_level: match r.min_fips_level {
+            level @ 0..=4 => level,
+            other => return Err(FfiError::invalid(format!("provider_requirements.min_fips_level {other} is not 0-4"))),
+        },
+        common_criteria_certified: yes(r.common_criteria_certified, "provider_requirements.common_criteria_certified")?,
+        formally_verified: yes(r.formally_verified, "provider_requirements.formally_verified")?,
+        memory_safe: yes(r.memory_safe, "provider_requirements.memory_safe")?,
+        constant_time: yes(r.constant_time, "provider_requirements.constant_time")?,
+        side_channel_hardened: yes(r.side_channel_hardened, "provider_requirements.side_channel_hardened")?,
+        no_known_cve: yes(r.no_known_cve, "provider_requirements.no_known_cve")?,
+        approved_generation: false,
+        prefer_hardware_accelerated: yes(r.prefer_hardware_accelerated, "provider_requirements.prefer_hardware_accelerated")?,
+    })
+}
+
 /// Converts the C request into a `KeyCreationSpec` and validates it. A
 /// request that names no policy gets `default_policy`
 /// (`agc_ctx_config.default_policy`); with neither, it is invalid.
 ///
 /// # Safety
-/// `key_name`, `policy_name` and `template_id` in `p` must each be NULL or a valid
-/// NUL-terminated string, and `scope_spec` must follow the `scope_spec`
-/// contract, for the duration of the call.
+/// The string fields of `p` must each be NULL or a valid NUL-terminated
+/// string, `scope_spec` must follow the `scope_spec` contract, and
+/// `provider_requirements` must be NULL or a valid struct, for the duration
+/// of the call.
 pub unsafe fn spec_from_params(
     p: &agc_create_key_params,
     default_policy: Option<&str>,
@@ -221,12 +257,23 @@ pub unsafe fn spec_from_params(
         .ok_or_else(|| FfiError::invalid("policy_name is required (no agc_ctx_config.default_policy is set)"))?;
     // SAFETY: template_id is NULL or a valid C string (this function's contract).
     let template_id = unsafe { optional_str(p.template_id, "template_id") }?;
+    // SAFETY: provider_id is NULL or a valid C string (this function's contract).
+    let provider_id = unsafe { optional_str(p.provider_id, "provider_id") }?;
+    // Provider configuration is not consumed by any provider yet; rejected
+    // rather than silently dropped (as the Go handler does).
+    if p.provider_configuration.count != 0 {
+        return Err(FfiError::NotImplemented("provider_configuration"));
+    }
+    // SAFETY: provider_requirements is NULL or a valid struct (agc_key.h contract).
+    let provider_requirements = unsafe { provider_requirements(p.provider_requirements) }?;
 
     Ok(KeyCreationSpec {
         name: name.to_owned(),
         policy: policy.to_owned(),
         template_id: template_id.map(str::to_owned),
         scope_spec,
+        provider_id: provider_id.map(str::to_owned),
+        provider_requirements,
     })
 }
 

@@ -68,6 +68,11 @@ fn code_rc(code: Code) -> agc_rc {
         Code::TemplateForbidden => AGC_ERR_CRYPTO_TEMPLATE_FORBIDDEN,
         Code::NoMatchingTemplate => AGC_ERR_CRYPTO_NO_MATCHING_TEMPLATE,
         Code::PolicyNotFound => AGC_ERR_CRYPTO_POLICY_NOT_FOUND,
+        Code::ProviderNotFound => AGC_ERR_CRYPTO_PROVIDER_NOT_FOUND,
+        Code::ProviderIncompatible => AGC_ERR_CRYPTO_PROVIDER_INCOMPATIBLE,
+        Code::NoMatchingProvider => AGC_ERR_CRYPTO_NO_MATCHING_PROVIDER,
+        Code::InsufficientEntropy => AGC_ERR_CRYPTO_INSUFFICIENT_ENTROPY,
+        Code::NotImplemented => AGC_ERR_NOT_IMPLEMENTED,
         Code::PolicyViolation => AGC_ERR_CRYPTO_POLICY_VIOLATION,
         Code::Internal => AGC_ERR_INTERNAL,
     }
@@ -102,6 +107,11 @@ mod tests {
             Code::TemplateForbidden,
             Code::NoMatchingTemplate,
             Code::PolicyNotFound,
+            Code::ProviderNotFound,
+            Code::ProviderIncompatible,
+            Code::NoMatchingProvider,
+            Code::InsufficientEntropy,
+            Code::NotImplemented,
             Code::PolicyViolation,
             Code::Internal,
         ];

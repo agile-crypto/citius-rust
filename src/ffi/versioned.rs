@@ -35,6 +35,7 @@ c_structs!(
     agc_ctx_config,
     agc_error_detail,
     agc_create_key_params,
+    agc_provider_requirements,
     agc_key_info_response,
     agc_create_policy_request,
     agc_update_policy_request,

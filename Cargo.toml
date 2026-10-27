@@ -4,9 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+der = "0.8"
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "alloc", "zeroize"] }
+elliptic-curve = { version = "0.14", features = ["arithmetic", "sec1", "pkcs8", "alloc"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 libc = "0.2"
+ml-dsa = { version = "0.1.1", features = ["pkcs8", "alloc", "zeroize"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
+p384 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
+p521 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
 pbjson = "0.9.0"
 pbjson-types = "0.9.0"
+pkcs8 = "0.11"
 prost = "0.14.4"
 serde = "1.0.229"
 serde_json = "1.0.154"

@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use crate::adapters::providers::RustCrypto;
 use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
-use crate::app::{KeyOrchestrator, PolicyAdmin};
+use crate::app::{KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
+use crate::domain::provider::ProviderRegistry;
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
 use crate::ffi::translation::optional_str;
@@ -38,10 +40,15 @@ impl Context {
         // the configuration is copied, so it need not outlive this call).
         let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
 
+        let templates = Arc::new(InMemoryTemplateRegistry::standard());
+        let mut providers = ProviderRegistry::new();
+        providers.register(Arc::new(RustCrypto))?;
+        validate_providers(&providers, templates.as_ref())?;
+
         let keys = Arc::new(InMemoryKeyRepository::new());
         let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
         Ok(Context {
-            keys: KeyOrchestrator::new(keys.clone(), Arc::new(InMemoryTemplateRegistry::standard()), policy.clone()),
+            keys: KeyOrchestrator::new(keys.clone(), templates, Arc::new(providers), policy.clone()),
             policies: PolicyAdmin::new(policy, keys),
             default_policy,
         })

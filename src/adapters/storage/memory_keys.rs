@@ -83,7 +83,7 @@ mod tests {
             String::from("aes-256-gcm"),
             String::from("stub"),
             String::from("default"),
-            vec![0; 32],
+            vec![0; 32].into(),
             ScopeKind::Aead,
         )
     }
