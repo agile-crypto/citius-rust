@@ -18,3 +18,6 @@ syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
+
+[workspace]
+members = [".", "xtask"]

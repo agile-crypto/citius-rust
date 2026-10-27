@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# The library reads its headers from a sibling citius-c-api checkout at the
+# revision in HEADERS_PIN (see README). actions/checkout cannot write outside
+# the workspace, so both repositories are checked out side by side inside it:
+#   $GITHUB_WORKSPACE/rust-api       this repository
+#   $GITHUB_WORKSPACE/citius-c-api   the headers, at the pinned revision
+# citius-c-api is a separate repository: CITIUS_C_API_SSH_KEY is the private
+# half of a read-only deploy key on it.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build, lint, test (Rust and C)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust-api
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: rust-api
+
+      - name: Read the header pin
+        id: pin
+        run: echo "rev=$(cat HEADERS_PIN)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: citius/citius-c-api
+          ref: ${{ steps.pin.outputs.rev }}
+          ssh-key: ${{ secrets.CITIUS_C_API_SSH_KEY }}
+          path: citius-c-api
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          sudo apt-get update && sudo apt-get install -y libclang-dev clang
+
+      - name: Clippy
+        # Dead code is allowed while the API is only partly implemented: the
+        # domain types are built ahead of the exports that will use them.
+        run: cargo clippy --workspace --all-targets -- -D warnings -A dead_code
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: C tests (plain, ASan+UBSan) and exported-symbol check
+        run: cargo xtask test-c
+
+  sanitizers:
+    name: Miri and ThreadSanitizer
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust-api
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: rust-api
+
+      - name: Read the header pin
+        id: pin
+        run: echo "rev=$(cat HEADERS_PIN)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: citius/citius-c-api
+          ref: ${{ steps.pin.outputs.rev }}
+          ssh-key: ${{ secrets.CITIUS_C_API_SSH_KEY }}
+          path: citius-c-api
+
+      - name: Install toolchains
+        # Nightly is pinned so that a nightly regression cannot break main
+        # without a code change; bump it deliberately.
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup toolchain install nightly-2026-10-26 --profile minimal --component miri --component rust-src
+          sudo apt-get update && sudo apt-get install -y libclang-dev clang
+
+      - name: Miri
+        env:
+          XTASK_NIGHTLY: nightly-2026-10-26
+        run: cargo xtask miri
+
+      - name: ThreadSanitizer
+        env:
+          XTASK_NIGHTLY: nightly-2026-10-26
+        run: cargo xtask tsan
+
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
