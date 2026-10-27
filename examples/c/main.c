@@ -3,7 +3,7 @@
  *
  * Build and run (from the crate root):
  *   cargo build
- *   cc -Wall -Wextra -I include examples/c/main.c -L target/debug -lapi_test_extended -o target/c_example
+ *   cc -Wall -Wextra -I ../citius-c-api/include/agc examples/c/main.c -L target/debug -lagilecrypto -o target/c_example
  *   ./target/c_example
  */
 

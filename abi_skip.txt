@@ -1,29 +1,30 @@
 # Header functions that are not implemented yet, one name per line.
 # Implementing a function means deleting its line here; build.rs then
 # checks its signature against the header. Blank lines and # comments
-# are ignored.
+# are ignored. Grouped by the header that declares the function.
 
-# core (agc_core.h, agc_types.h)
-agc_rc_message
-agc_version
-agc_version_string
-agc_build_info
+# agc_core.h (18)
 agc_ctx_reinit_after_fork
 agc_ctx_mode
-agc_last_error
-agc_clear_error
-agc_secure_zero
-agc_ct_equal
-agc_secure_alloc
-agc_secure_free
 agc_session_id
 agc_session_operation
 agc_session_selected_template_id
 agc_session_cancel
 agc_session_free
 agc_session_attach
+agc_metadata_decode
 
-# key management (agc_key.h)
+# agc_types.h (84)
+
+# agc_metadata.h (6)
+agc_metadata_encode
+agc_metadata_decode_body
+agc_metadata_storage_len
+agc_metadata_peek_key_version
+agc_metadata_max_encoded_len
+agc_envelope_split
+
+# agc_key.h (12)
 agc_read_key
 agc_list_keys
 agc_key_iter_next
@@ -37,87 +38,103 @@ agc_validate_key_operation
 agc_export_key
 agc_import_key
 
-# enum helpers (agc_types.h)
-agc_signature_scope_name
-agc_signature_scope_from_name
-agc_aead_scope_name
-agc_aead_scope_from_name
-agc_mac_scope_name
-agc_mac_scope_from_name
-agc_kem_scope_name
-agc_kem_scope_from_name
-agc_key_agreement_scope_name
-agc_key_agreement_scope_from_name
-agc_kdf_scope_name
-agc_kdf_scope_from_name
-agc_hash_scope_name
-agc_hash_scope_from_name
-agc_key_wrapping_scope_name
-agc_key_wrapping_scope_from_name
-agc_symmetric_cipher_scope_name
-agc_symmetric_cipher_scope_from_name
-agc_disk_encryption_scope_name
-agc_disk_encryption_scope_from_name
-agc_generic_secret_scope_name
-agc_generic_secret_scope_from_name
-agc_asymmetric_encryption_scope_name
-agc_asymmetric_encryption_scope_from_name
-agc_key_lifecycle_state_name
-agc_key_lifecycle_state_from_name
-agc_nist_security_level_name
-agc_nist_security_level_from_name
-agc_nist_status_name
-agc_nist_status_from_name
-agc_wrap_format_name
-agc_wrap_format_from_name
-agc_key_format_name
-agc_key_format_from_name
-agc_crypto_operation_name
-agc_crypto_operation_from_name
-agc_hash_algorithm_name
-agc_hash_algorithm_from_name
-agc_elliptic_curve_name
-agc_elliptic_curve_from_name
-agc_padding_scheme_name
-agc_padding_scheme_from_name
-agc_signature_format_name
-agc_signature_format_from_name
-agc_mask_generation_function_name
-agc_mask_generation_function_from_name
-agc_argon2_variant_name
-agc_argon2_variant_from_name
-agc_ed25519_variant_name
-agc_ed25519_variant_from_name
-agc_ed448_variant_name
-agc_ed448_variant_from_name
-agc_key_type_name
-agc_key_type_from_name
-agc_crypto_primitive_name
-agc_crypto_primitive_from_name
-agc_ml_dsa_parameter_set_name
-agc_ml_dsa_parameter_set_from_name
-agc_ml_kem_parameter_set_name
-agc_ml_kem_parameter_set_from_name
-agc_slh_dsa_hash_type_name
-agc_slh_dsa_hash_type_from_name
-agc_slh_dsa_parameter_set_name
-agc_slh_dsa_parameter_set_from_name
-agc_ecdh_kdf_type_name
-agc_ecdh_kdf_type_from_name
-agc_template_status_name
-agc_template_status_from_name
-agc_fips140_level_name
-agc_fips140_level_from_name
-agc_provider_type_name
-agc_provider_type_from_name
-agc_migration_strategy_name
-agc_migration_strategy_from_name
-agc_hkdf_salt_type_name
-agc_hkdf_salt_type_from_name
-agc_sp800108_data_type_name
-agc_sp800108_data_type_from_name
-agc_policy_denial_reason_name
-agc_policy_denial_reason_from_name
-agc_combiner_strategy_name
-agc_combiner_strategy_from_name
-agc_rc_name
+# agc_crypto.h (14)
+agc_encrypt
+agc_decrypt
+agc_sign
+agc_verify
+agc_digest_sign
+agc_digest_verify
+agc_hash_algorithm_output_len
+agc_generate_mac
+agc_verify_mac
+agc_digest
+agc_xof
+agc_generate_random
+agc_random_bytes
+agc_seed_random
+
+# agc_stream.h (43)
+agc_encrypt_init
+agc_encrypt_update
+agc_encrypt_final
+agc_decrypt_init
+agc_decrypt_update
+agc_decrypt_final
+agc_encrypt_message_init
+agc_encrypt_message
+agc_encrypt_message_begin
+agc_encrypt_message_next
+agc_encrypt_message_final
+agc_decrypt_message_init
+agc_decrypt_message
+agc_decrypt_message_begin
+agc_decrypt_message_next
+agc_decrypt_message_final
+agc_sign_init
+agc_sign_update
+agc_sign_final
+agc_verify_init
+agc_verify_update
+agc_verify_final
+agc_sign_message_init
+agc_sign_message
+agc_sign_message_begin
+agc_sign_message_next
+agc_sign_message_final
+agc_verify_message_init
+agc_verify_message
+agc_verify_message_begin
+agc_verify_message_next
+agc_verify_message_final
+agc_digest_init
+agc_digest_update
+agc_digest_key
+agc_digest_final
+agc_xof_init
+agc_xof_update
+agc_xof_final
+agc_digest_encrypt_update
+agc_decrypt_digest_update
+agc_sign_encrypt_update
+agc_decrypt_verify_update
+
+# agc_establish.h (6)
+agc_wrap_key
+agc_unwrap_key
+agc_derive_key
+agc_key_agreement
+agc_encapsulate_key
+agc_decapsulate_key
+
+# agc_policy.h (9)
+agc_create_policy
+agc_update_policy
+agc_read_policy
+agc_delete_policy
+agc_list_policies
+agc_policy_iter_next
+agc_policy_iter_free
+agc_evaluate_policy
+agc_batch_evaluate_policy
+
+# agc_discovery.h (5)
+agc_list_templates
+agc_template_iter_next
+agc_template_iter_free
+agc_get_template
+agc_list_scopes
+
+# agc_provider.h (12)
+agc_list_providers
+agc_provider_iter_next
+agc_provider_iter_free
+agc_get_provider
+agc_register_provider_instance
+agc_list_provider_instances
+agc_provider_instance_iter_next
+agc_provider_instance_iter_free
+agc_get_provider_instance
+agc_update_provider_instance
+agc_delete_provider_instance
+agc_match_providers
