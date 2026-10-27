@@ -60,6 +60,8 @@ fn code_rc(code: Code) -> agc_rc {
         Code::AlreadyExists => AGC_ERR_ALREADY_EXISTS,
         Code::KeyNotFound => AGC_ERR_CRYPTO_KEY_NOT_FOUND,
         Code::TemplateNotFound => AGC_ERR_CRYPTO_TEMPLATE_NOT_FOUND,
+        Code::TemplateDeprecated => AGC_ERR_CRYPTO_TEMPLATE_DEPRECATED,
+        Code::TemplateForbidden => AGC_ERR_CRYPTO_TEMPLATE_FORBIDDEN,
         Code::NoMatchingTemplate => AGC_ERR_CRYPTO_NO_MATCHING_TEMPLATE,
         Code::Internal => AGC_ERR_INTERNAL,
     }
@@ -90,6 +92,8 @@ mod tests {
             Code::AlreadyExists,
             Code::KeyNotFound,
             Code::TemplateNotFound,
+            Code::TemplateDeprecated,
+            Code::TemplateForbidden,
             Code::NoMatchingTemplate,
             Code::Internal,
         ];

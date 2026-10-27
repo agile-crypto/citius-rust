@@ -83,7 +83,7 @@ fn create_key_end_to_end() {
     let info = &resp.key_info;
     assert_eq!(s(info.key_name), "k1");
     assert_eq!(s(info.policy_name), "default");
-    assert_eq!(s(info.template_id), "aes-256-gcm");
+    assert_eq!(s(info.template_id), "aes-128-gcm-128-96");
     assert!(s(info.key_id).starts_with("key_"));
     assert_eq!(info.version, 1);
     close(ctx);
@@ -133,7 +133,7 @@ fn older_params_struct_is_read_only_up_to_its_size() {
     let mut storage = [0u8; 256];
     let mut resp = response(&mut storage);
     assert_eq!(create(ctx, &frame.p, &mut resp), AGC_OK as agc_rc);
-    assert_eq!(s(resp.key_info.template_id), "aes-256-gcm");
+    assert_eq!(s(resp.key_info.template_id), "aes-128-gcm-128-96");
     close(ctx);
 }
 

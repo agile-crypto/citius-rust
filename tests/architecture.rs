@@ -2,7 +2,8 @@
 //! source. With a single crate the compiler cannot enforce them, so this test
 //! does what Go's package system and import graph do for citius-core:
 //!
-//! - a domain uses `domain::core` and itself, nothing else;
+//! - a domain uses `domain::core`, itself, and the generated API types
+//!   (`proto`, the shared vocabulary Go's core gets from citius-api-go);
 //! - `domain::core` uses nothing outside itself;
 //! - nothing below `ffi` knows the C types (`bindings`) or `ffi`;
 //! - `adapters` implement domain interfaces and know nothing of `app`.
@@ -108,7 +109,7 @@ fn is_below(path: &str, module: &str) -> bool {
 fn domains_use_only_core_and_themselves() {
     check("domain", |file, path| {
         let own = format!("crate::domain::{}", domain_of(file));
-        is_below(path, "crate::domain::core") || is_below(path, &own)
+        is_below(path, "crate::domain::core") || is_below(path, &own) || is_below(path, "crate::proto")
     });
 }
 
@@ -122,7 +123,7 @@ fn application_layer_does_not_know_c() {
 #[test]
 fn adapters_depend_on_domains_only() {
     check("adapters", |_, path| {
-        is_below(path, "crate::domain") || is_below(path, "crate::adapters")
+        is_below(path, "crate::domain") || is_below(path, "crate::adapters") || is_below(path, "crate::proto")
     });
 }
 

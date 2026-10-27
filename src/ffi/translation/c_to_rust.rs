@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char};
 
 use crate::bindings::*;
-use crate::domain::core::{KeyCreationSpec, ScopeKind};
+use crate::domain::core::{
+    KeyCreationSpec, PrimitiveProperties, Scope, ScopeKind, ScopeSpecification, SecurityProperties,
+};
 use crate::ffi::error::FfiError;
 
 /// Turns a C string pointer into a `&CStr`; NULL becomes `None`.
@@ -49,7 +52,6 @@ pub unsafe fn optional_str<'a>(p: *const c_char, what: &str) -> Result<Option<&'
 
 /// The C scope kind as a domain value. `NONE` and values this header does
 /// not name are rejected: a C enum can hold any integer.
-#[allow(non_upper_case_globals)] // bindgen's constant names
 pub fn scope_kind(kind: agc_scope_kind) -> Result<ScopeKind, FfiError> {
     Ok(match kind {
         agc_scope_kind_AGC_SCOPE_KIND_SIGNATURE => ScopeKind::Signature,
@@ -69,13 +71,143 @@ pub fn scope_kind(kind: agc_scope_kind) -> Result<ScopeKind, FfiError> {
     })
 }
 
+/// A proto enum from the C value of the same enum. agc_types.h is generated
+/// from the proto, so the numbers are the same; values the proto does not
+/// name are rejected.
+fn proto_enum<E: TryFrom<i32>>(v: u32, what: &str) -> Result<E, FfiError> {
+    i32::try_from(v)
+        .ok()
+        .and_then(|v| E::try_from(v).ok())
+        .ok_or_else(|| FfiError::invalid(format!("{what} {v} is not a known value")))
+}
+
+pub fn tribool(v: agc_tribool, what: &str) -> Result<Option<bool>, FfiError> {
+    match v {
+        agc_tribool_AGC_UNSET => Ok(None),
+        agc_tribool_AGC_FALSE => Ok(Some(false)),
+        agc_tribool_AGC_TRUE => Ok(Some(true)),
+        other => Err(FfiError::invalid(format!("{what} {other} is not an agc_tribool"))),
+    }
+}
+
+/// All-zero means "no requirements" and becomes `None`: Go's matching treats a
+/// present security filter as "the template must declare security
+/// properties", which a caller who set nothing did not ask for.
+fn security(s: &agc_security_properties) -> Result<Option<SecurityProperties>, FfiError> {
+    let p = SecurityProperties {
+        strength_bits: s.security_strength_bits,
+        nist_level: proto_enum(s.nist_security_level, "security.nist_security_level")?,
+        quantum_safe: tribool(s.quantum_safe, "security.quantum_safe")?,
+        nist_status: proto_enum(s.nist_status, "security.nist_status")?,
+        fips_approved: tribool(s.fips_approved, "security.fips_approved")?,
+    };
+    Ok((p != SecurityProperties::default()).then_some(p))
+}
+
+/// A proto `map<string, string>`: NULL items with a non-zero count, NULL or
+/// non-UTF-8 strings and duplicate keys are rejected (agc_abi.h).
+///
+/// # Safety
+/// `list.items` is NULL or points to `list.count` entries whose strings are
+/// NULL or valid C strings, for the duration of the call.
+pub unsafe fn kv_list(list: &agc_kv_list, what: &str) -> Result<BTreeMap<String, String>, FfiError> {
+    if list.count == 0 {
+        return Ok(BTreeMap::new());
+    }
+    if list.items.is_null() {
+        return Err(FfiError::invalid(format!("{what}.items is NULL but count is {}", list.count)));
+    }
+    // SAFETY: items is non-null and has count entries (this function's contract).
+    let items = unsafe { std::slice::from_raw_parts(list.items, list.count) };
+    let mut map = BTreeMap::new();
+    for kv in items {
+        // SAFETY: key and value are NULL or valid C strings (this function's contract).
+        let key = unsafe { null_check_c_string(kv.key) }.ok_or_else(|| FfiError::invalid(format!("{what}: NULL key")))?;
+        // SAFETY: as above.
+        let value =
+            unsafe { null_check_c_string(kv.value) }.ok_or_else(|| FfiError::invalid(format!("{what}: NULL value")))?;
+        let (key, value) = match (key.to_str(), value.to_str()) {
+            (Ok(k), Ok(v)) => (k.to_owned(), v.to_owned()),
+            _ => return Err(FfiError::invalid(format!("{what}: strings must be UTF-8"))),
+        };
+        if map.insert(key.clone(), value).is_some() {
+            return Err(FfiError::invalid(format!("{what}: duplicate key {key:?}")));
+        }
+    }
+    Ok(map)
+}
+
+/// The C scope specification as a domain value. The family's scope value 0
+/// (UNSPECIFIED) means "any scope of this kind".
+///
+/// # Safety
+/// The `additional_properties` list of the member `s.kind` selects follows
+/// the `kv_list` contract.
+pub unsafe fn scope_spec(s: &agc_scope_spec) -> Result<ScopeSpecification, FfiError> {
+    // Each arm reads the union member that `kind` selects. Every member is
+    // made of integers and raw pointers, so the read itself is always defined;
+    // reading the selected one is what makes the values meaningful.
+    macro_rules! member {
+        ($field:ident, $variant:ident, $what:literal) => {{
+            // SAFETY: see above.
+            let m = unsafe { &s.u.$field };
+            (Scope::$variant(proto_enum(m.scope, concat!("scope_spec.u.", $what, ".scope"))?), &m.security, &m.additional_properties)
+        }};
+    }
+    let mut props = PrimitiveProperties::default();
+    let (scope, sec, additional) = match scope_kind(s.kind)? {
+        ScopeKind::Signature => {
+            // SAFETY: kind selects the signature member (see above).
+            let m = unsafe { &s.u.signature };
+            props.non_malleable = tribool(m.non_malleable, "scope_spec.u.signature.non_malleable")?;
+            props.deterministic = tribool(m.deterministic, "scope_spec.u.signature.deterministic")?;
+            member!(signature, Signature, "signature")
+        }
+        ScopeKind::Aead => {
+            // SAFETY: kind selects the aead member.
+            let m = unsafe { &s.u.aead };
+            props.nonce_misuse_resistant = tribool(m.nonce_misuse_resistant, "scope_spec.u.aead.nonce_misuse_resistant")?;
+            member!(aead, Aead, "aead")
+        }
+        ScopeKind::KeyAgreement => {
+            // SAFETY: kind selects the key_agreement member.
+            let m = unsafe { &s.u.key_agreement };
+            props.forward_secrecy = tribool(m.forward_secrecy, "scope_spec.u.key_agreement.forward_secrecy")?;
+            member!(key_agreement, KeyAgreement, "key_agreement")
+        }
+        ScopeKind::Kdf => {
+            // SAFETY: kind selects the kdf member.
+            let m = unsafe { &s.u.kdf };
+            props.memory_hard = tribool(m.memory_hard, "scope_spec.u.kdf.memory_hard")?;
+            member!(kdf, Kdf, "kdf")
+        }
+        ScopeKind::Mac => member!(mac, Mac, "mac"),
+        ScopeKind::Kem => member!(kem, Kem, "kem"),
+        ScopeKind::Hash => member!(hash, Hash, "hash"),
+        ScopeKind::KeyWrapping => member!(key_wrapping, KeyWrapping, "key_wrapping"),
+        ScopeKind::SymmetricCipher => member!(symmetric_cipher, SymmetricCipher, "symmetric_cipher"),
+        ScopeKind::GenericSecret => member!(generic_secret, GenericSecret, "generic_secret"),
+        ScopeKind::DiskEncryption => member!(disk_encryption, DiskEncryption, "disk_encryption"),
+        ScopeKind::AsymmetricEncryption => member!(asymmetric_encryption, AsymmetricEncryption, "asymmetric_encryption"),
+    };
+    Ok(ScopeSpecification {
+        scope,
+        security: security(sec)?,
+        properties: props,
+        // SAFETY: forwarded from this function's contract.
+        additional: unsafe { kv_list(additional, "scope_spec additional_properties") }?,
+    })
+}
+
 /// Converts the C request into a `KeyCreationSpec` and validates it.
 ///
 /// # Safety
 /// `key_name`, `policy_name` and `template_id` in `p` must each be NULL or a valid
-/// NUL-terminated string for the duration of the call.
+/// NUL-terminated string, and `scope_spec` must follow the `scope_spec`
+/// contract, for the duration of the call.
 pub unsafe fn spec_from_params(p: &agc_create_key_params) -> Result<KeyCreationSpec, FfiError> {
-    let scope_kind = scope_kind(p.scope_spec.kind)?;
+    // SAFETY: forwarded from this function's contract.
+    let scope_spec = unsafe { scope_spec(&p.scope_spec) }?;
     // SAFETY: key_name is NULL or a valid C string (this function's contract).
     let name = unsafe { required_str(p.key_name, "key_name") }?;
     // SAFETY: policy_name is NULL or a valid C string (this function's contract).
@@ -87,13 +219,14 @@ pub unsafe fn spec_from_params(p: &agc_create_key_params) -> Result<KeyCreationS
         name: name.to_owned(),
         policy: policy.to_owned(),
         template_id: template_id.map(str::to_owned),
-        scope_kind,
+        scope_spec,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::api;
 
     fn convert(p: &agc_create_key_params) -> Result<KeyCreationSpec, FfiError> {
         // SAFETY: test params hold only NULL or 'static C string literals.
@@ -117,7 +250,8 @@ mod tests {
         assert_eq!(spec.name, "k");
         assert_eq!(spec.policy, "default");
         assert_eq!(spec.template_id, None);
-        assert_eq!(spec.scope_kind, ScopeKind::Aead);
+        // Only the kind is set: any AEAD scope, no further requirements.
+        assert_eq!(spec.scope_spec, ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Unspecified)));
     }
 
     #[test]
@@ -125,8 +259,8 @@ mod tests {
         let mut p = params();
         p.template_id = c"".as_ptr();
         assert_eq!(convert(&p).unwrap().template_id, None);
-        p.template_id = c"aes-256-gcm".as_ptr();
-        assert_eq!(convert(&p).unwrap().template_id.as_deref(), Some("aes-256-gcm"));
+        p.template_id = c"aes-128-gcm-128-96".as_ptr();
+        assert_eq!(convert(&p).unwrap().template_id.as_deref(), Some("aes-128-gcm-128-96"));
     }
 
     #[test]
@@ -143,6 +277,44 @@ mod tests {
         let mut p = params();
         p.key_name = c"\xff".as_ptr();
         assert!(matches!(convert(&p), Err(FfiError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn scope_and_requirements_are_converted() {
+        let kvs = [agc_kv { key: c"vendor".as_ptr(), value: c"x".as_ptr() }];
+        let mut p = params();
+        // Writing a union member is safe; kind selects the aead member.
+        p.scope_spec.u.aead.scope = agc_aead_scope_AGC_AEAD_SCOPE_DETERMINISTIC;
+        p.scope_spec.u.aead.nonce_misuse_resistant = agc_tribool_AGC_TRUE;
+        p.scope_spec.u.aead.security.security_strength_bits = 256;
+        p.scope_spec.u.aead.security.quantum_safe = agc_tribool_AGC_FALSE;
+        p.scope_spec.u.aead.additional_properties = agc_kv_list { items: kvs.as_ptr(), count: 1 };
+        let spec = convert(&p).unwrap().scope_spec;
+        assert_eq!(spec.scope, Scope::Aead(api::AeadScope::Deterministic));
+        assert_eq!(spec.properties.nonce_misuse_resistant, Some(true));
+        let sec = spec.security.unwrap();
+        assert_eq!((sec.strength_bits, sec.quantum_safe), (256, Some(false)));
+        assert_eq!(spec.additional.get("vendor").map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn bad_scope_values_are_rejected() {
+        let dup = [
+            agc_kv { key: c"k".as_ptr(), value: c"1".as_ptr() },
+            agc_kv { key: c"k".as_ptr(), value: c"2".as_ptr() },
+        ];
+        let cases: [fn(&mut agc_create_key_params, *const agc_kv); 5] = [
+            |p, _| p.scope_spec.u.aead.scope = 77,
+            |p, _| p.scope_spec.u.aead.nonce_misuse_resistant = 3,
+            |p, _| p.scope_spec.u.aead.security.nist_status = 42,
+            |p, _| p.scope_spec.u.aead.additional_properties = agc_kv_list { items: std::ptr::null(), count: 1 },
+            |p, items| p.scope_spec.u.aead.additional_properties = agc_kv_list { items, count: 2 },
+        ];
+        for (i, set) in cases.iter().enumerate() {
+            let mut p = params();
+            set(&mut p, dup.as_ptr());
+            assert!(matches!(convert(&p), Err(FfiError::InvalidArgument(_))), "case {i}");
+        }
     }
 
     #[test]

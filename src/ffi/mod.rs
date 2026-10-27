@@ -3,6 +3,9 @@
 //! the application or a domain service, convert the result back and map
 //! errors to `agc_rc` (in `error.rs` only).
 
+// bindgen names C enum constants `agc_<enum>_AGC_<VALUE>`; they appear in patterns.
+#![allow(non_upper_case_globals)]
+
 mod context;
 mod error;
 pub mod exports;

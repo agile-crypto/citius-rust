@@ -22,17 +22,17 @@ impl KeyOrchestrator {
             Some(tid) => only_templates(vec![tid]),
             None => all_templates(),
         };
-        let template = self.templates.select(spec.scope_kind, &candidates)?;
+        let template = self.templates.select(&spec.scope_spec, &candidates)?;
         let material = vec![0u8; 32]; // TODO replace by real creation.
         let k = Key::new(
             KeyId::generate(),
             spec.name,
             1,
-            template.get_id().into(),
+            template.id().into(),
             "stub".into(),
             spec.policy,
             material,
-            spec.scope_kind,
+            spec.scope_spec.scope.kind(),
         );
         self.keys.create(k.clone())?;
         Ok(k)
@@ -43,21 +43,24 @@ impl KeyOrchestrator {
 mod tests {
     use super::*;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryTemplateRegistry};
-    use crate::domain::core::{Code, ScopeKind};
+    use crate::domain::core::{Code, Scope, ScopeSpecification};
+    use crate::proto::api::{AeadScope, HashScope};
 
     fn orchestrator() -> KeyOrchestrator {
         KeyOrchestrator::new(
             Arc::new(InMemoryKeyRepository::new()),
-            Arc::new(InMemoryTemplateRegistry::with_defaults()),
+            Arc::new(InMemoryTemplateRegistry::standard()),
         )
     }
 
-    fn spec(name: &str, kind: ScopeKind, template_id: Option<&str>) -> KeyCreationSpec {
+    const AEAD: Scope = Scope::Aead(AeadScope::Standard);
+
+    fn spec(name: &str, scope: Scope, template_id: Option<&str>) -> KeyCreationSpec {
         KeyCreationSpec {
             name: String::from(name),
             policy: String::from("default"),
             template_id: template_id.map(String::from),
-            scope_kind: kind,
+            scope_spec: ScopeSpecification::any_of(scope),
         }
     }
 
@@ -65,10 +68,10 @@ mod tests {
     fn aead_without_template_id_uses_default() {
         let ko = orchestrator();
         let k = ko
-            .create_key(spec("my-key", ScopeKind::Aead, None))
+            .create_key(spec("my-key", AEAD, None))
             .expect("AEAD key should be created");
         assert_eq!(k.get_name(), "my-key");
-        assert_eq!(k.get_template_id(), "aes-256-gcm");
+        assert_eq!(k.get_template_id(), "aes-128-gcm-128-96");
         assert_eq!(k.get_version(), 1);
         assert_eq!(k.get_policy(), "default");
     }
@@ -76,22 +79,22 @@ mod tests {
     #[test]
     fn same_name_twice_is_rejected() {
         let ko = orchestrator();
-        ko.create_key(spec("my-key", ScopeKind::Aead, None)).unwrap();
-        let second = ko.create_key(spec("my-key", ScopeKind::Aead, None));
+        ko.create_key(spec("my-key", AEAD, None)).unwrap();
+        let second = ko.create_key(spec("my-key", AEAD, None));
         assert_eq!(second.unwrap_err().code(), Code::AlreadyExists);
     }
 
     #[test]
     fn explicit_template_of_wrong_kind_does_not_match() {
         let ko = orchestrator();
-        let r = ko.create_key(spec("my-key", ScopeKind::Aead, Some("hmac-sha256")));
+        let r = ko.create_key(spec("my-key", AEAD, Some("hmac-sha256-256")));
         assert_eq!(r.unwrap_err().code(), Code::NoMatchingTemplate);
     }
 
     #[test]
     fn kind_without_default_template_does_not_match() {
         let ko = orchestrator();
-        let r = ko.create_key(spec("my-key", ScopeKind::Kem, None));
+        let r = ko.create_key(spec("my-key", Scope::Hash(HashScope::Standard), None));
         assert_eq!(r.unwrap_err().code(), Code::NoMatchingTemplate);
     }
 

@@ -13,6 +13,8 @@ pub enum Code {
     AlreadyExists,
     KeyNotFound,
     TemplateNotFound,
+    TemplateDeprecated,
+    TemplateForbidden,
     NoMatchingTemplate,
     /// An invariant the library itself is responsible for was broken, e.g. a
     /// lock poisoned by an earlier panic.

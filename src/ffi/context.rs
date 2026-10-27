@@ -29,7 +29,7 @@ impl Context {
         Ok(Context {
             keys: KeyOrchestrator::new(
                 Arc::new(InMemoryKeyRepository::new()),
-                Arc::new(InMemoryTemplateRegistry::with_defaults()),
+                Arc::new(InMemoryTemplateRegistry::standard()),
             ),
         })
     }

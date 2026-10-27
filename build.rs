@@ -14,9 +14,16 @@ const DEFAULT_INCLUDE_DIR: &str = "../citius-c-api/include/agc";
 fn main() {
     println!("cargo:rerun-if-changed={SKIP_FILE}");
     println!("cargo:rerun-if-env-changed=AGC_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=AGC_DESCRIPTOR");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let include_dir = env::var("AGC_INCLUDE_DIR").unwrap_or_else(|_| DEFAULT_INCLUDE_DIR.to_owned());
+
+    // The API's protobuf types, from the descriptor citius-c-api pins next
+    // to its headers (conformance/api_descriptor.binpb).
+    let descriptor = env::var("AGC_DESCRIPTOR")
+        .unwrap_or_else(|_| format!("{include_dir}/../../conformance/api_descriptor.binpb"));
+    generate_protos(&descriptor, &out_path);
 
     // bindgen::Builder is the main part that does the magic
     let bindings = bindgen::Builder::default()
@@ -64,6 +71,34 @@ fn main() {
         }
     }
     fs::write(out_path.join("abi_checks.rs"), checks).expect("Couldn't write abi checks");
+}
+
+/// Rust types (prost) and their protobuf-JSON form (pbjson) for every
+/// `caas.*` file in the descriptor. `google.protobuf` maps to pbjson_types;
+/// `buf.validate` and `google.api` carry only annotations and are dropped.
+fn generate_protos(descriptor: &str, out_path: &std::path::Path) {
+    use prost::Message as _;
+    println!("cargo:rerun-if-changed={descriptor}");
+    let bytes = fs::read(descriptor).unwrap_or_else(|e| panic!("Couldn't read {descriptor}: {e}"));
+    let mut fds = prost_types::FileDescriptorSet::decode(bytes.as_slice()).expect("descriptor is not a FileDescriptorSet");
+    // prost needs the google.protobuf definitions to resolve the extern path.
+    fds.file.retain(|f| f.package().starts_with("caas.") || f.package() == "google.protobuf");
+
+    let proto_out = out_path.join("proto");
+    fs::create_dir_all(&proto_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&proto_out)
+        // Replaces prost's default mapping to prost_types (pbjson's recipe).
+        .compile_well_known_types()
+        .extern_path(".google.protobuf", "::pbjson_types")
+        .compile_fds(fds)
+        .expect("prost code generation failed");
+    pbjson_build::Builder::new()
+        .out_dir(&proto_out)
+        .register_descriptors(&bytes)
+        .expect("pbjson cannot read the descriptor")
+        .build(&[".caas"])
+        .expect("pbjson code generation failed");
 }
 
 /// Name and parameter count of every function in the bindings' `extern "C"` blocks.
