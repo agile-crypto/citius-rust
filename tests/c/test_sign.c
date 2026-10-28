@@ -259,11 +259,11 @@ static void digest_signatures(agc_ctx *ctx)
     CHECK_RC(digest_sign(ctx, "p256pre", digest, 32, AGC_HASH_ALGORITHM_UNSPECIFIED, &s), AGC_ERR_INVALID_ARGUMENT);
     /* ... and be one the algorithm accepts: no SHA-1, nothing weaker than the curve. */
     CHECK_RC(digest_sign(ctx, "p256pre", digest, 20, AGC_HASH_ALGORITHM_SHA1, &s),
-             AGC_ERR_CRYPTO_INCOMPATIBLE_PARAMETERS);
+             AGC_ERR_INVALID_ARGUMENT);
     CHECK_RC(digest_sign(ctx, "p384pre", digest, 32, AGC_HASH_ALGORITHM_SHA256, &s),
-             AGC_ERR_CRYPTO_INCOMPATIBLE_PARAMETERS);
+             AGC_ERR_INVALID_ARGUMENT);
     CHECK_RC(digest_sign(ctx, "edph", digest, 48, AGC_HASH_ALGORITHM_SHA384, &s),
-             AGC_ERR_CRYPTO_INCOMPATIBLE_PARAMETERS);
+             AGC_ERR_INVALID_ARGUMENT);
     /* A message key does not sign digests, nor a digest key messages. */
     CHECK_RC(digest_sign(ctx, "ed25519", digest, 64, AGC_HASH_ALGORITHM_SHA512, &s),
              AGC_ERR_CRYPTO_KEY_OPERATION_NOT_ALLOWED);

@@ -39,7 +39,7 @@ impl SignInput<'_> {
                 }
                 let Some(len) = hash_output_len(hash) else {
                     return Err(Error::new(
-                        Code::IncompatibleParameters,
+                        Code::InvalidArgument,
                         OP,
                         format!("{hash:?} has no fixed digest length; digest signing needs one"),
                     ));
@@ -334,12 +334,12 @@ mod tests {
         let weak = SignInput::Digest { digest: &sha1, hash: HashAlgorithm::Sha1 };
         assert_eq!(
             code(w.crypto.sign_sizes(&sign("pre", weak, SignContext::None), MetadataEncoding::WireV1)),
-            Code::IncompatibleParameters
+            Code::InvalidArgument
         );
         let unspecified = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Unspecified };
         assert_eq!(code(w.crypto.sign(sign("pre", unspecified, SignContext::None))), Code::InvalidArgument);
         let xof = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Shake256 };
-        assert_eq!(code(w.crypto.sign(sign("pre", xof, SignContext::None))), Code::IncompatibleParameters);
+        assert_eq!(code(w.crypto.sign(sign("pre", xof, SignContext::None))), Code::InvalidArgument);
     }
 
     #[test]

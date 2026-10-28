@@ -75,7 +75,7 @@ fn scheme(algorithm: &api::AlgorithmDetails) -> Result<Scheme, Error> {
                 && !accepted_digests(Scheme::Ecdsa { curve, hash: None }).contains(&h)
             {
                 return Err(Error::new(
-                    Code::IncompatibleParameters,
+                    Code::InvalidArgument,
                     OP,
                     format!("{h:?} is weaker than the curve {curve:?} requires"),
                 ));
@@ -117,7 +117,7 @@ fn accepted_digests(s: Scheme) -> &'static [HashAlgorithm] {
 fn check_digest(s: Scheme, digest: &[u8], hash: HashAlgorithm) -> Result<(), Error> {
     if !accepted_digests(s).contains(&hash) {
         return Err(Error::new(
-            Code::IncompatibleParameters,
+            Code::InvalidArgument,
             OP,
             format!("{hash:?} digests are not accepted by this key's algorithm (accepted: {:?})", accepted_digests(s)),
         ));
@@ -163,7 +163,7 @@ fn context(s: Scheme, c: &SignContext) -> Result<Option<&[u8]>, Error> {
             Err(Error::new(Code::InvalidArgument, OP, format!("a context has at most 255 bytes, not {}", c.len())))
         }
         (_, SignContext::Domain(_)) => {
-            Err(Error::new(Code::IncompatibleParameters, OP, "this key's algorithm takes no domain context"))
+            Err(Error::new(Code::InvalidArgument, OP, "this key's algorithm takes no domain context"))
         }
     }
 }
@@ -571,7 +571,7 @@ mod tests {
         if let Some(Algorithm::Ecdsa(p)) = a.algorithm.as_mut() {
             p.hash = HashAlgorithm::Sha256 as i32;
         }
-        assert_eq!(scheme(&a).unwrap_err().code(), Code::IncompatibleParameters);
+        assert_eq!(scheme(&a).unwrap_err().code(), Code::InvalidArgument);
     }
 
     #[test]
@@ -598,7 +598,7 @@ mod tests {
         for id in ["ecdsa-p256-sha256-der", "ed25519"] {
             let (k, a) = key(id);
             let err = RustCrypto.sign(&k, &a, b"m", &SignContext::Domain(b"c".to_vec())).unwrap_err();
-            assert_eq!(err.code(), Code::IncompatibleParameters, "{id}");
+            assert_eq!(err.code(), Code::InvalidArgument, "{id}");
         }
     }
 
@@ -626,7 +626,7 @@ mod tests {
             let short = sha(HashAlgorithm::Sha256, b"m");
             let err =
                 RustCrypto.sign_digest(&k, &a, &short[..28], HashAlgorithm::Sha224, &SignContext::None).unwrap_err();
-            assert_eq!(err.code(), Code::IncompatibleParameters, "{id}");
+            assert_eq!(err.code(), Code::InvalidArgument, "{id}");
             let err = RustCrypto.sign_digest(&k, &a, &short, HashAlgorithm::Sha512, &SignContext::None).unwrap_err();
             assert_eq!(err.code(), Code::InvalidArgument, "{id}");
         }
