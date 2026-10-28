@@ -66,6 +66,7 @@ dependencies = [
  "prost-types",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "syn 2.0.119",
  "ulid",

@@ -16,7 +16,6 @@ agc_session_attach
 # agc_types.h (84)
 
 # agc_metadata.h (6)
-agc_metadata_max_encoded_len
 
 # agc_key.h (12)
 agc_delete_key
@@ -26,11 +25,6 @@ agc_export_key
 agc_import_key
 
 # agc_crypto.h (14)
-agc_sign
-agc_verify
-agc_digest_sign
-agc_digest_verify
-agc_hash_algorithm_output_len
 agc_generate_mac
 agc_verify_mac
 agc_digest

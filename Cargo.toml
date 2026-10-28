@@ -11,11 +11,11 @@ chacha20poly1305 = "0.11.0"
 cipher = "0.5"
 ctr = "0.10.1"
 der = "0.8"
-ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "alloc", "zeroize"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "alloc", "zeroize", "digest"] }
 elliptic-curve = { version = "0.14", features = ["arithmetic", "sec1", "pkcs8", "alloc"] }
 getrandom = { version = "0.4", features = ["sys_rng"] }
 libc = "0.2"
-ml-dsa = { version = "0.1.1", features = ["pkcs8", "alloc", "zeroize"] }
+ml-dsa = { version = "0.1.1", features = ["pkcs8", "alloc", "zeroize", "rand_core"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
 p384 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
 p521 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
@@ -25,6 +25,7 @@ pkcs8 = "0.11"
 prost = "0.14.4"
 serde = "1.0.229"
 serde_json = "1.0.154"
+sha2 = "0.11"
 subtle = "2"
 ulid = "1"
 zeroize = "1"

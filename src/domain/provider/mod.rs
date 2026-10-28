@@ -5,6 +5,7 @@ mod backend;
 mod cipher;
 mod material;
 mod registry;
+mod signer;
 mod transfer;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -13,4 +14,5 @@ pub use backend::*;
 pub use cipher::*;
 pub use material::*;
 pub use registry::*;
+pub use signer::*;
 pub use transfer::*;

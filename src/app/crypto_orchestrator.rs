@@ -8,7 +8,7 @@ use crate::domain::core::{Code, Error, Operation, Scope};
 use crate::domain::crypto::metadata::{self, MetadataEncoding};
 use crate::domain::key::{Key, KeyRepository, Version};
 use crate::domain::policy::Evaluator;
-use crate::domain::provider::{Backend, Cipher, EncryptParams, GeneratedKey, ProviderRegistry};
+use crate::domain::provider::{Backend, Cipher, EncryptParams, GeneratedKey, ProviderRegistry, Signer};
 use crate::domain::template::{Template, TemplateRegistry};
 use crate::proto::api::{self, provider_output::AlgorithmOutput};
 
@@ -58,18 +58,18 @@ pub struct Decrypted {
 }
 
 /// A key version resolved for an operation.
-struct Resolved {
-    version: Version,
+pub(super) struct Resolved {
+    pub(super) version: Version,
     template: Template,
     provider: Arc<dyn Backend>,
 }
 
 impl Resolved {
-    fn algorithm(&self) -> &api::AlgorithmDetails {
+    pub(super) fn algorithm(&self) -> &api::AlgorithmDetails {
         self.template.info().algorithm.as_ref().expect("templates always have an algorithm")
     }
 
-    fn material(&self) -> Result<GeneratedKey, Error> {
+    pub(super) fn material(&self) -> Result<GeneratedKey, Error> {
         GeneratedKey::from_bytes(self.version.material())
     }
 
@@ -78,11 +78,17 @@ impl Resolved {
             Error::new(Code::NotImplemented, "CryptoOrchestrator", format!("provider {} cannot encrypt", self.provider.name()))
         })
     }
+
+    pub(super) fn signer(&self) -> Result<&dyn Signer, Error> {
+        self.provider.as_signer().ok_or_else(|| {
+            Error::new(Code::NotImplemented, "CryptoOrchestrator", format!("provider {} cannot sign", self.provider.name()))
+        })
+    }
 }
 
 /// Which lifecycle rule an operation follows.
 #[derive(Clone, Copy)]
-enum Direction {
+pub(super) enum Direction {
     /// Creates protected data: sign, encrypt. Only an ACTIVE key.
     Originating,
     /// Processes existing protected data: verify, decrypt. Also SUSPENDED and
@@ -104,7 +110,7 @@ impl CryptoOrchestrator {
     /// 2-6): the key, its lifecycle rule, the version (current, or the one
     /// the metadata names), the policy, the template's declaration of the
     /// operation for the version's scope, and the version's provider.
-    fn resolve(
+    pub(super) fn resolve(
         &self,
         key_name: &str,
         version: Option<u32>,
@@ -164,7 +170,7 @@ impl CryptoOrchestrator {
         Ok(())
     }
 
-    fn metadata(version: u32, output: api::ProviderOutput, user_context: BTreeMap<String, String>) -> api::OperationMetadata {
+    pub(super) fn metadata(version: u32, output: api::ProviderOutput, user_context: BTreeMap<String, String>) -> api::OperationMetadata {
         api::OperationMetadata { key_version: version, provider_output: Some(output), api_version: API_VERSION.into(), user_context }
     }
 
@@ -215,6 +221,40 @@ impl CryptoOrchestrator {
         Ok(r)
     }
 
+    /// An upper bound on the encoded metadata any operation on `key_name`
+    /// produces in `enc` with `user_context` (agc_metadata_max_encoded_len):
+    /// the largest output shape over the key's versions, with the largest
+    /// key version, so the bound survives later rotations. A sizing aid
+    /// only: no lifecycle or policy check, as for a size query.
+    pub fn metadata_max_len(
+        &self,
+        key_name: &str,
+        enc: MetadataEncoding,
+        user_context: &BTreeMap<String, String>,
+    ) -> Result<usize, Error> {
+        let key = self.keys.get_by_name(key_name)?.ok_or_else(|| not_found("CryptoOrchestrator", key_name))?;
+        let mut shapes = vec![no_output()];
+        for v in key.versions() {
+            let Some(template) = self.templates.get(v.template_id()) else { continue };
+            let Some(provider) = self.providers.get(v.provider()) else { continue };
+            let algorithm = template.info().algorithm.as_ref().expect("templates always have an algorithm");
+            let shape = match v.scope_spec().scope {
+                Scope::Signature(_) => provider.as_signer().map(|s| s.output_shape(algorithm)),
+                Scope::Aead(_) | Scope::SymmetricCipher(_) => provider.as_cipher().map(|c| c.output_shape(algorithm)),
+                _ => None,
+            };
+            if let Some(Ok(shape)) = shape {
+                shapes.push(shape);
+            }
+        }
+        let mut max = 0;
+        for shape in shapes {
+            let md = Self::metadata(u32::MAX, shape, user_context.clone());
+            max = max.max(metadata::encode(&md, enc)?.len());
+        }
+        Ok(max)
+    }
+
     /// Decrypts with the version the metadata names (Go: Decrypt). On an
     /// authentication failure no plaintext is released.
     pub fn decrypt(&self, req: DecryptRequest) -> Result<Decrypted, Error> {
@@ -230,19 +270,19 @@ impl CryptoOrchestrator {
 }
 
 /// Empty input is refused, as in Go: it protects nothing.
-fn non_empty(b: &[u8], what: &str) -> Result<(), Error> {
+pub(super) fn non_empty(b: &[u8], what: &str) -> Result<(), Error> {
     if b.is_empty() {
         return Err(Error::new(Code::InvalidArgument, "CryptoOrchestrator", format!("{what} must not be empty")));
     }
     Ok(())
 }
 
-fn no_output() -> api::ProviderOutput {
+pub(super) fn no_output() -> api::ProviderOutput {
     api::ProviderOutput { encoding: String::new(), algorithm_output: Some(AlgorithmOutput::NoOutput(api::NoAlgorithmOutput {})) }
 }
 
 /// A provider must always set an output kind (Go: requireProviderOutput).
-fn require_output(o: &api::ProviderOutput) -> Result<(), Error> {
+pub(super) fn require_output(o: &api::ProviderOutput) -> Result<(), Error> {
     if o.algorithm_output.is_none() {
         return Err(Error::new(Code::ProviderContractViolation, "CryptoOrchestrator", "the provider returned no output kind"));
     }

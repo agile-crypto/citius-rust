@@ -191,6 +191,11 @@ impl Key {
         self.versions.last().expect("a key always has a version")
     }
 
+    /// Every version, oldest first.
+    pub fn versions(&self) -> &[Version] {
+        &self.versions
+    }
+
     /// Version `n`, 1-based.
     pub fn version(&self, n: u32) -> Option<&Version> {
         n.checked_sub(1).and_then(|i| self.versions.get(i as usize))

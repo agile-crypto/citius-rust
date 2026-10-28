@@ -388,3 +388,213 @@ fn read_and_list_keys() {
     // SAFETY: freed once.
     unsafe { agc_key_iter_free(it) };
 }
+
+mod sign {
+    use std::ptr;
+
+    use super::*;
+    use crate::ffi::exports::{
+        agc_digest_sign, agc_hash_algorithm_output_len, agc_metadata_max_encoded_len, agc_sign, agc_verify,
+    };
+
+    const SIGN_POLICY: &CStr = cr#"{"version": "1",
+        "allowed_templates": ["ed25519", "ecdsa-p256-prehashed-der"],
+        "allowed_operations": {"key_operations": ["create_key", "sign", "verify", "digest_sign"]}}"#;
+
+    /// A context with an Ed25519 key "ed" under the policy "sig".
+    fn open_with_key() -> *mut agc_ctx {
+        let ctx = open();
+        assert_eq!(create_policy(ctx, c"sig", SIGN_POLICY), AGC_OK as agc_rc);
+        let mut p = params(c"ed");
+        p.policy_name = c"sig".as_ptr();
+        p.template_id = c"ed25519".as_ptr();
+        p.scope_spec.kind = agc_scope_kind_AGC_SCOPE_KIND_SIGNATURE;
+        // Writing a union member is safe; kind names it.
+        p.scope_spec.u.signature.scope = agc_signature_scope_AGC_SIGNATURE_SCOPE_STANDARD;
+        let mut storage = vec![0u8; 4096];
+        assert_eq!(create(ctx, &p, &mut response(&mut storage)), AGC_OK as agc_rc);
+        ctx
+    }
+
+    fn no_context() -> agc_sign_params {
+        let mut p: agc_sign_params = zeroed();
+        p.struct_size = size_of::<agc_sign_params>();
+        p.kind = agc_sign_params_kind_AGC_SIGN_PARAMS_NO_CONTEXT;
+        p
+    }
+
+    fn input(b: &[u8]) -> agc_slice {
+        agc_slice { data: b.as_ptr(), len: b.len() }
+    }
+
+    fn region(b: &mut [u8]) -> agc_buf {
+        agc_buf { data: b.as_mut_ptr(), cap: b.len() }
+    }
+
+    fn sign_request(message: &[u8], params: &agc_sign_params) -> agc_sign_request {
+        let mut r: agc_sign_request = zeroed();
+        r.struct_size = size_of::<agc_sign_request>();
+        r.key_name = c"ed".as_ptr();
+        r.input = input(message);
+        r.params = params;
+        r.metadata_encoding = agc_encoding_AGC_ENCODING_WIRE_V1;
+        r
+    }
+
+    fn sign(ctx: *mut agc_ctx, req: &agc_sign_request, resp: &mut agc_sign_response) -> agc_rc {
+        // SAFETY: ctx is open; req's pointers and resp's regions are live locals of the caller.
+        unsafe { agc_sign(ctx, req, resp) }
+    }
+
+    fn verify(ctx: *mut agc_ctx, req: &agc_verify_request, resp: &mut agc_verify_response) -> agc_rc {
+        // SAFETY: as in sign.
+        unsafe { agc_verify(ctx, req, resp) }
+    }
+
+    #[test]
+    fn sign_size_query_then_sign_then_verify() {
+        let ctx = open_with_key();
+        let params = no_context();
+        let req = sign_request(b"hello", &params);
+
+        // A size query: NULL regions, every length set, nothing signed.
+        let mut resp: agc_sign_response = zeroed();
+        resp.struct_size = size_of::<agc_sign_response>();
+        assert_eq!(sign(ctx, &req, &mut resp), AGC_ERR_BUFFER_TOO_SMALL);
+        assert_eq!(resp.signature_len, 64);
+        assert!(resp.metadata_len > 0);
+        assert_eq!(resp.key_version, 0, "nothing was signed");
+
+        let (mut sig, mut md) = (vec![0u8; resp.signature_len], vec![0u8; resp.metadata_len]);
+        resp.signature = region(&mut sig);
+        resp.metadata = region(&mut md);
+        assert_eq!(sign(ctx, &req, &mut resp), AGC_OK as agc_rc);
+        assert_eq!((resp.signature_len, resp.key_version), (64, 1));
+        assert_eq!(md[0], agc_encoding_AGC_ENCODING_WIRE_V1 as u8, "encoding byte first");
+
+        let mut vreq: agc_verify_request = zeroed();
+        vreq.struct_size = size_of::<agc_verify_request>();
+        vreq.key_name = c"ed".as_ptr();
+        vreq.input = input(b"hello");
+        vreq.signature = input(&sig);
+        vreq.metadata = input(&md[..resp.metadata_len]);
+        vreq.params = &params;
+        let mut vmd = vec![0u8; 256];
+        let mut vresp: agc_verify_response = zeroed();
+        vresp.struct_size = size_of::<agc_verify_response>();
+        vresp.metadata = region(&mut vmd);
+        assert_eq!(verify(ctx, &vreq, &mut vresp), AGC_OK as agc_rc);
+        assert_eq!((vresp.valid, vresp.key_version), (1, 1));
+        assert_eq!(vmd[0], agc_encoding_AGC_ENCODING_WIRE_V1 as u8, "the request's encoding");
+
+        // Fail closed twice: the rc and valid.
+        sig[0] ^= 1;
+        assert_eq!(verify(ctx, &vreq, &mut vresp), AGC_ERR_CRYPTO_SIGNATURE_INVALID);
+        assert_eq!((vresp.valid, vresp.metadata_len), (0, 0));
+        assert_eq!(last_error().rc, AGC_ERR_CRYPTO_SIGNATURE_INVALID);
+
+        // Without metadata: the latest version, and a WIRE_V1 response.
+        sig[0] ^= 1;
+        vreq.metadata = agc_slice { data: ptr::null(), len: 0 };
+        vmd.fill(0);
+        assert_eq!(verify(ctx, &vreq, &mut vresp), AGC_OK as agc_rc);
+        assert_eq!((vresp.valid, vmd[0]), (1, agc_encoding_AGC_ENCODING_WIRE_V1 as u8));
+        close(ctx);
+    }
+
+    #[test]
+    fn verify_sets_valid_to_zero_before_anything_can_fail() {
+        let mut vresp: agc_verify_response = zeroed();
+        vresp.struct_size = size_of::<agc_verify_response>();
+        vresp.valid = 1;
+        vresp.key_version = 7;
+        let mut vreq: agc_verify_request = zeroed();
+        vreq.struct_size = size_of::<agc_verify_request>();
+        // SAFETY: a NULL context is part of the contract (rejected); the structs are live locals.
+        assert_eq!(unsafe { agc_verify(ptr::null_mut(), &vreq, &mut vresp) }, AGC_ERR_INVALID_ARGUMENT);
+        assert_eq!((vresp.valid, vresp.key_version), (0, 0));
+    }
+
+    #[test]
+    fn sign_params_are_read_by_their_kind() {
+        let ctx = open_with_key();
+        let mut params = no_context();
+        let mut resp: agc_sign_response = zeroed();
+        resp.struct_size = size_of::<agc_sign_response>();
+
+        params.kind = agc_sign_params_kind_AGC_SIGN_PARAMS_NONE;
+        assert_eq!(sign(ctx, &sign_request(b"m", &params), &mut resp), AGC_ERR_INVALID_ARGUMENT);
+        params.kind = agc_sign_params_kind_AGC_SIGN_PARAMS_VENDOR;
+        assert_eq!(sign(ctx, &sign_request(b"m", &params), &mut resp), AGC_ERR_NOT_IMPLEMENTED);
+        // A domain context on a STANDARD-scope key is refused, after the
+        // context bytes were read from the union.
+        params.kind = agc_sign_params_kind_AGC_SIGN_PARAMS_DOMAIN_CONTEXT;
+        let mut context = [0u8; 255];
+        context[..3].copy_from_slice(b"app");
+        // Writing a whole union member is safe; kind names the one in use.
+        params.u.domain_context = agc_signature_domain_context { context, context_len: 3 };
+        assert_eq!(sign(ctx, &sign_request(b"m", &params), &mut resp), AGC_ERR_INVALID_ARGUMENT);
+        let reason = s(last_error().message);
+        assert!(reason.contains("domain context"), "{reason}");
+        let mut req = sign_request(b"m", &params);
+        req.params = ptr::null();
+        assert_eq!(sign(ctx, &req, &mut resp), AGC_ERR_INVALID_ARGUMENT);
+        close(ctx);
+    }
+
+    #[test]
+    fn digest_sign_refuses_a_digest_of_the_wrong_length() {
+        let ctx = open_with_key();
+        let params = no_context();
+        let digest = [0u8; 32];
+        let mut req: agc_digest_sign_request = zeroed();
+        req.struct_size = size_of::<agc_digest_sign_request>();
+        req.key_name = c"ed".as_ptr();
+        req.digest = input(&digest);
+        req.params = &params;
+        req.hash_algorithm = agc_hash_algorithm_AGC_HASH_ALGORITHM_SHA512;
+        req.metadata_encoding = agc_encoding_AGC_ENCODING_PROTOBUF;
+        let mut resp: agc_sign_response = zeroed();
+        resp.struct_size = size_of::<agc_sign_response>();
+        // SAFETY: ctx is open; the structs are live locals.
+        assert_eq!(unsafe { agc_digest_sign(ctx, &req, &mut resp) }, AGC_ERR_INVALID_ARGUMENT);
+        req.hash_algorithm = 999;
+        // SAFETY: as above.
+        assert_eq!(unsafe { agc_digest_sign(ctx, &req, &mut resp) }, AGC_ERR_INVALID_ARGUMENT);
+        close(ctx);
+    }
+
+    #[test]
+    fn hash_output_lengths() {
+        assert_eq!(agc_hash_algorithm_output_len(agc_hash_algorithm_AGC_HASH_ALGORITHM_SHA256), 32);
+        assert_eq!(agc_hash_algorithm_output_len(agc_hash_algorithm_AGC_HASH_ALGORITHM_SHA512_224), 28);
+        assert_eq!(agc_hash_algorithm_output_len(agc_hash_algorithm_AGC_HASH_ALGORITHM_SHA3_384), 48);
+        for zero in [
+            agc_hash_algorithm_AGC_HASH_ALGORITHM_UNSPECIFIED,
+            agc_hash_algorithm_AGC_HASH_ALGORITHM_SHAKE256,
+            agc_hash_algorithm_AGC_HASH_ALGORITHM_OTHER,
+            12345,
+        ] {
+            assert_eq!(agc_hash_algorithm_output_len(zero), 0, "{zero}");
+        }
+    }
+
+    #[test]
+    fn metadata_max_encoded_len_bounds_the_real_metadata() {
+        let ctx = open_with_key();
+        let params = no_context();
+        let req = sign_request(b"m", &params);
+        let empty = agc_kv_list { items: ptr::null(), count: 0 };
+        // SAFETY: ctx is open; the key name is a literal.
+        let max = unsafe { agc_metadata_max_encoded_len(ctx, c"ed".as_ptr(), agc_encoding_AGC_ENCODING_WIRE_V1, empty) };
+        let mut resp: agc_sign_response = zeroed();
+        resp.struct_size = size_of::<agc_sign_response>();
+        assert_eq!(sign(ctx, &req, &mut resp), AGC_ERR_BUFFER_TOO_SMALL);
+        assert!(max >= resp.metadata_len && resp.metadata_len > 0, "{max} vs {}", resp.metadata_len);
+        // SAFETY: as above.
+        let unknown = unsafe { agc_metadata_max_encoded_len(ctx, c"nope".as_ptr(), agc_encoding_AGC_ENCODING_WIRE_V1, empty) };
+        assert_eq!(unknown, 0);
+        assert_eq!(last_error().rc, AGC_ERR_CRYPTO_KEY_NOT_FOUND);
+        close(ctx);
+    }
+}

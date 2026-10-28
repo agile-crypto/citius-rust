@@ -1,4 +1,4 @@
-use super::{Cipher, GeneratedKey, Transfer};
+use super::{Cipher, GeneratedKey, Signer, Transfer};
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -83,6 +83,11 @@ pub trait Backend: Send + Sync {
     /// The encrypt/decrypt capability, if the provider has it (Go: a type
     /// assertion on `provider.Cipher`).
     fn as_cipher(&self) -> Option<&dyn Cipher> {
+        None
+    }
+
+    /// The sign/verify capability, if the provider has it.
+    fn as_signer(&self) -> Option<&dyn Signer> {
         None
     }
 }

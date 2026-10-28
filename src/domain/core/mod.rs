@@ -1,6 +1,7 @@
 //! Shared vocabulary. Every domain imports this module; it imports no domain.
 
 mod error;
+mod hash;
 mod id;
 mod operation;
 mod provider_requirements;
@@ -8,6 +9,7 @@ mod scope;
 mod spec;
 
 pub use error::*;
+pub use hash::*;
 pub use id::*;
 pub use operation::*;
 pub use provider_requirements::*;

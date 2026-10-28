@@ -20,6 +20,9 @@ pub enum FfiError {
     NotImplemented(&'static str),
     /// The normal end of a listing.
     IteratorExhausted,
+    /// A verification that ran and failed (the D9 contract's rc; `valid`
+    /// stays 0 as well).
+    SignatureInvalid,
 }
 
 impl From<Error> for FfiError {
@@ -41,6 +44,7 @@ impl FfiError {
             FfiError::BufferTooSmall { .. } => AGC_ERR_BUFFER_TOO_SMALL,
             FfiError::NotImplemented(_) => AGC_ERR_NOT_IMPLEMENTED,
             FfiError::IteratorExhausted => AGC_ERR_ITERATOR_EXHAUSTED,
+            FfiError::SignatureInvalid => AGC_ERR_CRYPTO_SIGNATURE_INVALID,
         }
     }
 
@@ -54,6 +58,7 @@ impl FfiError {
             FfiError::BufferTooSmall { needed } => format!("storage too small: {needed} bytes needed"),
             FfiError::NotImplemented(what) => format!("{what} is not implemented"),
             FfiError::IteratorExhausted => "no more items".to_owned(),
+            FfiError::SignatureInvalid => "the signature does not verify".to_owned(),
         }
     }
 }

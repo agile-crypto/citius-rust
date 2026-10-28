@@ -33,12 +33,12 @@ unsafe fn encrypt_params(p: *const agc_encrypt_params) -> Result<EncryptParams, 
 }
 
 /// An output region too small for `len` bytes (a NULL region always is).
-fn short(region: agc_buf, len: usize) -> bool {
+pub(super) fn short(region: agc_buf, len: usize) -> bool {
     region.data.is_null() || region.cap < len
 }
 
 /// Copies `bytes` into a region `short` has accepted.
-fn put(region: agc_buf, bytes: &[u8]) {
+pub(super) fn put(region: agc_buf, bytes: &[u8]) {
     // SAFETY: the region is non-null with at least bytes.len() writable bytes
     // (checked by `short` before any work), distinct from `bytes`.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), region.data, bytes.len()) };

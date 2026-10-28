@@ -2,5 +2,6 @@
 
 mod rustcrypto;
 mod rustcrypto_cipher;
+mod rustcrypto_signer;
 
 pub use rustcrypto::*;
