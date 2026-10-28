@@ -2,12 +2,14 @@
 //! one use case. Depends on domain interfaces only; never on `bindings` or
 //! `ffi`.
 
+mod crypto_orchestrator;
 mod key_metadata;
 mod key_migration;
 mod key_orchestrator;
 mod policy_admin;
 mod startup;
 
+pub use crypto_orchestrator::*;
 pub use key_metadata::*;
 pub use key_migration::*;
 pub use key_orchestrator::*;

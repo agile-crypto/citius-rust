@@ -1,4 +1,4 @@
-use super::{GeneratedKey, Transfer};
+use super::{Cipher, GeneratedKey, Transfer};
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -79,4 +79,10 @@ pub trait Backend: Send + Sync {
     /// A stateless software provider emits and accepts its stored payload;
     /// an HSM's non-extractable keys emit nothing.
     fn transfer(&self, algorithm: &api::AlgorithmDetails) -> Transfer;
+
+    /// The encrypt/decrypt capability, if the provider has it (Go: a type
+    /// assertion on `provider.Cipher`).
+    fn as_cipher(&self) -> Option<&dyn Cipher> {
+        None
+    }
 }

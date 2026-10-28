@@ -26,8 +26,6 @@ agc_export_key
 agc_import_key
 
 # agc_crypto.h (14)
-agc_encrypt
-agc_decrypt
 agc_sign
 agc_verify
 agc_digest_sign

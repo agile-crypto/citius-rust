@@ -3,6 +3,7 @@
 //! against the header, so nothing else may be reachable under that path.
 
 mod core;
+mod crypto;
 mod key;
 mod key_migrate;
 mod metadata;
@@ -10,6 +11,7 @@ mod policy;
 mod types;
 
 pub use self::core::*;
+pub use self::crypto::*;
 pub use self::key::*;
 pub use self::key_migrate::*;
 pub use self::metadata::*;

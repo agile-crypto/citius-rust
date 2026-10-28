@@ -33,6 +33,12 @@ pub enum Code {
     MigrationNotFeasible,
     /// The key's material may not leave its provider.
     KeyNotExtractable,
+    /// Authenticated decryption failed: wrong key, data, tag or associated data.
+    AuthenticationFailed,
+    /// A provider broke its contract (e.g. returned no output kind).
+    ProviderContractViolation,
+    /// Stored key material does not parse as its template requires.
+    InvalidKeyMaterial,
     /// Something this build does not offer.
     NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.

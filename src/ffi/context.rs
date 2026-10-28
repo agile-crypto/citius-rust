@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::adapters::providers::RustCrypto;
 use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
-use crate::app::{KeyOrchestrator, PolicyAdmin, validate_providers};
+use crate::app::{CryptoOrchestrator, KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
 use crate::domain::provider::ProviderRegistry;
 use crate::bindings::*;
@@ -16,6 +16,7 @@ use crate::ffi::translation::optional_str;
 /// `&mut Context`, and everything it holds is `Send + Sync`.
 pub struct Context {
     pub keys: KeyOrchestrator,
+    pub crypto: CryptoOrchestrator,
     pub policies: PolicyAdmin,
     /// `agc_ctx_config.default_policy`: used when a call names no policy.
     pub default_policy: Option<String>,
@@ -47,8 +48,10 @@ impl Context {
 
         let keys = Arc::new(InMemoryKeyRepository::new());
         let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
+        let providers = Arc::new(providers);
         Ok(Context {
-            keys: KeyOrchestrator::new(keys.clone(), templates, Arc::new(providers), policy.clone()),
+            keys: KeyOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
+            crypto: CryptoOrchestrator::new(keys.clone(), templates, providers, policy.clone()),
             policies: PolicyAdmin::new(policy, keys),
             default_policy,
         })

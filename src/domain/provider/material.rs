@@ -48,6 +48,19 @@ impl std::fmt::Debug for GeneratedKey {
 const FORMAT_V1: u8 = 1;
 
 impl GeneratedKey {
+    /// Fails unless the private half is encoded as `want`: a provider parses
+    /// stored material by its recorded encoding, never by guessing.
+    pub fn check_encoding(&self, want: Encoding) -> Result<(), Error> {
+        if self.private_encoding != want {
+            return Err(Error::new(
+                Code::InvalidKeyMaterial,
+                "GeneratedKey::check_encoding",
+                format!("key material is {:?}, expected {want:?}", self.private_encoding),
+            ));
+        }
+        Ok(())
+    }
+
     /// The bytes a key version stores. Self-describing and versioned:
     /// `1 | enc | len u32 BE | private | 0 or enc | [len u32 BE | public]`.
     pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {

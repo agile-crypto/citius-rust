@@ -4,7 +4,7 @@ use ml_dsa::signature::Keypair;
 use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error};
-use crate::domain::provider::{Backend, Capability, Channels, Encoding, GeneratedKey, Transfer};
+use crate::domain::provider::{Backend, Capability, Channels, Cipher, Encoding, GeneratedKey, Transfer};
 use crate::proto::api::{self, algorithm_details::Algorithm};
 
 /// The software provider, built on the RustCrypto crates. Stateless: the
@@ -85,6 +85,10 @@ impl Backend for RustCrypto {
         };
         let stored = Channels { stored_payload: vec![encoding], ..Default::default() };
         Transfer { emit: stored.clone(), accept: stored }
+    }
+
+    fn as_cipher(&self) -> Option<&dyn Cipher> {
+        Some(self)
     }
 
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error> {
