@@ -43,6 +43,8 @@ c_structs!(
     agc_migrate_key_response,
     agc_validate_key_op_params,
     agc_validate_key_op_response,
+    agc_metadata,
+    agc_decode_metadata_result,
     agc_create_policy_request,
     agc_update_policy_request,
     agc_read_policy_response,

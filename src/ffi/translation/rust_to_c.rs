@@ -26,12 +26,28 @@ pub struct Packer {
     base: *mut u8,
     cap: usize,
     pos: usize,
-    measuring: bool,
+    measuring: Measure,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Measure {
+    /// Writing for real.
+    No,
+    /// Base address unknown: assume the worst alignment padding (a bound).
+    WorstCase,
+    /// Exact, for a region starting at this address.
+    At(usize),
 }
 
 impl Packer {
     pub fn measuring() -> Self {
-        Packer { base: ptr::null_mut(), cap: usize::MAX, pos: 0, measuring: true }
+        Packer { base: ptr::null_mut(), cap: usize::MAX, pos: 0, measuring: Measure::WorstCase }
+    }
+
+    /// Measures exactly what writing into a region at `base` needs. A NULL
+    /// region (a size query) is measured as if suitably aligned.
+    pub fn measuring_at(base: *const u8) -> Self {
+        Packer { base: ptr::null_mut(), cap: usize::MAX, pos: 0, measuring: Measure::At(base as usize) }
     }
 
     /// The bytes laid out so far (while measuring: the size needed).
@@ -42,10 +58,18 @@ impl Packer {
     /// Reserves `len` bytes aligned to `align`, returning where they start
     /// (NULL while measuring).
     fn reserve(&mut self, len: usize, align: usize) -> *mut u8 {
-        if self.measuring {
-            // Unknown base alignment: assume the worst padding.
-            self.pos += align - 1 + len;
-            return ptr::null_mut();
+        match self.measuring {
+            Measure::WorstCase => {
+                // Unknown base alignment: assume the worst padding.
+                self.pos += align - 1 + len;
+                return ptr::null_mut();
+            }
+            Measure::At(base) => {
+                let addr = base + self.pos;
+                self.pos += (addr.next_multiple_of(align) - addr) + len;
+                return ptr::null_mut();
+            }
+            Measure::No => {}
         }
         let addr = self.base as usize + self.pos;
         let start = self.pos + (addr.next_multiple_of(align) - addr);
@@ -97,6 +121,24 @@ impl Packer {
         p.cast_const()
     }
 
+    /// Room for `n` elements of `T`, aligned, to fill in later with `fill`
+    /// (NULL while measuring, and for n == 0).
+    pub fn reserve_array<T>(&mut self, n: usize) -> *mut T {
+        if n == 0 {
+            return ptr::null_mut();
+        }
+        self.reserve(n * size_of::<T>(), align_of::<T>()).cast()
+    }
+
+    /// Writes `items` into an array from `reserve_array`.
+    pub fn fill_array<T: Copy>(&mut self, slot: *mut T, items: &[T]) {
+        if !slot.is_null() {
+            // SAFETY: slot came from reserve_array for items.len() elements
+            // of T, aligned, in this region.
+            unsafe { ptr::copy_nonoverlapping(items.as_ptr(), slot, items.len()) };
+        }
+    }
+
     /// A key-value list of copied strings.
     pub fn kv_list<'a>(&mut self, kvs: impl Iterator<Item = (&'a String, &'a String)>) -> agc_kv_list {
         let entries: Vec<agc_kv> = kvs.map(|(k, v)| agc_kv { key: self.str(k), value: self.str(v) }).collect();
@@ -120,9 +162,26 @@ pub fn pack<R>(storage: agc_buf, storage_used: &mut usize, fill: impl Fn(&mut Pa
     if storage.data.is_null() || storage.cap < needed {
         return Err(FfiError::BufferTooSmall { needed });
     }
-    let mut w = Packer { base: storage.data, cap: storage.cap, pos: 0, measuring: false };
+    let mut w = Packer { base: storage.data, cap: storage.cap, pos: 0, measuring: Measure::No };
     let r = fill(&mut w);
     *storage_used = w.pos;
+    Ok(r)
+}
+
+/// `pack` with an exact requirement, for read-only operations whose size
+/// must be exact: measured for the caller's actual region address (a NULL
+/// region is measured as if suitably aligned).
+pub fn pack_exact<R>(storage: agc_buf, storage_used: &mut usize, fill: impl Fn(&mut Packer) -> R) -> Result<R, FfiError> {
+    let mut m = Packer::measuring_at(storage.data);
+    fill(&mut m);
+    let needed = m.pos;
+    *storage_used = needed;
+    if needed > 0 && (storage.data.is_null() || storage.cap < needed) {
+        return Err(FfiError::BufferTooSmall { needed });
+    }
+    let mut w = Packer { base: storage.data, cap: storage.cap, pos: 0, measuring: Measure::No };
+    let r = fill(&mut w);
+    debug_assert_eq!(w.pos, needed, "the exact measure and the write agree");
     Ok(r)
 }
 

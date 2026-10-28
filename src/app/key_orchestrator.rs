@@ -71,11 +71,16 @@ impl KeyOrchestrator {
             approved_lineage: approved(provider.as_ref()),
             origin: Origin::Generated,
         };
+        // The version records the scope it actually serves: a request for
+        // "any AEAD scope" yields a key for the template's concrete scope,
+        // which operations check their parameters against.
+        let mut scope_spec = spec.scope_spec;
+        scope_spec.scope = template.scope_for(&scope_spec).expect("selected templates serve the intent");
         let first = Version::new(
             1,
             template.id().into(),
             provider.name().into(),
-            spec.scope_spec,
+            scope_spec,
             material,
             provenance,
             SystemTime::now(),
@@ -404,8 +409,9 @@ mod tests {
     #[test]
     fn the_policys_first_matching_template_is_chosen() {
         let ko = orchestrator(&allowing(&["chacha20-poly1305", "aes-256-gcm-128-96"], &["create_key"]));
-        let k = ko.create_key(spec("my-key", AEAD, None)).unwrap();
+        let k = ko.create_key(spec("my-key", Scope::Aead(AeadScope::Unspecified), None)).unwrap();
         assert_eq!((k.name.as_str(), k.template_id.as_str(), k.policy.as_str()), ("my-key", "chacha20-poly1305", "p"));
+        assert_eq!(k.scope_spec.scope, AEAD, "the version records the concrete scope");
         assert_eq!((k.version, k.provider.as_str()), (1, "rustcrypto"));
         assert!(k.extractable && k.public_key.is_none());
         // The provider's material, stored as its opaque bytes.

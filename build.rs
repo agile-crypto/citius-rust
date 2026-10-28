@@ -91,10 +91,14 @@ fn generate_protos(descriptor: &str, out_path: &std::path::Path) {
         // Replaces prost's default mapping to prost_types (pbjson's recipe).
         .compile_well_known_types()
         .extern_path(".google.protobuf", "::pbjson_types")
+        // Maps as BTreeMap: encoding is deterministic (sorted keys), which
+        // canonical metadata needs.
+        .btree_map(["."])
         .compile_fds(fds)
         .expect("prost code generation failed");
     pbjson_build::Builder::new()
         .out_dir(&proto_out)
+        .btree_map(["."])
         .register_descriptors(&bytes)
         .expect("pbjson cannot read the descriptor")
         .build(&[".caas"])

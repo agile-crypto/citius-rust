@@ -76,6 +76,12 @@ impl Template {
         self.capabilities.iter().any(|c| c.spec.satisfies(want))
     }
 
+    /// The concrete scope this template serves for `want`: the scope of its
+    /// first capability that satisfies it. Resolves "any scope of the kind".
+    pub fn scope_for(&self, want: &ScopeSpecification) -> Option<Scope> {
+        self.capabilities.iter().find(|c| c.spec.satisfies(want)).map(|c| c.spec.scope)
+    }
+
     /// The security properties of the first capability that satisfies `want`:
     /// what the template provides for that intent.
     pub fn security_for(&self, want: &ScopeSpecification) -> Option<SecurityProperties> {

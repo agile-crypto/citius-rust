@@ -12,17 +12,11 @@ agc_session_selected_template_id
 agc_session_cancel
 agc_session_free
 agc_session_attach
-agc_metadata_decode
 
 # agc_types.h (84)
 
 # agc_metadata.h (6)
-agc_metadata_encode
-agc_metadata_decode_body
-agc_metadata_storage_len
-agc_metadata_peek_key_version
 agc_metadata_max_encoded_len
-agc_envelope_split
 
 # agc_key.h (12)
 agc_delete_key

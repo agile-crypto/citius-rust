@@ -1,1 +1,3 @@
-//! Inputs and outputs of crypto operations, and streaming sessions.
+//! Inputs and outputs of crypto operations, and their metadata.
+
+pub mod metadata;
