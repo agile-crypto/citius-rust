@@ -487,16 +487,20 @@ mod sign {
         assert_eq!((vresp.valid, vresp.key_version), (1, 1));
         assert_eq!(vmd[0], agc_encoding_AGC_ENCODING_WIRE_V1 as u8, "the request's encoding");
 
-        // Fail closed twice: the rc and valid.
+        // Fail closed twice: the rc and valid. (A Rust write to a buffer
+        // invalidates raw pointers taken before it, so they are re-taken.)
         sig[0] ^= 1;
+        vreq.signature = input(&sig);
         assert_eq!(verify(ctx, &vreq, &mut vresp), AGC_ERR_CRYPTO_SIGNATURE_INVALID);
         assert_eq!((vresp.valid, vresp.metadata_len), (0, 0));
         assert_eq!(last_error().rc, AGC_ERR_CRYPTO_SIGNATURE_INVALID);
 
         // Without metadata: the latest version, and a WIRE_V1 response.
         sig[0] ^= 1;
+        vreq.signature = input(&sig);
         vreq.metadata = agc_slice { data: ptr::null(), len: 0 };
         vmd.fill(0);
+        vresp.metadata = region(&mut vmd);
         assert_eq!(verify(ctx, &vreq, &mut vresp), AGC_OK as agc_rc);
         assert_eq!((vresp.valid, vmd[0]), (1, agc_encoding_AGC_ENCODING_WIRE_V1 as u8));
         close(ctx);
