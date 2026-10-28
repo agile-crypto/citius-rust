@@ -44,7 +44,9 @@ cargo xtask miri            # the unit tests under Miri (undefined behaviour
                             # in unsafe code, data races between Rust threads)
 cargo xtask tsan            # tests/c/*.c against a library built with
                             # ThreadSanitizer, Rust std included
-cargo xtask all             # test-c, miri and tsan
+cargo xtask interop         # signatures, ciphertexts and metadata
+                            # cross-checked with Go's software provider
+cargo xtask all             # test-c, miri, tsan and interop
 ```
 
 `cargo xtask test-c` always rebuilds the library first: `cargo test` does not
@@ -53,6 +55,13 @@ rebuild the cdylib, so linking C against it directly can test stale code.
 `miri` and `tsan` need a nightly toolchain next to the default one:
 `rustup toolchain install nightly --component miri --component rust-src`.
 The xtask finds it through rustup, so `cargo +nightly` is not needed.
+
+`interop` needs Go and a citius-server checkout (`CITIUS_SERVER_DIR`,
+default `../citius-server`). Rust signs and encrypts with every template and
+Go's software provider verifies and decrypts; then the reverse. Each side
+also decodes the other's metadata. `interop/go/interop_test.go` is placed
+into the provider's package with `go test -overlay`; the checkout is not
+modified.
 
 Why the sanitizers are set up this way:
 - ASan+UBSan instrument only the C test code; the Rust library is linked
@@ -65,7 +74,7 @@ Why the sanitizers are set up this way:
 ## Before pushing
 
 `.githooks/pre-push` runs clippy, `cargo test` and `cargo xtask test-c`
-(a minute or two). Miri and TSan take several minutes; run them with
+(a minute or two). Miri, TSan and interop take several minutes; run them with
 `AGC_FULL_CHECKS=1 git push` or `cargo xtask all` at the end of each phase
 and before releases. Enable the hook once per clone:
 

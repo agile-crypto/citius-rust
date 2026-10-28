@@ -7,6 +7,9 @@
 //!   cargo xtask miri           run the library's unit tests under Miri
 //!   cargo xtask tsan           build the library with ThreadSanitizer and run
 //!                              tests/c/*.c against it
+//!   cargo xtask interop        cross-check signatures, ciphertexts and
+//!                              metadata with the Go software provider
+//!                              (needs Go and a citius-server checkout)
 //!   cargo xtask all            everything above
 //!
 //! The library is always built first: `cargo test` does not rebuild the
@@ -34,8 +37,9 @@ fn main() -> ExitCode {
         "check-symbols" => build().and_then(|b| check_symbols(&b)),
         "miri" => miri(),
         "tsan" => tsan(),
-        "all" => test_c().and_then(|()| miri()).and_then(|()| tsan()),
-        _ => Err("usage: cargo xtask <test-c|check-symbols|miri|tsan|all>".to_owned()),
+        "interop" => interop(),
+        "all" => test_c().and_then(|()| miri()).and_then(|()| tsan()).and_then(|()| interop()),
+        _ => Err("usage: cargo xtask <test-c|check-symbols|miri|tsan|interop|all>".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -350,4 +354,63 @@ fn run_c_tests(variants: &[Variant]) -> Result<(), String> {
     } else {
         Err(format!("{} C test(s) failed: {failed:?}", failed.len()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Interop with the Go implementation
+// ---------------------------------------------------------------------------
+
+/// Rust and Go each check what the other produced: `export` (Rust) writes
+/// rust.json; interop/go/interop_test.go, placed into citius-server's
+/// software provider package with `go test -overlay`, verifies and decrypts
+/// it and writes go.json; `import` (Rust) checks that. The checkout is found
+/// at `CITIUS_SERVER_DIR` (default ../citius-server) and is not modified.
+fn interop() -> Result<(), String> {
+    let server = env::var_os("CITIUS_SERVER_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("../citius-server"));
+    let package = server.join("internal/provider/software");
+    if !package.is_dir() {
+        return Err(format!("no citius-server software provider at {}; set CITIUS_SERVER_DIR", package.display()));
+    }
+    let dir = root().join("target/interop");
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for f in ["rust.json", "go.json"] {
+        let _ = fs::remove_file(dir.join(f));
+    }
+    let rust_tests = |name: &str| {
+        let mut c = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        c.current_dir(root())
+            .env("AGC_INTEROP_DIR", &dir)
+            .args(["test", "--quiet", "--lib", "--package", PACKAGE, "--", "--ignored", "--exact", "--nocapture"])
+            .arg(format!("adapters::providers::interop::{name}"));
+        c
+    };
+    run(&mut rust_tests("export"), "interop export (Rust)")?;
+
+    let overlay = dir.join("overlay.json");
+    let target = package.join("zz_agilecrypto_interop_test.go");
+    let source = root().join("interop/go/interop_test.go");
+    let json = format!(
+        "{{\"Replace\": {{{}: {}}}}}",
+        json_quote(&target.to_string_lossy()),
+        json_quote(&source.to_string_lossy())
+    );
+    fs::write(&overlay, json).map_err(|e| format!("{}: {e}", overlay.display()))?;
+    let commit = output(Command::new("git").arg("-C").arg(&server).args(["rev-parse", "--short", "HEAD"]), "git")?;
+    println!("interop: citius-server at {}", commit.trim());
+    run(
+        Command::new("go")
+            .current_dir(&server)
+            .env("AGC_INTEROP_DIR", &dir)
+            .args(["test", "-count=1", "-v", "-run", "^TestRustInterop$"])
+            .arg(format!("-overlay={}", overlay.display()))
+            .arg("./internal/provider/software"),
+        "interop check (Go)",
+    )?;
+    run(&mut rust_tests("import"), "interop import (Rust)")
+}
+
+fn json_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }

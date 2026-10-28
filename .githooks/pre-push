@@ -17,7 +17,7 @@ echo "pre-push: cargo test" >&2
 cargo test --quiet --workspace
 
 if [ -n "$AGC_FULL_CHECKS" ]; then
-    echo "pre-push: cargo xtask all (C tests, symbols, Miri, TSan)" >&2
+    echo "pre-push: cargo xtask all (C tests, symbols, Miri, TSan, interop)" >&2
     cargo xtask all
 else
     echo "pre-push: cargo xtask test-c (set AGC_FULL_CHECKS=1 for Miri and TSan)" >&2
