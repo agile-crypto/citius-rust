@@ -4,91 +4,20 @@
 # are ignored. Grouped by the header that declares the function.
 
 # agc_core.h (18)
-agc_ctx_reinit_after_fork
-agc_ctx_mode
-agc_session_id
-agc_session_operation
-agc_session_selected_template_id
-agc_session_cancel
-agc_session_free
-agc_session_attach
 
 # agc_types.h (84)
 
 # agc_metadata.h (6)
 
 # agc_key.h (12)
-agc_delete_key
-agc_rotate_key
-agc_update_key_policy
-agc_export_key
-agc_import_key
 
 # agc_crypto.h (14)
-agc_generate_mac
-agc_verify_mac
-agc_digest
-agc_xof
-agc_generate_random
-agc_random_bytes
-agc_seed_random
 
 # agc_stream.h (43)
-agc_encrypt_init
-agc_encrypt_update
-agc_encrypt_final
-agc_decrypt_init
-agc_decrypt_update
-agc_decrypt_final
-agc_encrypt_message_init
-agc_encrypt_message
-agc_encrypt_message_begin
-agc_encrypt_message_next
-agc_encrypt_message_final
-agc_decrypt_message_init
-agc_decrypt_message
-agc_decrypt_message_begin
-agc_decrypt_message_next
-agc_decrypt_message_final
-agc_sign_init
-agc_sign_update
-agc_sign_final
-agc_verify_init
-agc_verify_update
-agc_verify_final
-agc_sign_message_init
-agc_sign_message
-agc_sign_message_begin
-agc_sign_message_next
-agc_sign_message_final
-agc_verify_message_init
-agc_verify_message
-agc_verify_message_begin
-agc_verify_message_next
-agc_verify_message_final
-agc_digest_init
-agc_digest_update
-agc_digest_key
-agc_digest_final
-agc_xof_init
-agc_xof_update
-agc_xof_final
-agc_digest_encrypt_update
-agc_decrypt_digest_update
-agc_sign_encrypt_update
-agc_decrypt_verify_update
 
 # agc_establish.h (6)
-agc_wrap_key
-agc_unwrap_key
-agc_derive_key
-agc_key_agreement
-agc_encapsulate_key
-agc_decapsulate_key
 
 # agc_policy.h (9)
-agc_evaluate_policy
-agc_batch_evaluate_policy
 
 # agc_discovery.h (5)
 agc_list_templates
@@ -102,11 +31,8 @@ agc_list_providers
 agc_provider_iter_next
 agc_provider_iter_free
 agc_get_provider
-agc_register_provider_instance
 agc_list_provider_instances
 agc_provider_instance_iter_next
 agc_provider_instance_iter_free
 agc_get_provider_instance
-agc_update_provider_instance
-agc_delete_provider_instance
 agc_match_providers

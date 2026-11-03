@@ -9,6 +9,7 @@ mod key_migrate;
 mod metadata;
 mod policy;
 mod sign;
+mod stubs;
 mod types;
 
 pub use self::core::*;
@@ -18,6 +19,7 @@ pub use self::key_migrate::*;
 pub use self::metadata::*;
 pub use self::policy::*;
 pub use self::sign::*;
+pub use self::stubs::*;
 pub use self::types::*;
 
 #[cfg(test)]

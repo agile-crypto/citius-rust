@@ -5,7 +5,7 @@ use std::ptr;
 use std::sync::LazyLock;
 
 use crate::bindings::*;
-use crate::ffi::context::Context;
+use crate::ffi::context::{Config, Context};
 use crate::ffi::error::{FfiError, rc_message, rc_name};
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::{last_error, secure_memory, versioned};
@@ -57,7 +57,13 @@ pub extern "C" fn agc_build_info() -> *const c_char {
 pub(in crate::ffi) unsafe fn context<'a>(ctx: *mut agc_ctx) -> Result<&'a Context, FfiError> {
     // SAFETY: by this function's contract, a non-NULL ctx came from Box::into_raw
     // in agc_ctx_open and is still alive; only shared references are made from it.
-    unsafe { ctx.cast::<Context>().as_ref() }.ok_or_else(|| FfiError::invalid("ctx must not be NULL"))
+    let ctx = unsafe { ctx.cast::<Context>().as_ref() }.ok_or_else(|| FfiError::invalid("ctx must not be NULL"))?;
+    if ctx.pid != crate::ffi::context::pid() {
+        return Err(FfiError::InvalidHandle(
+            "the context was inherited across fork(); call agc_ctx_reinit_after_fork",
+        ));
+    }
+    Ok(ctx)
 }
 
 #[unsafe(no_mangle)]
@@ -69,7 +75,7 @@ pub unsafe extern "C" fn agc_ctx_open(cfg: *const agc_ctx_config, out_ctx: *mut 
         // SAFETY: cfg is NULL or the caller's config with struct_size accessible bytes.
         let cfg = unsafe { versioned::read(cfg, "cfg") }?;
         // SAFETY: cfg's strings are NULL or valid C strings (agc_core.h contract).
-        let ctx = Box::new(unsafe { Context::open(&cfg) }?);
+        let ctx = Box::new(Context::open(unsafe { Config::from_c(&cfg) }?)?);
         // SAFETY: out_ctx is non-null (checked above) and points to the caller's agc_ctx* variable.
         unsafe { out_ctx.write(Box::into_raw(ctx).cast::<agc_ctx>()) };
         Ok(())
@@ -89,6 +95,40 @@ pub unsafe extern "C" fn agc_ctx_close(ctx: *mut agc_ctx) {
         drop(unsafe { Box::from_raw(ctx.cast::<Context>()) });
         Ok(())
     });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_ctx_reinit_after_fork(poisoned: *mut agc_ctx, out_ctx: *mut *mut agc_ctx) -> agc_rc {
+    guard(|| {
+        if out_ctx.is_null() {
+            return Err(FfiError::invalid("out_ctx must not be NULL"));
+        }
+        // SAFETY: poisoned is NULL or a context opened by agc_ctx_open, in
+        // this process or the parent this one was forked from; only shared
+        // references are made, as for any context.
+        let old = unsafe { poisoned.cast::<Context>().as_ref() }.ok_or_else(|| FfiError::invalid("poisoned must not be NULL"))?;
+        if old.pid == crate::ffi::context::pid() {
+            return Err(FfiError::invalid("the context is not poisoned: it was opened in this process"));
+        }
+        let fresh = Box::new(Context::open(old.config.clone())?);
+        // agc_core.h: "The inherited context is closed". The child owns its
+        // copy of the parent's memory, so freeing it touches nothing of the
+        // parent's. (A context holds no file descriptors or threads.)
+        // SAFETY: poisoned came from Box::into_raw in agc_ctx_open; the
+        // child's caller hands it over and does not use it again.
+        drop(unsafe { Box::from_raw(poisoned.cast::<Context>()) });
+        // SAFETY: out_ctx is non-null (checked above) and points to the caller's agc_ctx* variable.
+        unsafe { out_ctx.write(Box::into_raw(fresh).cast::<agc_ctx>()) };
+        Ok(())
+    })
+}
+
+/// The mode the context was opened in. EMBEDDED for a NULL or poisoned
+/// context too: it is the only mode a context can have here, so the answer
+/// is right without dereferencing anything.
+#[unsafe(no_mangle)]
+pub extern "C" fn agc_ctx_mode(_ctx: *const agc_ctx) -> agc_mode {
+    agc_mode_AGC_MODE_EMBEDDED
 }
 
 // --- Errors ----------------------------------------------------------------

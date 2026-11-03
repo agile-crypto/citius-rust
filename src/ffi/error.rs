@@ -20,6 +20,8 @@ pub enum FfiError {
     NotImplemented(&'static str),
     /// The normal end of a listing.
     IteratorExhausted,
+    /// A handle the library cannot use: a context inherited across fork().
+    InvalidHandle(&'static str),
     /// A verification that ran and failed (the D9 contract's rc; `valid`
     /// stays 0 as well).
     SignatureInvalid,
@@ -45,6 +47,7 @@ impl FfiError {
             FfiError::NotImplemented(_) => AGC_ERR_NOT_IMPLEMENTED,
             FfiError::IteratorExhausted => AGC_ERR_ITERATOR_EXHAUSTED,
             FfiError::SignatureInvalid => AGC_ERR_CRYPTO_SIGNATURE_INVALID,
+            FfiError::InvalidHandle(_) => AGC_ERR_INVALID_HANDLE,
         }
     }
 
@@ -59,6 +62,7 @@ impl FfiError {
             FfiError::NotImplemented(what) => format!("{what} is not implemented"),
             FfiError::IteratorExhausted => "no more items".to_owned(),
             FfiError::SignatureInvalid => "the signature does not verify".to_owned(),
+            FfiError::InvalidHandle(why) => (*why).to_owned(),
         }
     }
 }
@@ -87,6 +91,7 @@ fn code_rc(code: Code) -> agc_rc {
         Code::InvalidKeyMaterial => AGC_ERR_CRYPTO_INVALID_KEY_MATERIAL,
         Code::NotImplemented => AGC_ERR_NOT_IMPLEMENTED,
         Code::PolicyViolation => AGC_ERR_CRYPTO_POLICY_VIOLATION,
+        Code::OperationExpired => AGC_ERR_CRYPTO_OPERATION_EXPIRED,
         Code::Internal => AGC_ERR_INTERNAL,
     }
 }
@@ -134,6 +139,7 @@ mod tests {
             Code::InvalidKeyMaterial,
             Code::NotImplemented,
             Code::PolicyViolation,
+            Code::OperationExpired,
             Code::Internal,
         ];
         let mut rcs: Vec<_> = codes.iter().map(|&c| code_rc(c)).collect();
