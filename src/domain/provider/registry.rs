@@ -42,6 +42,27 @@ pub fn unmet(props: &api::ImplementationProperties, required: &ProviderRequireme
     .collect()
 }
 
+/// One provider judged against requirements (Go: `provider.Candidate`).
+pub struct Candidate {
+    pub backend: Arc<dyn Backend>,
+    /// The properties the judgement used.
+    pub implementation: api::ImplementationProperties,
+    /// Whether it serves the template; true for every provider when no
+    /// template is given.
+    pub advertises: bool,
+    /// The hard requirements it misses.
+    pub unmet: Vec<&'static str>,
+    /// Whether it has a property the requirements prefer.
+    pub preferred: bool,
+}
+
+impl Candidate {
+    /// It serves the template and meets every hard requirement.
+    pub fn eligible(&self) -> bool {
+        self.advertises && self.unmet.is_empty()
+    }
+}
+
 /// Holds the providers and matches one to a key's requirements. Filled at
 /// startup, then shared without a lock.
 pub struct ProviderRegistry {
@@ -74,6 +95,30 @@ impl ProviderRegistry {
         &self.providers
     }
 
+    /// Every provider judged against `template_id` (empty: any) and the
+    /// requirements, in the order selection uses (Go: `provider.Rank`):
+    /// eligible ones with a preferred property, then the other eligible
+    /// ones, then the ineligible ones, each group in registration order.
+    pub fn rank(&self, template_id: &str, required: &ProviderRequirements) -> Vec<Candidate> {
+        let (mut preferred, mut eligible, mut ineligible) = (Vec::new(), Vec::new(), Vec::new());
+        for p in &self.providers {
+            let implementation = p.implementation();
+            let c = Candidate {
+                backend: p.clone(),
+                advertises: template_id.is_empty() || p.supported_templates().contains(&template_id),
+                unmet: unmet(&implementation, required),
+                preferred: required.prefer_hardware_accelerated && implementation.hardware_accelerated == Some(true),
+                implementation,
+            };
+            match (c.eligible(), c.preferred) {
+                (true, true) => preferred.push(c),
+                (true, false) => eligible.push(c),
+                _ => ineligible.push(c),
+            }
+        }
+        preferred.into_iter().chain(eligible).chain(ineligible).collect()
+    }
+
     /// The provider for a new key (Go: `Registry.Match`):
     /// - pinned: that provider, if it serves the template and meets the
     ///   requirements, else an error naming why;
@@ -86,7 +131,6 @@ impl ProviderRegistry {
     pub fn select(&self, req: &Requirements) -> Result<Arc<dyn Backend>, Error> {
         const OP: &str = "ProviderRegistry::select";
         let serves = |p: &Arc<dyn Backend>| p.supported_templates().contains(&req.template_id.as_str());
-        let meets = |p: &Arc<dyn Backend>| unmet(&p.implementation(), &req.implementation).is_empty();
 
         if let Some(name) = &req.pinned {
             let p = self
@@ -110,20 +154,16 @@ impl ProviderRegistry {
             return Ok(p);
         }
 
-        let preferred = |p: &Arc<dyn Backend>| {
-            req.implementation.prefer_hardware_accelerated && p.implementation().hardware_accelerated == Some(true)
-        };
-        let serving: Vec<&Arc<dyn Backend>> = self.providers.iter().filter(|p| serves(p)).collect();
-        // Preferred providers first, then the rest; registration order within each.
-        let ranked = serving.iter().filter(|p| preferred(p)).chain(serving.iter().filter(|p| !preferred(p)));
-        ranked
-            .copied()
-            .find(|p| meets(p))
-            .cloned()
-            .ok_or_else(|| {
-                let why = if serving.is_empty() { "no provider serves" } else { "no provider meets the requirements for" };
-                Error::new(Code::NoMatchingProvider, OP, format!("{why} template {}", req.template_id))
-            })
+        let ranked = self.rank(&req.template_id, &req.implementation);
+        match ranked.into_iter().next() {
+            Some(c) if c.eligible() => Ok(c.backend),
+            Some(_) if self.providers.iter().any(serves) => Err(Error::new(
+                Code::NoMatchingProvider,
+                OP,
+                format!("no provider meets the requirements for template {}", req.template_id),
+            )),
+            _ => Err(Error::new(Code::NoMatchingProvider, OP, format!("no provider serves template {}", req.template_id))),
+        }
     }
 }
 

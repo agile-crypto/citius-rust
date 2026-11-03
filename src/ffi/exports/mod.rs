@@ -4,6 +4,7 @@
 
 mod core;
 mod crypto;
+mod discovery;
 mod key;
 mod key_migrate;
 mod metadata;
@@ -14,6 +15,7 @@ mod types;
 
 pub use self::core::*;
 pub use self::crypto::*;
+pub use self::discovery::*;
 pub use self::key::*;
 pub use self::key_migrate::*;
 pub use self::metadata::*;

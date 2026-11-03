@@ -64,6 +64,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "quote",
  "serde",
  "serde_json",
  "sha2",

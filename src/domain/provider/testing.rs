@@ -11,6 +11,7 @@ use crate::proto::api;
 
 pub struct FakeProvider {
     name: &'static str,
+    kind: &'static str,
     templates: Vec<&'static str>,
     implementation: api::ImplementationProperties,
     transfer: Transfer,
@@ -21,6 +22,7 @@ impl FakeProvider {
     pub fn new(name: &'static str, templates: &[&'static str]) -> Self {
         FakeProvider {
             name,
+            kind: "fake",
             templates: templates.to_vec(),
             implementation: api::ImplementationProperties::default(),
             // Like a stateless software provider: its (raw) material is the
@@ -38,6 +40,12 @@ impl FakeProvider {
         self
     }
 
+    /// The provider this instance belongs to (default "fake").
+    pub fn kind(mut self, kind: &'static str) -> Self {
+        self.kind = kind;
+        self
+    }
+
     pub fn with_transfer(mut self, t: Transfer) -> Self {
         self.transfer = t;
         self
@@ -50,7 +58,7 @@ impl Backend for FakeProvider {
     }
 
     fn kind(&self) -> &str {
-        "fake"
+        self.kind
     }
 
     fn supported_templates(&self) -> &[&'static str] {

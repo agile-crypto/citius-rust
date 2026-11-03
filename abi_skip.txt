@@ -20,19 +20,5 @@
 # agc_policy.h (9)
 
 # agc_discovery.h (5)
-agc_list_templates
-agc_template_iter_next
-agc_template_iter_free
-agc_get_template
-agc_list_scopes
 
 # agc_provider.h (12)
-agc_list_providers
-agc_provider_iter_next
-agc_provider_iter_free
-agc_get_provider
-agc_list_provider_instances
-agc_provider_instance_iter_next
-agc_provider_instance_iter_free
-agc_get_provider_instance
-agc_match_providers

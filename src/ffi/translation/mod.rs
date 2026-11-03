@@ -7,3 +7,9 @@ pub use rust_to_c::*;
 
 mod metadata;
 pub use metadata::*;
+
+mod template;
+pub use template::*;
+
+mod provider;
+pub use provider::*;

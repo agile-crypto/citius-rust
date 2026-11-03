@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::adapters::providers::RustCrypto;
 use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
-use crate::app::{CryptoOrchestrator, KeyOrchestrator, PolicyAdmin, validate_providers};
+use crate::app::{CryptoOrchestrator, Discovery, KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
 use crate::domain::provider::ProviderRegistry;
 use crate::bindings::*;
@@ -23,6 +23,7 @@ pub struct Context {
     pub keys: KeyOrchestrator,
     pub crypto: CryptoOrchestrator,
     pub policies: PolicyAdmin,
+    pub discovery: Discovery,
     /// `agc_ctx_config.default_policy`: used when a call names no policy.
     pub default_policy: Option<String>,
 }
@@ -88,7 +89,8 @@ impl Context {
             default_policy: config.default_policy.clone(),
             config,
             keys: KeyOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
-            crypto: CryptoOrchestrator::new(keys.clone(), templates, providers, policy.clone()),
+            crypto: CryptoOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
+            discovery: Discovery::new(templates, providers),
             policies: PolicyAdmin::new(policy, keys),
         })
     }
