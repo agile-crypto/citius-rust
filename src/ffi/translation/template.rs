@@ -108,9 +108,8 @@ fn irregular_arm(a: &Algorithm, c: &mut agc_algorithm_params, p: &mut Packer, de
             c.u.gost3411.initial_value = p.bytes(&m.initial_value);
             agc_algorithm_kind_AGC_ALGORITHM_GOST3411
         }
-        // agc_poly1305_params has no fields (only `reserved`), although the
-        // pinned proto's Poly1305Params has five: they cannot be represented
-        // (DEVIATIONS C8). No catalog template uses it.
+        // Poly1305Params has no fields; C has no empty structs, so the
+        // header gives agc_poly1305_params a `reserved` byte.
         Algorithm::Poly1305(_) => {
             c.u.poly1305.reserved = 0;
             agc_algorithm_kind_AGC_ALGORITHM_POLY1305
