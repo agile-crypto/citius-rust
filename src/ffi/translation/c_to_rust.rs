@@ -66,7 +66,10 @@ pub fn scope_kind(kind: agc_scope_kind) -> Result<ScopeKind, FfiError> {
         agc_scope_kind_AGC_SCOPE_KIND_SYMMETRIC_CIPHER => ScopeKind::SymmetricCipher,
         agc_scope_kind_AGC_SCOPE_KIND_GENERIC_SECRET => ScopeKind::GenericSecret,
         agc_scope_kind_AGC_SCOPE_KIND_DISK_ENCRYPTION => ScopeKind::DiskEncryption,
-        agc_scope_kind_AGC_SCOPE_KIND_ASYMMETRIC_ENCRYPTION => ScopeKind::AsymmetricEncryption,
+        // Go's core.Scope has no asymmetric-encryption scope (DEVIATIONS G31).
+        agc_scope_kind_AGC_SCOPE_KIND_ASYMMETRIC_ENCRYPTION => {
+            return Err(FfiError::invalid("unrecognized scope: asymmetric encryption"));
+        }
         agc_scope_kind_AGC_SCOPE_KIND_NONE => return Err(FfiError::invalid("scope_spec.kind must be set")),
         other => return Err(FfiError::invalid(format!("scope_spec.kind {other} is not a known scope kind"))),
     })
@@ -189,7 +192,6 @@ pub unsafe fn scope_spec(s: &agc_scope_spec) -> Result<ScopeSpecification, FfiEr
         ScopeKind::SymmetricCipher => member!(symmetric_cipher, SymmetricCipher, "symmetric_cipher"),
         ScopeKind::GenericSecret => member!(generic_secret, GenericSecret, "generic_secret"),
         ScopeKind::DiskEncryption => member!(disk_encryption, DiskEncryption, "disk_encryption"),
-        ScopeKind::AsymmetricEncryption => member!(asymmetric_encryption, AsymmetricEncryption, "asymmetric_encryption"),
     };
     Ok(ScopeSpecification {
         scope,

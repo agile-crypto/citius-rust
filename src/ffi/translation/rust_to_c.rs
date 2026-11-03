@@ -215,7 +215,6 @@ pub fn c_scope_kind(kind: ScopeKind) -> agc_scope_kind {
         ScopeKind::SymmetricCipher => agc_scope_kind_AGC_SCOPE_KIND_SYMMETRIC_CIPHER,
         ScopeKind::GenericSecret => agc_scope_kind_AGC_SCOPE_KIND_GENERIC_SECRET,
         ScopeKind::DiskEncryption => agc_scope_kind_AGC_SCOPE_KIND_DISK_ENCRYPTION,
-        ScopeKind::AsymmetricEncryption => agc_scope_kind_AGC_SCOPE_KIND_ASYMMETRIC_ENCRYPTION,
     }
 }
 
@@ -274,7 +273,6 @@ pub fn c_scope_spec(spec: &ScopeSpecification, p: &mut Packer) -> agc_scope_spec
         Scope::SymmetricCipher(_) => set!(symmetric_cipher {}),
         Scope::GenericSecret(_) => set!(generic_secret {}),
         Scope::DiskEncryption(_) => set!(disk_encryption {}),
-        Scope::AsymmetricEncryption(_) => set!(asymmetric_encryption {}),
     }
     c
 }
@@ -498,8 +496,9 @@ mod tests {
     #[test]
     fn scope_kinds_round_trip() {
         use crate::ffi::translation::scope_kind;
-        for k in [ScopeKind::Signature, ScopeKind::Aead, ScopeKind::Kem, ScopeKind::AsymmetricEncryption] {
+        for k in [ScopeKind::Signature, ScopeKind::Aead, ScopeKind::Kem, ScopeKind::GenericSecret] {
             assert_eq!(scope_kind(c_scope_kind(k)).unwrap(), k);
         }
+        assert!(scope_kind(agc_scope_kind_AGC_SCOPE_KIND_ASYMMETRIC_ENCRYPTION).is_err(), "Go has no such scope");
     }
 }

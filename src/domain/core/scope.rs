@@ -4,7 +4,9 @@ use super::{Code, Error};
 use crate::proto::api::{self, scope_specification::ScopeSpec};
 
 /// The kind of intent a key serves: the primitive family whose scopes it can
-/// be used for. Every key is created for exactly one kind.
+/// be used for. Every key is created for exactly one kind. In the order of
+/// Go's `core.Scope`; the proto's asymmetric-encryption family is not one
+/// (Go has no such scope), so it is refused where it enters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     Signature,
@@ -16,9 +18,8 @@ pub enum ScopeKind {
     Hash,
     KeyWrapping,
     SymmetricCipher,
-    GenericSecret,
     DiskEncryption,
-    AsymmetricEncryption,
+    GenericSecret,
 }
 
 /// An intent with fixed operation-time inputs and outputs, e.g. "sign a
@@ -35,9 +36,8 @@ pub enum Scope {
     Hash(api::HashScope),
     KeyWrapping(api::KeyWrappingScope),
     SymmetricCipher(api::SymmetricCipherScope),
-    GenericSecret(api::GenericSecretScope),
     DiskEncryption(api::DiskEncryptionScope),
-    AsymmetricEncryption(api::AsymmetricEncryptionScope),
+    GenericSecret(api::GenericSecretScope),
 }
 
 impl Scope {
@@ -52,9 +52,8 @@ impl Scope {
             Scope::Hash(_) => ScopeKind::Hash,
             Scope::KeyWrapping(_) => ScopeKind::KeyWrapping,
             Scope::SymmetricCipher(_) => ScopeKind::SymmetricCipher,
-            Scope::GenericSecret(_) => ScopeKind::GenericSecret,
             Scope::DiskEncryption(_) => ScopeKind::DiskEncryption,
-            Scope::AsymmetricEncryption(_) => ScopeKind::AsymmetricEncryption,
+            Scope::GenericSecret(_) => ScopeKind::GenericSecret,
         }
     }
 
@@ -75,10 +74,81 @@ impl Scope {
             Scope::Hash(s) => s as i32,
             Scope::KeyWrapping(s) => s as i32,
             Scope::SymmetricCipher(s) => s as i32,
-            Scope::GenericSecret(s) => s as i32,
             Scope::DiskEncryption(s) => s as i32,
-            Scope::AsymmetricEncryption(s) => s as i32,
+            Scope::GenericSecret(s) => s as i32,
         }
+    }
+
+    /// Every scope, in the order of Go's `core.Scope` (core.ListScopes):
+    /// what ListScopes returns them in.
+    pub const ALL: [Scope; 28] = {
+        use api::*;
+        [
+            Scope::Signature(SignatureScope::Standard),
+            Scope::Signature(SignatureScope::WithContext),
+            Scope::Signature(SignatureScope::Prehashed),
+            Scope::Signature(SignatureScope::PrehashedWithContext),
+            Scope::Aead(AeadScope::Standard),
+            Scope::Aead(AeadScope::Deterministic),
+            Scope::Aead(AeadScope::Streaming),
+            Scope::Mac(MacScope::Standard),
+            Scope::Mac(MacScope::Streaming),
+            Scope::Kem(KemScope::Standard),
+            Scope::Kem(KemScope::Hybrid),
+            Scope::KeyAgreement(KeyAgreementScope::Standard),
+            Scope::KeyAgreement(KeyAgreementScope::Hybrid),
+            Scope::Kdf(KdfScope::ExtractExpand),
+            Scope::Kdf(KdfScope::Password),
+            Scope::Kdf(KdfScope::Agreement),
+            Scope::Kdf(KdfScope::Counter),
+            Scope::Kdf(KdfScope::Tls),
+            Scope::Kdf(KdfScope::Gost),
+            Scope::Kdf(KdfScope::Vendor),
+            Scope::Hash(HashScope::Standard),
+            Scope::Hash(HashScope::Xof),
+            Scope::KeyWrapping(KeyWrappingScope::Standard),
+            Scope::KeyWrapping(KeyWrappingScope::WithPadding),
+            Scope::SymmetricCipher(SymmetricCipherScope::Block),
+            Scope::SymmetricCipher(SymmetricCipherScope::Stream),
+            Scope::DiskEncryption(DiskEncryptionScope::Standard),
+            Scope::GenericSecret(GenericSecretScope::Standard),
+        ]
+    };
+
+    /// The scope's name, as Go's `core.Scope.String()` gives it; `None` for
+    /// a family's "any" value, which is not a scope.
+    pub fn name(&self) -> Option<&'static str> {
+        const NAMES: [&str; 28] = [
+            "signature_standard",
+            "signature_with_context",
+            "signature_prehashed",
+            "signature_prehashed_with_context",
+            "aead_standard",
+            "aead_deterministic",
+            "aead_streaming",
+            "mac_standard",
+            "mac_streaming",
+            "kem_standard",
+            "kem_hybrid",
+            "key_agreement_standard",
+            "key_agreement_hybrid",
+            "kdf_extract_expand",
+            "kdf_password",
+            "kdf_agreement",
+            "kdf_counter",
+            "kdf_tls",
+            "kdf_gost",
+            "kdf_vendor",
+            "hash_standard",
+            "hash_xof",
+            "key_wrapping_standard",
+            "key_wrapping_with_padding",
+            "symmetric_cipher_block",
+            "symmetric_cipher_stream",
+            "disk_encryption_standard",
+            "generic_secret_standard",
+        ];
+        Scope::ALL.iter().position(|s| s == self).map(|i| NAMES[i])
     }
 
     /// Whether a template or key serving `self` serves the scope `want`:
@@ -195,11 +265,10 @@ impl ScopeSpecification {
             ScopeSpec::DiskEncryption(s) => {
                 (Scope::DiskEncryption(known(s.scope, "disk encryption scope")?), &s.security, &s.additional_properties)
             }
-            ScopeSpec::AsymmetricEncryption(s) => (
-                Scope::AsymmetricEncryption(known(s.scope, "asymmetric encryption scope")?),
-                &s.security,
-                &s.additional_properties,
-            ),
+            // Go's core.ScopeFromProto knows no asymmetric-encryption scope.
+            ScopeSpec::AsymmetricEncryption(_) => {
+                return Err(Error::new(Code::InvalidArgument, OP, "unrecognized scope: asymmetric encryption"));
+            }
         };
         let security = security
             .as_ref()
@@ -377,5 +446,40 @@ mod tests {
         assert_eq!(ScopeSpecification::from_proto(&bad).unwrap_err().code(), Code::InvalidArgument);
         let empty = api::ScopeSpecification { scope_spec: None };
         assert_eq!(ScopeSpecification::from_proto(&empty).unwrap_err().code(), Code::InvalidArgument);
+    }
+}
+
+#[cfg(test)]
+mod go_scope_tests {
+    use super::*;
+
+    /// Go's core.Scope: every scope once, in order, each named, no "any".
+    #[test]
+    fn all_scopes_are_go_s_in_go_s_order() {
+        let names: Vec<&str> = Scope::ALL.iter().map(|s| s.name().expect("named")).collect();
+        assert_eq!(names.len(), 28);
+        assert_eq!((names[0], names[27]), ("signature_standard", "generic_secret_standard"));
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 28, "names are unique");
+        assert!(Scope::ALL.iter().all(|s| !s.is_any()));
+        assert_eq!(Scope::Signature(api::SignatureScope::Unspecified).name(), None);
+        // Kinds appear in contiguous runs, in ScopeKind order.
+        let kinds: Vec<ScopeKind> = Scope::ALL.iter().map(Scope::kind).collect();
+        let mut runs = kinds.clone();
+        runs.dedup();
+        assert_eq!(runs.len(), 11, "each kind once, contiguously");
+    }
+
+    #[test]
+    fn asymmetric_encryption_is_not_a_scope() {
+        let p = api::ScopeSpecification {
+            scope_spec: Some(ScopeSpec::AsymmetricEncryption(api::AsymmetricEncryptionScopeSpec {
+                scope: api::AsymmetricEncryptionScope::Standard as i32,
+                ..Default::default()
+            })),
+        };
+        assert_eq!(ScopeSpecification::from_proto(&p).unwrap_err().code(), Code::InvalidArgument);
     }
 }
