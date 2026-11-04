@@ -37,15 +37,12 @@ citius-core uses both:
   - a rule that WIRE_V1 cannot encode digest-signing metadata, and encoding it fails (as for an inexpressible `encoding` token today).
 - **`agc_digest_verify_request.hash_algorithm`:** decide whether it stays required (and must equal the metadata's value) or becomes optional when metadata is given. Go uses only the metadata.
 
-**Status: open, part of the v0.3.0 descriptor bump.** The fields arrive with `citius/api` v0.3.0, which is one release ahead of the pinned descriptor. The bump brings in about 218 earlier breaking changes as well, so it is done as its own piece of work.
+**Status: done, in a bump to api v0.3.0 (C API 2.0).** The descriptor is pinned to `citius/api` v0.3.0 and the headers mirror it. That is not binary compatible with 1.0, because records gained and lost fields where the proto did.
+- The digest-hash fields are in `agc_signature_scope_spec` and `agc_metadata`.
+- `agc_digest_verify` takes the hash from the metadata.
+- WIRE_V1 cannot carry `digest_hash` (DV-15), so digest signing requires PROTOBUF.
 
-**Interim (rust-api G28).** Each template's accepted list uses Go's catalog values:
-- ECDSA P-256: SHA-256, SHA-384, SHA-512
-- ECDSA P-384: SHA-384, SHA-512
-- ECDSA P-521: SHA-512
-- Ed25519ph: SHA-512
-
-The list cannot be narrowed per key. `agc_digest_verify` uses the request's `hash_algorithm`.
+citius-rust records each key version's accepted hashes, from the v0.3.0 catalog. Go's DigestSign metadata now decodes, as the interop check confirms.
 
 ## 2. No configuration field for a persistent key store (high)
 
