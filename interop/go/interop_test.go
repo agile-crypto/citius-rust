@@ -1,5 +1,5 @@
 // Cross-checks with agilecrypto (the Rust implementation of the citius C
-// API), run by `cargo xtask interop` in rust-api. This file is not part of
+// API), run by `cargo xtask interop` in citius-rust. This file is not part of
 // citius-server: the task places it into internal/provider/software with
 // `go test -overlay`, so it can call the real software provider without
 // changing that repository.
@@ -253,7 +253,7 @@ func produce(t *testing.T, p *software.Provider, c interopCase) (interopCase, er
 func TestRustInterop(t *testing.T) {
 	dir := os.Getenv("AGC_INTEROP_DIR")
 	if dir == "" {
-		t.Skip("AGC_INTEROP_DIR is not set: run `cargo xtask interop` in rust-api")
+		t.Skip("AGC_INTEROP_DIR is not set: run `cargo xtask interop` in citius-rust")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "rust.json"))
 	if err != nil {

@@ -9,7 +9,7 @@ on:
 # The library reads its headers from a sibling citius-c-api checkout at the
 # revision in HEADERS_PIN (see README). actions/checkout cannot write outside
 # the workspace, so both repositories are checked out side by side inside it:
-#   $GITHUB_WORKSPACE/rust-api       this repository
+#   $GITHUB_WORKSPACE/citius-rust    this repository
 #   $GITHUB_WORKSPACE/citius-c-api   the headers, at the pinned revision
 # citius-c-api is a separate repository: CITIUS_C_API_SSH_KEY is the private
 # half of a read-only deploy key on it.
@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rust-api
+        working-directory: citius-rust
     steps:
       - uses: actions/checkout@v6
         with:
-          path: rust-api
+          path: citius-rust
 
       - name: Read the header pin
         id: pin
@@ -61,11 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rust-api
+        working-directory: citius-rust
     steps:
       - uses: actions/checkout@v6
         with:
-          path: rust-api
+          path: citius-rust
 
       - name: Read the header pin
         id: pin
