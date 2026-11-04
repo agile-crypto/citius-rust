@@ -1,4 +1,6 @@
 /* agc_core.h: version, memory hygiene; agc_types.h: enum name helpers. */
+#include <stddef.h>
+
 #include "agc_test.h"
 
 static void version(void)
@@ -60,13 +62,35 @@ static void enum_names(void)
     CHECK(st == AGC_KEY_LIFECYCLE_STATE_ACTIVE);
 }
 
-static void locked_memory_is_not_promised_yet(void)
+/* Settings this build cannot honour are refused, never ignored (agc_core.h). */
+static void unhonoured_settings_are_refused(void)
+{
+    for (int i = 0; i < 5; i++) {
+        agc_ctx_config cfg;
+        AGC_INIT(&cfg);
+        switch (i) {
+        case 0: cfg.require_locked_memory = 1; break;
+        case 1: cfg.fips_mode = 1; break;
+        case 2: cfg.catalog_path = "/etc/agc/catalog.json"; break;
+        case 3: cfg.provider_config_path = "/etc/agc/providers.json"; break;
+        case 4: cfg.key_store_uri = "file:/var/lib/agc"; break;
+        }
+        agc_ctx *ctx = (agc_ctx *)&cfg; /* deliberately non-NULL */
+        CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
+    }
+}
+
+/* A caller built against headers without key_store_uri passes a shorter
+ * struct: the missing field reads as NULL, so keys stay in memory. */
+static void older_config_without_key_store_uri_opens(void)
 {
     agc_ctx_config cfg;
     AGC_INIT(&cfg);
-    cfg.require_locked_memory = 1;
+    cfg.key_store_uri = "file:/must-not-be-read";
+    cfg.struct_size = offsetof(agc_ctx_config, key_store_uri);
     agc_ctx *ctx = NULL;
-    CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
+    CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_OK);
+    agc_ctx_close(ctx);
 }
 
 int main(void)
@@ -75,6 +99,7 @@ int main(void)
     secure_memory();
     constant_time_equal();
     enum_names();
-    locked_memory_is_not_promised_yet();
+    unhonoured_settings_are_refused();
+    older_config_without_key_store_uri_opens();
     return 0;
 }

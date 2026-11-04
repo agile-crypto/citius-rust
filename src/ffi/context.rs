@@ -60,6 +60,12 @@ impl Config {
         if !cfg.provider_config_path.is_null() {
             return Err(FfiError::NotImplemented("provider_config_path"));
         }
+        // NULL (also what an older, shorter config reads as) keeps keys in
+        // memory. A persistent store waits for its at-rest protection to be
+        // agreed: plaintext key material on disk is not offered.
+        if !cfg.key_store_uri.is_null() {
+            return Err(FfiError::NotImplemented("key_store_uri (keys are held in memory only)"));
+        }
         // SAFETY: default_policy is NULL or a C string (this function's contract).
         let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
         Ok(Config { mode: cfg.mode, default_policy })
