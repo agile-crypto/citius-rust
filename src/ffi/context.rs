@@ -1,7 +1,11 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adapters::providers::RustCrypto;
-use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
+use crate::adapters::storage::{
+    FileKeyRepository, InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry, WrappingKey,
+};
+use crate::domain::key::KeyRepository;
 use crate::app::{CryptoOrchestrator, Discovery, KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
 use crate::domain::provider::ProviderRegistry;
@@ -34,6 +38,15 @@ pub struct Context {
 pub struct Config {
     pub mode: agc_mode,
     pub default_policy: Option<String>,
+    /// Where keys live: in memory, or a sealed file store.
+    pub key_store: KeyStore,
+}
+
+/// `agc_ctx_config.key_store_uri` and its wrapping key.
+#[derive(Clone)]
+pub enum KeyStore {
+    Memory,
+    File { dir: PathBuf, wrapping_key_path: PathBuf },
 }
 
 impl Config {
@@ -60,16 +73,31 @@ impl Config {
         if !cfg.provider_config_path.is_null() {
             return Err(FfiError::NotImplemented("provider_config_path"));
         }
-        // NULL (also what an older, shorter config reads as) keeps keys in
-        // memory. A persistent store waits for its at-rest protection to be
-        // agreed: plaintext key material on disk is not offered.
-        if !cfg.key_store_uri.is_null() {
-            return Err(FfiError::NotImplemented("key_store_uri (keys are held in memory only)"));
-        }
+        // SAFETY: the strings are NULL or C strings (this function's contract).
+        let key_store = unsafe { key_store(cfg) }?;
         // SAFETY: default_policy is NULL or a C string (this function's contract).
         let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
-        Ok(Config { mode: cfg.mode, default_policy })
+        Ok(Config { mode: cfg.mode, default_policy, key_store })
     }
+}
+
+/// The key store `cfg` names. NULL (also what an older, shorter config
+/// reads as: the fields are zero) keeps keys in memory.
+///
+/// # Safety
+/// The string fields of `cfg` are NULL or valid C strings.
+unsafe fn key_store(cfg: &agc_ctx_config) -> Result<KeyStore, FfiError> {
+    // SAFETY: forwarded from this function's contract.
+    let Some(uri) = (unsafe { optional_str(cfg.key_store_uri, "cfg.key_store_uri") })? else {
+        return Ok(KeyStore::Memory);
+    };
+    let Some(dir) = uri.strip_prefix("file:").filter(|d| !d.is_empty()) else {
+        return Err(FfiError::NotImplemented("key_store_uri schemes other than file:<directory>"));
+    };
+    // SAFETY: forwarded from this function's contract.
+    let wrapping_key_path = unsafe { optional_str(cfg.key_store_wrapping_key_path, "cfg.key_store_wrapping_key_path") }?
+        .ok_or_else(|| FfiError::invalid("a file: key store requires key_store_wrapping_key_path"))?;
+    Ok(KeyStore::File { dir: PathBuf::from(dir), wrapping_key_path: PathBuf::from(wrapping_key_path) })
 }
 
 /// The current process id.
@@ -87,7 +115,12 @@ impl Context {
         providers.register(Arc::new(RustCrypto))?;
         validate_providers(&providers, templates.as_ref())?;
 
-        let keys = Arc::new(InMemoryKeyRepository::new());
+        let keys: Arc<dyn KeyRepository> = match &config.key_store {
+            KeyStore::Memory => Arc::new(InMemoryKeyRepository::new()),
+            KeyStore::File { dir, wrapping_key_path } => {
+                Arc::new(FileKeyRepository::open(dir, WrappingKey::from_file(wrapping_key_path)?)?)
+            }
+        };
         let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
         let providers = Arc::new(providers);
         Ok(Context {

@@ -221,6 +221,44 @@ impl ScopeSpecification {
             && want.additional.iter().all(|(k, v)| self.additional.get(k) == Some(v))
     }
 
+    /// The API message, inverse of `from_proto` (`from_proto(&s.to_proto())`
+    /// is `s`): how a key version's scope is stored.
+    pub fn to_proto(&self) -> api::ScopeSpecification {
+        let security = self.security.map(|s| api::UniversalSecurityProperties {
+            security_strength_bits: s.strength_bits,
+            nist_security_level: s.nist_level as i32,
+            quantum_safe: s.quantum_safe,
+            nist_status: s.nist_status as i32,
+            fips_approved: s.fips_approved,
+        });
+        let additional_properties = self.additional.clone();
+        let props = &self.properties;
+        let scope = self.scope.value();
+        macro_rules! spec {
+            ($variant:ident, $msg:ident { $($field:ident: $value:expr),* }) => {
+                ScopeSpec::$variant(api::$msg { scope, security, additional_properties, $($field: $value),* })
+            };
+        }
+        let spec = match self.scope {
+            Scope::Signature(_) => spec!(Signature, SignatureScopeSpec {
+                non_malleable: props.non_malleable,
+                deterministic: props.deterministic,
+                accepted_digest_hashes: props.accepted_digest_hashes.iter().map(|&h| h as i32).collect()
+            }),
+            Scope::Aead(_) => spec!(Aead, AeadScopeSpec { nonce_misuse_resistant: props.nonce_misuse_resistant }),
+            Scope::KeyAgreement(_) => spec!(KeyAgreement, KeyAgreementScopeSpec { forward_secrecy: props.forward_secrecy }),
+            Scope::Kdf(_) => spec!(Kdf, KdfScopeSpec { memory_hard: props.memory_hard }),
+            Scope::Mac(_) => spec!(Mac, MacScopeSpec {}),
+            Scope::Kem(_) => spec!(Kem, KemScopeSpec {}),
+            Scope::Hash(_) => spec!(Hash, HashScopeSpec {}),
+            Scope::KeyWrapping(_) => spec!(KeyWrapping, KeyWrappingScopeSpec {}),
+            Scope::SymmetricCipher(_) => spec!(SymmetricCipher, SymmetricCipherScopeSpec {}),
+            Scope::DiskEncryption(_) => spec!(DiskEncryption, DiskEncryptionScopeSpec {}),
+            Scope::GenericSecret(_) => spec!(GenericSecret, GenericSecretScopeSpec {}),
+        };
+        api::ScopeSpecification { scope_spec: Some(spec) }
+    }
+
     /// From the API message. Unknown enum values are rejected: this is where
     /// numbers from outside become domain values.
     pub fn from_proto(p: &api::ScopeSpecification) -> Result<Self, Error> {
@@ -481,6 +519,29 @@ mod go_scope_tests {
         let mut runs = kinds.clone();
         runs.dedup();
         assert_eq!(runs.len(), 11, "each kind once, contiguously");
+    }
+
+    #[test]
+    fn to_proto_inverts_from_proto() {
+        let mut s = ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Prehashed));
+        s.properties.non_malleable = Some(false);
+        s.properties.deterministic = Some(true);
+        s.properties.accepted_digest_hashes = vec![api::HashAlgorithm::Sha384, api::HashAlgorithm::Sha512];
+        s.security = Some(SecurityProperties {
+            strength_bits: 192,
+            nist_level: api::NistSecurityLevel::NistSecurityLevel3,
+            quantum_safe: Some(false),
+            nist_status: api::NistStatus::Approved,
+            fips_approved: None,
+        });
+        s.additional = BTreeMap::from([("k".into(), "v".into())]);
+        let mut all = vec![s];
+        for scope in Scope::ALL {
+            all.push(ScopeSpecification::any_of(scope));
+        }
+        for s in all {
+            assert_eq!(ScopeSpecification::from_proto(&s.to_proto()).unwrap(), s, "{:?}", s.scope);
+        }
     }
 
     #[test]

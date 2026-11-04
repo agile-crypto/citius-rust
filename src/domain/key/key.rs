@@ -159,6 +159,35 @@ impl Key {
         })
     }
 
+    /// A key as a store recorded it, for storage adapters only. The same
+    /// invariants as `new` and `add_version` are checked, so a damaged or
+    /// edited record is refused rather than trusted: versions numbered 1, 2,
+    /// ... in order and all of the key's kind, and a name and a policy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        id: KeyId,
+        name: &str,
+        policy: &str,
+        state: State,
+        versions: Vec<Version>,
+        created_at: SystemTime,
+        updated_at: SystemTime,
+        revision: u64,
+    ) -> Result<Key, Error> {
+        const OP: &str = "Key::restore";
+        let mut versions = versions.into_iter();
+        let first = versions.next().ok_or_else(|| Error::new(Code::Internal, OP, "a stored key has no version"))?;
+        let mut k = Key::new(id, name, policy, first).map_err(|e| Error::new(Code::Internal, OP, e.message().to_owned()))?;
+        for v in versions {
+            k.add_version(v).map_err(|e| Error::new(Code::Internal, OP, e.message().to_owned()))?;
+        }
+        k.state = state;
+        k.created_at = created_at;
+        k.updated_at = updated_at;
+        k.revision = revision;
+        Ok(k)
+    }
+
     pub fn id(&self) -> &KeyId {
         &self.id
     }

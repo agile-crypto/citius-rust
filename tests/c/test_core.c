@@ -65,7 +65,7 @@ static void enum_names(void)
 /* Settings this build cannot honour are refused, never ignored (agc_core.h). */
 static void unhonoured_settings_are_refused(void)
 {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         agc_ctx_config cfg;
         AGC_INIT(&cfg);
         switch (i) {
@@ -73,11 +73,17 @@ static void unhonoured_settings_are_refused(void)
         case 1: cfg.fips_mode = 1; break;
         case 2: cfg.catalog_path = "/etc/agc/catalog.json"; break;
         case 3: cfg.provider_config_path = "/etc/agc/providers.json"; break;
-        case 4: cfg.key_store_uri = "file:/var/lib/agc"; break;
         }
         agc_ctx *ctx = (agc_ctx *)&cfg; /* deliberately non-NULL */
         CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
     }
+    /* A file: store without its wrapping key is a configuration error
+     * (test_key_store covers the store itself). */
+    agc_ctx_config cfg;
+    AGC_INIT(&cfg);
+    cfg.key_store_uri = "file:/var/lib/agc";
+    agc_ctx *ctx = NULL;
+    CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_INVALID_ARGUMENT);
 }
 
 /* A caller built against headers without key_store_uri passes a shorter
