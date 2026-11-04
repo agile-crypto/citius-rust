@@ -68,6 +68,8 @@ fn main() {
     let algorithms = algorithm_params(&bindings.to_string(), &proto_api);
     fs::write(out_path.join("algorithm_params.rs"), algorithms).expect("Couldn't write algorithm params");
 
+    set_library_name(&bindings.to_string());
+
     let mut checks = String::new();
     for (name, arity) in &functions {
         if skip.contains(name) {
@@ -407,4 +409,27 @@ fn find_in_mod<'a>(items: &'a [syn::Item], module: &str, name: &str) -> Option<&
 
 fn camel(snake: &str) -> String {
     snake.split('_').map(|w| w[..1].to_uppercase() + &w[1..]).collect()
+}
+
+/// The shared library's versioned name, from the crate's major version: on
+/// Linux the soname `libagilecrypto.so.<major>`, on macOS the install name
+/// `@rpath/libagilecrypto.<major>.dylib`. The crate's major version must be
+/// the headers' AGC_API_VERSION_MAJOR, so a library and the headers it
+/// implements cannot disagree about the ABI.
+fn set_library_name(bindings: &str) {
+    let major: u32 = env::var("CARGO_PKG_VERSION_MAJOR").unwrap().parse().unwrap();
+    let header_major: u32 = bindings
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("pub const AGC_API_VERSION_MAJOR: u32 = "))
+        .and_then(|v| v.trim_end_matches(';').parse().ok())
+        .expect("the bindings define AGC_API_VERSION_MAJOR");
+    assert_eq!(
+        major, header_major,
+        "Cargo.toml version {major}.x does not match the headers' AGC_API_VERSION_MAJOR {header_major}"
+    );
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libagilecrypto.{major}.dylib"),
+        Ok("linux") => println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libagilecrypto.so.{major}"),
+        _ => {}
+    }
 }

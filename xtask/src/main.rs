@@ -10,7 +10,11 @@
 //!   cargo xtask interop        cross-check signatures, ciphertexts and
 //!                              metadata with the Go software provider
 //!                              (needs Go and a citius-server checkout)
-//!   cargo xtask all            everything above
+//!   cargo xtask install --prefix DIR
+//!                              build the release library and install it,
+//!                              its headers, pkg-config file and CMake
+//!                              package under DIR
+//!   cargo xtask all            everything above but install
 //!
 //! The library is always built first: `cargo test` does not rebuild the
 //! cdylib, and a C test linked against a stale one tests old code.
@@ -38,8 +42,9 @@ fn main() -> ExitCode {
         "miri" => miri(),
         "tsan" => tsan(),
         "interop" => interop(),
+        "install" => install(&env::args().skip(2).collect::<Vec<_>>()),
         "all" => test_c().and_then(|()| miri()).and_then(|()| tsan()).and_then(|()| interop()),
-        _ => Err("usage: cargo xtask <test-c|check-symbols|miri|tsan|interop|all>".to_owned()),
+        _ => Err("usage: cargo xtask <test-c|check-symbols|miri|tsan|interop|install --prefix DIR|all>".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -97,10 +102,32 @@ fn build() -> Result<Built, String> {
         .filter(|l| l.contains(r#""reason":"build-script-executed""#) && l.contains(PACKAGE))
         .find_map(|l| json_string(l, "out_dir"))
         .ok_or("cargo build did not report the build script's out_dir")?;
-    Ok(Built {
-        lib_dir: root().join("target/debug"),
-        out_dir: PathBuf::from(out_dir),
-    })
+    let lib_dir = root().join("target/debug");
+    link_versioned(&lib_dir)?;
+    Ok(Built { lib_dir, out_dir: PathBuf::from(out_dir) })
+}
+
+/// The library's major version, which its versioned file name and soname
+/// carry (build.rs checks it equals the headers' AGC_API_VERSION_MAJOR).
+fn major_version() -> Result<String, String> {
+    Ok(cargo_package_version()?.split('.').next().unwrap_or_default().to_owned())
+}
+
+/// The versioned name of the shared library: libagilecrypto.so.<major> on
+/// Linux, libagilecrypto.<major>.dylib on macOS.
+fn versioned_cdylib_name() -> Result<String, String> {
+    let major = major_version()?;
+    Ok(if cfg!(target_os = "macos") { format!("lib{LIB}.{major}.dylib") } else { format!("lib{LIB}.so.{major}") })
+}
+
+/// Makes the versioned name resolve next to a freshly built cdylib: the
+/// library records it as its install name / soname, so programs linked
+/// against it look for that name at run time.
+fn link_versioned(lib_dir: &Path) -> Result<(), String> {
+    let versioned = lib_dir.join(versioned_cdylib_name()?);
+    let _ = fs::remove_file(&versioned);
+    std::os::unix::fs::symlink(cdylib(lib_dir).file_name().unwrap(), &versioned)
+        .map_err(|e| format!("{}: {e}", versioned.display()))
 }
 
 /// The string value of `"key":"..."` in one line of cargo's JSON output.
@@ -253,6 +280,7 @@ fn tsan() -> Result<(), String> {
         "cargo build (tsan)",
     )?;
     let lib_dir = target_dir.join(&n.host).join("debug");
+    link_versioned(&lib_dir)?;
 
     // A process may contain one TSan runtime. On macOS the instrumented
     // cdylib already links Rust's; the C test must use that one, not clang's.
@@ -282,12 +310,14 @@ struct Variant {
 }
 
 fn run_c_tests(variants: &[Variant]) -> Result<(), String> {
-    let mut sources: Vec<PathBuf> = fs::read_dir(root().join("tests/c"))
-        .map_err(|e| format!("cannot read tests/c: {e}"))?
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "c"))
-        .collect();
-    sources.sort();
+    // The tests, and the examples, which are built and run the same way so
+    // they cannot fall behind the headers.
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for dir in ["tests/c", "examples/c"] {
+        let found = fs::read_dir(root().join(dir)).map_err(|e| format!("cannot read {dir}: {e}"))?;
+        sources.extend(found.map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "c")));
+    }
+    sources.sort_by_key(|p| p.file_name().map(|n| n.to_owned()));
     let cc = env::var("CC").unwrap_or_else(|_| "cc".to_owned());
 
     let mut failed = Vec::new();
@@ -309,7 +339,7 @@ fn run_c_tests(variants: &[Variant]) -> Result<(), String> {
                     .arg("-I")
                     .arg(include_dir())
                     .arg("-I")
-                    .arg(root().join("tests/c"))
+                    .arg(src.parent().unwrap())
                     .arg(src)
                     .arg("-o")
                     .arg(&obj),
@@ -413,4 +443,127 @@ fn interop() -> Result<(), String> {
 
 fn json_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+// ---------------------------------------------------------------------------
+// Installing
+// ---------------------------------------------------------------------------
+
+/// Installs the release library for C projects:
+///
+///   DIR/lib/libagilecrypto.<major>.dylib  (libagilecrypto.so.<major> on Linux)
+///   DIR/lib/libagilecrypto.dylib          -> the versioned file, for linking
+///   DIR/lib/libagilecrypto.a
+///   DIR/include/agc/*.h                   the headers, at HEADERS_PIN
+///   DIR/lib/pkgconfig/agilecrypto.pc      pkg-config --cflags --libs agilecrypto
+///   DIR/lib/cmake/agilecrypto/            find_package(agilecrypto) -> agilecrypto::agilecrypto
+///
+/// The headers go under include/agc, so programs include them as
+/// "agilecrypto.h" with -I.../include/agc, as citius-c-api's own
+/// agilecrypto.pc.in does.
+fn install(args: &[String]) -> Result<(), String> {
+    let prefix = match args {
+        [flag, dir] if flag == "--prefix" => PathBuf::from(dir),
+        _ => return Err("usage: cargo xtask install --prefix DIR".into()),
+    };
+    // Builds the release library and reports what the static library needs
+    // from the system (rustc's own list, so it is right on every platform).
+    let report = Command::new(env!("CARGO"))
+        .current_dir(root())
+        .args(["rustc", "--release", "--lib", "--package", PACKAGE, "--crate-type", "cdylib,staticlib"])
+        .args(["--", "--print", "native-static-libs"])
+        .output()
+        .map_err(|e| format!("cannot run cargo rustc: {e}"))?;
+    if !report.status.success() {
+        return Err(format!("cargo rustc --release failed:\n{}", String::from_utf8_lossy(&report.stderr)));
+    }
+    let static_libs = String::from_utf8_lossy(&report.stderr)
+        .lines()
+        .find_map(|l| l.split("native-static-libs: ").nth(1).map(str::trim).map(str::to_owned))
+        .ok_or("rustc did not report the static library's native dependencies")?;
+    let built = root().join("target/release");
+    let lib = prefix.join("lib");
+    let include = prefix.join("include/agc");
+    let pkgconfig = lib.join("pkgconfig");
+    let cmake = lib.join("cmake").join(LIB);
+    for d in [&lib, &include, &pkgconfig, &cmake] {
+        fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let copy = |from: &Path, to: &Path| fs::copy(from, to).map(|_| ()).map_err(|e| format!("{}: {e}", to.display()));
+
+    // The shared library under its versioned name, the dev link to it.
+    let versioned = versioned_cdylib_name()?;
+    copy(&cdylib(&built), &lib.join(&versioned))?;
+    let dev = lib.join(cdylib(&built).file_name().unwrap());
+    let _ = fs::remove_file(&dev);
+    std::os::unix::fs::symlink(&versioned, &dev).map_err(|e| format!("{}: {e}", dev.display()))?;
+    copy(&built.join(format!("lib{LIB}.a")), &lib.join(format!("lib{LIB}.a")))?;
+
+    for entry in fs::read_dir(include_dir()).map_err(|e| format!("{}: {e}", include_dir().display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("h") {
+            copy(&path, &include.join(path.file_name().unwrap()))?;
+        }
+    }
+
+    let version = cargo_package_version()?;
+    fs::write(
+        pkgconfig.join(format!("{LIB}.pc")),
+        format!(
+            "prefix={prefix}\nlibdir=${{prefix}}/lib\nincludedir=${{prefix}}/include\n\n\
+             Name: {LIB}\nDescription: Abstract Cryptographic API, C binding (Rust implementation)\n\
+             Version: {version}\nLibs: -L${{libdir}} -l{LIB}\nLibs.private: {static_libs}\n\
+             Cflags: -I${{includedir}}/agc\n",
+            prefix = prefix.display(),
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    fs::write(
+        cmake.join(format!("{LIB}Config.cmake")),
+        format!(
+            "# find_package({LIB}) -> the imported target {LIB}::{LIB}.\n\
+             get_filename_component(_agc_prefix \"${{CMAKE_CURRENT_LIST_DIR}}/../../..\" ABSOLUTE)\n\
+             if(NOT TARGET {LIB}::{LIB})\n\
+             \x20 add_library({LIB}::{LIB} SHARED IMPORTED)\n\
+             \x20 set_target_properties({LIB}::{LIB} PROPERTIES\n\
+             \x20   IMPORTED_LOCATION \"${{_agc_prefix}}/lib/{versioned}\"\n\
+             \x20   IMPORTED_SONAME \"{soname}\"\n\
+             \x20   INTERFACE_INCLUDE_DIRECTORIES \"${{_agc_prefix}}/include/agc\")\n\
+             endif()\n\
+             unset(_agc_prefix)\n",
+            soname = if cfg!(target_os = "macos") { format!("@rpath/{versioned}") } else { versioned.clone() },
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        cmake.join(format!("{LIB}ConfigVersion.cmake")),
+        format!(
+            "# Compatible within one major version: the ABI breaks only across majors.\n\
+             set(PACKAGE_VERSION \"{version}\")\n\
+             string(REGEX MATCH \"^[0-9]+\" _agc_major \"${{PACKAGE_FIND_VERSION}}\")\n\
+             if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION OR NOT _agc_major STREQUAL \"{major}\")\n\
+             \x20 set(PACKAGE_VERSION_COMPATIBLE FALSE)\n\
+             else()\n\
+             \x20 set(PACKAGE_VERSION_COMPATIBLE TRUE)\n\
+             \x20 if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)\n\
+             \x20   set(PACKAGE_VERSION_EXACT TRUE)\n\
+             \x20 endif()\n\
+             endif()\n\
+             unset(_agc_major)\n",
+            major = major_version()?,
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    println!("install: {} under {}", versioned, prefix.display());
+    Ok(())
+}
+
+fn cargo_package_version() -> Result<String, String> {
+    let manifest = fs::read_to_string(root().join("Cargo.toml")).map_err(|e| format!("Cargo.toml: {e}"))?;
+    manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')))
+        .map(str::to_owned)
+        .ok_or_else(|| "Cargo.toml has no version".into())
 }
