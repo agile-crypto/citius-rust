@@ -91,6 +91,7 @@ fn code_rc(code: Code) -> agc_rc {
         Code::InvalidKeyMaterial => AGC_ERR_CRYPTO_INVALID_KEY_MATERIAL,
         Code::NotImplemented => AGC_ERR_NOT_IMPLEMENTED,
         Code::PolicyViolation => AGC_ERR_CRYPTO_POLICY_VIOLATION,
+        Code::PolicyVersionConflict => AGC_ERR_CRYPTO_POLICY_VERSION_CONFLICT,
         Code::OperationExpired => AGC_ERR_CRYPTO_OPERATION_EXPIRED,
         Code::Internal => AGC_ERR_INTERNAL,
     }
@@ -139,6 +140,7 @@ mod tests {
             Code::InvalidKeyMaterial,
             Code::NotImplemented,
             Code::PolicyViolation,
+            Code::PolicyVersionConflict,
             Code::OperationExpired,
             Code::Internal,
         ];

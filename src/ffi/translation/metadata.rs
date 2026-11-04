@@ -124,6 +124,7 @@ pub unsafe fn md_from_c(md: &agc_metadata) -> Result<api::OperationMetadata, Ffi
         }),
         api_version: fixed_str(&md.api_version, "api_version")?,
         user_context,
+        digest_hash: md.digest_hash as i32,
     })
 }
 
@@ -135,6 +136,7 @@ pub fn md_to_c(md: &api::OperationMetadata, p: &mut Packer) -> agc_metadata {
     let mut c: agc_metadata = unsafe { std::mem::zeroed() };
     c.struct_size = size_of::<agc_metadata>();
     c.key_version = md.key_version;
+    c.digest_hash = md.digest_hash as u32;
     put_fixed(&mut c.api_version, &md.api_version);
 
     let slot = p.reserve_array::<agc_kv>(md.user_context.len());

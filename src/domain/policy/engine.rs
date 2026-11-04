@@ -24,7 +24,9 @@ pub trait Evaluator: Send + Sync {
 pub trait Manager: Send + Sync {
     fn create_policy(&self, name: &str, document: &str) -> Result<Policy, Error>;
     fn get_policy(&self, name: &str) -> Result<Policy, Error>;
-    fn update_policy(&self, name: &str, document: &str) -> Result<Policy, Error>;
+    /// `expected_version` > 0 makes the update conditional on the stored
+    /// version; 0 means last writer wins.
+    fn update_policy(&self, name: &str, document: &str, expected_version: i64) -> Result<Policy, Error>;
     fn delete_policy(&self, name: &str) -> Result<(), Error>;
     /// Ordered by name.
     fn list_policies(&self) -> Result<Vec<Policy>, Error>;
@@ -97,9 +99,17 @@ impl Manager for Enforcer {
         self.policy(name, "Enforcer::get_policy")
     }
 
-    fn update_policy(&self, name: &str, document: &str) -> Result<Policy, Error> {
-        let p = self.policy(name, "Enforcer::update_policy")?.with_document(document, SystemTime::now())?;
-        self.policies.update(p.clone())?;
+    fn update_policy(&self, name: &str, document: &str, expected_version: i64) -> Result<Policy, Error> {
+        const OP: &str = "Enforcer::update_policy";
+        if expected_version < 0 {
+            return Err(Error::new(
+                Code::InvalidArgument,
+                OP,
+                format!("expected_version must not be negative, got {expected_version}"),
+            ));
+        }
+        let p = self.policy(name, OP)?.with_document(document, SystemTime::now())?;
+        self.policies.update(p.clone(), expected_version)?;
         Ok(p)
     }
 

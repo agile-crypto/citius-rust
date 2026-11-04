@@ -58,6 +58,7 @@ impl KeyOrchestrator {
             implementation,
         };
 
+        check_requested_digest_hashes(&spec.scope_spec)?;
         let template = self.choose_template(&spec.policy, spec.template_id.as_deref(), &spec.scope_spec, &custody)?;
 
         self.policy.validate_operation(&spec.policy, Operation::CreateKey, Some(template.id()))?;
@@ -76,6 +77,7 @@ impl KeyOrchestrator {
         // which operations check their parameters against.
         let mut scope_spec = spec.scope_spec;
         scope_spec.scope = template.scope_for(&scope_spec).expect("selected templates serve the intent");
+        let scope_spec = template.resolve_digest_hashes(scope_spec)?;
         let first = Version::new(
             1,
             template.id().into(),
@@ -151,7 +153,13 @@ impl KeyOrchestrator {
         // A transform keeps the key's scope; without a specification, the one
         // the current version was created for applies.
         let scope_spec = match spec.scope_spec {
-            None => current.scope_spec().clone(),
+            None => {
+                // The current version's resolved digest-hash list is not a
+                // request: the new template's own list applies.
+                let mut s = current.scope_spec().clone();
+                s.properties.accepted_digest_hashes.clear();
+                s
+            }
             Some(mut s) => {
                 if s.scope.kind() == current.scope_spec().scope.kind() && s.scope.is_any() {
                     s.scope = current.scope_spec().scope;
@@ -177,6 +185,7 @@ impl KeyOrchestrator {
             pinned: Some(current.provider().to_owned()),
             implementation,
         };
+        check_requested_digest_hashes(&scope_spec)?;
         let template = self.choose_template(k.policy(), spec.template_id.as_deref(), &scope_spec, &custody)?;
         self.policy.validate_operation(k.policy(), Operation::CreateKey, Some(template.id()))?;
         self.policy.check_template_security(k.policy(), &security_info(template, &scope_spec))?;
@@ -187,8 +196,7 @@ impl KeyOrchestrator {
             let source = self.templates.get(current.template_id()).ok_or_else(|| {
                 Error::new(Code::TemplateNotFound, OP, format!("the key's template {} is gone", current.template_id()))
             })?;
-            let source_algorithm = source.info().algorithm.as_ref().expect("templates always have an algorithm");
-            if material_profile(source_algorithm)? != material_profile(algorithm)? {
+            if template_material_profile(source.info())? != template_material_profile(template.info())? {
                 return Err(Error::new(
                     Code::IncompatibleParameters,
                     OP,
@@ -223,6 +231,8 @@ impl KeyOrchestrator {
         } else {
             None
         };
+        // Against the new template, which may accept fewer digest hashes.
+        let scope_spec = template.resolve_digest_hashes(scope_spec)?;
         Ok(TransformPlan { template_id: template.id().to_owned(), provider, scope_spec, retained, key: k })
     }
 

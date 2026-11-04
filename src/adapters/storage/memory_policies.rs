@@ -26,10 +26,21 @@ impl PolicyRepository for InMemoryPolicyRepository {
         Ok(())
     }
 
-    fn update(&self, p: Policy) -> Result<(), Error> {
+    fn update(&self, p: Policy, expected_version: i64) -> Result<(), Error> {
         const OP: &str = "InMemoryPolicyRepository.update";
         let mut m = self.policies.write().map_err(|_| poisoned(OP))?;
         let slot = m.get_mut(p.name()).ok_or_else(|| not_found(OP, p.name()))?;
+        // One check under the lock, so two updates from the same version
+        // cannot both succeed (Go's repository has no compare-and-put).
+        let stale = slot.version() != p.version() - 1;
+        if stale || (expected_version > 0 && slot.version() != expected_version) {
+            let want = if expected_version > 0 { expected_version } else { p.version() - 1 };
+            return Err(Error::new(
+                Code::PolicyVersionConflict,
+                OP,
+                format!("policy {} is at version {}, expected {want}", p.name(), slot.version()),
+            ));
+        }
         *slot = p;
         Ok(())
     }
@@ -87,12 +98,12 @@ mod tests {
         assert_eq!(e.get_policy("p").unwrap().document(), DOC);
 
         let before = e.get_policy("p").unwrap();
-        e.update_policy("p", "{}").unwrap();
+        e.update_policy("p", "{}", 0).unwrap();
         let after = e.get_policy("p").unwrap();
         assert_eq!(after.document(), "{}");
         assert_eq!(after.created_at(), before.created_at());
-        assert_eq!(code(e.update_policy("q", "{}")), Code::PolicyNotFound);
-        assert_eq!(code(e.update_policy("p", "{")), Code::InvalidArgument);
+        assert_eq!(code(e.update_policy("q", "{}", 0)), Code::PolicyNotFound);
+        assert_eq!(code(e.update_policy("p", "{", 0)), Code::InvalidArgument);
 
         e.create_policy("a", "{}").unwrap();
         let names: Vec<_> = e.list_policies().unwrap().iter().map(|p| p.name().to_owned()).collect();

@@ -19,7 +19,7 @@ static void check_last_error(const char *needle)
 
 static void stubs(agc_ctx *ctx)
 {
-    CHECK_RC(agc_delete_key(ctx, "k"), AGC_ERR_NOT_IMPLEMENTED);
+    CHECK_RC(agc_delete_key(ctx, "k", 0), AGC_ERR_NOT_IMPLEMENTED);
     check_last_error("DeleteKey");
 
     uint8_t buf[16];
@@ -44,7 +44,7 @@ static void stubs(agc_ctx *ctx)
     check_last_error("EncryptInit");
 
     /* A NULL context is still an invalid argument, not "not implemented". */
-    CHECK_RC(agc_delete_key(NULL, "k"), AGC_ERR_INVALID_ARGUMENT);
+    CHECK_RC(agc_delete_key(NULL, "k", 0), AGC_ERR_INVALID_ARGUMENT);
 }
 
 static void sessions(agc_ctx *ctx)

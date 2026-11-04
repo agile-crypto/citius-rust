@@ -175,7 +175,7 @@ static void instances(agc_ctx *ctx)
     CHECK_RC(agc_provider_instance_iter_next(it, &ir), AGC_OK);
     CHECK_STR(ir.instance.instance_id, "rustcrypto");
     CHECK_STR(ir.instance.provider_id, "software");
-    CHECK(ir.instance.enabled == 1);
+    CHECK(ir.instance.disabled == 0);
     CHECK(ir.instance.has_implementation_override);
     CHECK(ir.instance.implementation_override.memory_safe_language == AGC_TRUE);
     CHECK_STR(ir.instance.implementation_override.implementation_language, "rust");

@@ -18,7 +18,10 @@ impl PolicyAdmin {
         PolicyAdmin { policies, keys }
     }
 
-    pub fn create(&self, name: &str, document: &str) -> Result<Policy, Error> {
+    /// `format` "" or "json": the one rules language this library parses
+    /// (Go: checkFormat).
+    pub fn create(&self, name: &str, document: &str, format: &str) -> Result<Policy, Error> {
+        check_format(format, "PolicyAdmin::create")?;
         self.policies.create_policy(name, document)
     }
 
@@ -26,8 +29,9 @@ impl PolicyAdmin {
         self.policies.get_policy(name)
     }
 
-    pub fn update(&self, name: &str, document: &str) -> Result<Policy, Error> {
-        self.policies.update_policy(name, document)
+    pub fn update(&self, name: &str, document: &str, format: &str, expected_version: i64) -> Result<Policy, Error> {
+        check_format(format, "PolicyAdmin::update")?;
+        self.policies.update_policy(name, document, expected_version)
     }
 
     pub fn list(&self) -> Result<Vec<Policy>, Error> {
@@ -50,6 +54,20 @@ impl PolicyAdmin {
     }
 }
 
+/// The format every stored policy has: the JSON rules language.
+pub const POLICY_FORMAT: &str = "json";
+
+fn check_format(format: &str, op: &'static str) -> Result<(), Error> {
+    if format.is_empty() || format == POLICY_FORMAT {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::InvalidArgument,
+        op,
+        format!("unsupported policy format {format:?}: only {POLICY_FORMAT:?} is supported"),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,8 +79,8 @@ mod tests {
     fn a_policy_bound_to_keys_cannot_be_deleted() {
         let keys = Arc::new(InMemoryKeyRepository::new());
         let admin = PolicyAdmin::new(Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new()))), keys.clone());
-        admin.create("p", "{}").unwrap();
-        admin.create("unused", "{}").unwrap();
+        admin.create("p", "{}", "").unwrap();
+        admin.create("unused", "{}", "").unwrap();
         let k = keys.create(key("k1", "k")).unwrap(); // bound to policy "p"
 
         let err = admin.delete("p").unwrap_err();

@@ -54,11 +54,6 @@ pub fn c_algorithm_details(a: &api::AlgorithmDetails, p: &mut Packer, depth: usi
 fn irregular_arm(a: &Algorithm, c: &mut agc_algorithm_params, p: &mut Packer, depth: usize) -> agc_algorithm_kind {
     // Writing a union member is safe; the returned kind names the member written.
     match a {
-        Algorithm::Ed448(m) => {
-            c.u.ed448.variant = m.variant as u32;
-            c.u.ed448.context = p.bytes(&m.context);
-            agc_algorithm_kind_AGC_ALGORITHM_ED448
-        }
         Algorithm::Gost3410(m) => {
             c.u.gost3410.version = m.version as u32;
             c.u.gost3410.key_size_bits = m.key_size_bits;
@@ -295,6 +290,7 @@ pub fn c_template_info(t: &api::TemplateInfo, p: &mut Packer) -> agc_template_in
         c.has_security_guarantees = 1;
         c.security_guarantees = c_guarantees(g, p);
     }
+    c.key_material_family = p.str(&t.key_material_family);
     c
 }
 
@@ -347,10 +343,7 @@ mod tests {
                     assert_eq!((c.params.u.rsa_pss.key_size_bits, c.params.u.rsa_pss.hash), (m.key_size_bits, m.hash as u32))
                 }
                 Algorithm::MlDsa(m) => assert_eq!(c.params.u.ml_dsa.parameter_set, m.parameter_set as u32),
-                Algorithm::Ed448(m) => {
-                    let ctx = c.params.u.ed448.context;
-                    assert_eq!(ctx.len, m.context.len());
-                }
+                Algorithm::Ed448(m) => assert_eq!(c.params.u.ed448.variant, m.variant as u32),
                 Algorithm::Kmac(m) => {
                     assert_eq!((c.params.u.kmac.variant, c.params.u.kmac.output_bits), (m.variant, m.output_bits));
                     let cust = c.params.u.kmac.customization;
@@ -385,6 +378,7 @@ mod tests {
             let c = pack_exact(region, &mut used, |p| c_template_info(info, p)).unwrap();
             assert_eq!(s(c.template_id), info.template_id);
             assert_eq!(s(c.display_name), info.display_name);
+            assert_eq!(s(c.key_material_family), info.key_material_family);
             assert_eq!(c.status, info.status as u32);
             assert_eq!((c.standards_count, c.scoped_capabilities_count), (info.standards.len(), info.scoped_capabilities.len()));
             for (i, std) in info.standards.iter().enumerate() {

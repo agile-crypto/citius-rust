@@ -73,7 +73,7 @@ mod tests {
                 assert!(ok(i), "{base}: value #{i} does not round-trip");
             }
         });
-        assert_eq!(enums, 41, "one per *_name/*_from_name pair in agc_types.h");
+        assert_eq!(enums, 42, "one per *_name/*_from_name pair in agc_types.h");
     }
 
     #[test]

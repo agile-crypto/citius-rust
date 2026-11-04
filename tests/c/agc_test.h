@@ -51,7 +51,7 @@ static inline agc_rc create_policy(agc_ctx *ctx, const char *name, const char *d
     AGC_INIT(&req);
     req.name = name;
     req.policy_document = document;
-    return agc_create_policy(ctx, &req);
+    return agc_create_policy(ctx, &req, NULL);
 }
 
 /* A context with only the "default" policy (DEFAULT_POLICY). */

@@ -173,13 +173,17 @@ pub struct SecurityProperties {
 /// Properties that only some scope kinds have. Each is a filter on the
 /// request side and a fact on a template; one that does not apply to the
 /// scope's kind is ignored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrimitiveProperties {
     pub non_malleable: Option<bool>,
     pub deterministic: Option<bool>,
     pub nonce_misuse_resistant: Option<bool>,
     pub forward_secrecy: Option<bool>,
     pub memory_hard: Option<bool>,
+    /// Digest hashes a prehashed signature scope accepts, preferred first.
+    /// Template: what it can sign; request: a requirement (every entry must
+    /// be accepted); key version: what it accepts. Empty for other scopes.
+    pub accepted_digest_hashes: Vec<api::HashAlgorithm>,
 }
 
 /// What a caller asks for (as a filter), or what a template offers: a scope
@@ -234,6 +238,11 @@ impl ScopeSpecification {
             ScopeSpec::Signature(s) => {
                 props.non_malleable = s.non_malleable;
                 props.deterministic = s.deterministic;
+                props.accepted_digest_hashes = s
+                    .accepted_digest_hashes
+                    .iter()
+                    .map(|&h| known(h, "accepted digest hash"))
+                    .collect::<Result<_, _>>()?;
                 (Scope::Signature(known(s.scope, "signature scope")?), &s.security, &s.additional_properties)
             }
             ScopeSpec::Aead(s) => {
@@ -311,6 +320,8 @@ fn properties_satisfy(got: &PrimitiveProperties, want: &PrimitiveProperties) -> 
         && wanted_true_is_true(got.nonce_misuse_resistant, want.nonce_misuse_resistant)
         && wanted_true_is_true(got.forward_secrecy, want.forward_secrecy)
         && wanted_true_is_true(got.memory_hard, want.memory_hard)
+        // A requested digest-hash list is a requirement (Go: matcher.go).
+        && want.accepted_digest_hashes.iter().all(|h| got.accepted_digest_hashes.contains(h))
 }
 
 #[cfg(test)]

@@ -306,6 +306,7 @@ mod tests {
                 extractable: false,
                 public_key: None,
                 implementation: api::ImplementationProperties::default(),
+                origin: api::KeyOrigin::Generated,
             },
             strategy: api::MigrationStrategy::RekeyAndArchive,
             key_bytes_preserved: false,

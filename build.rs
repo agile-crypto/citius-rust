@@ -284,7 +284,7 @@ fn write_skipped_check(out: &mut String, name: &str) {
 /// the proto message (strings, slices, presence flags, nested arrays). Hand-written in
 /// src/ffi/translation/algorithm.rs.
 const IRREGULAR_ALGORITHM_ARMS: &[&str] =
-    &["ed448", "gost3410", "sp800_108_kdf", "tls12", "kmac", "gost3411", "poly1305", "custom", "gost28147", "hybrid"];
+    &["gost3410", "sp800_108_kdf", "tls12", "kmac", "gost3411", "poly1305", "custom", "gost28147", "hybrid"];
 
 /// `fill_regular_arm`: for each arm of the C `agc_algorithm_params` union whose struct has
 /// exactly the proto message's fields, in order, all scalar, a field-by-field copy from

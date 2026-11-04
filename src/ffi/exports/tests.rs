@@ -55,7 +55,7 @@ fn create_policy(ctx: *mut agc_ctx, name: &CStr, document: &CStr) -> agc_rc {
     req.name = name.as_ptr();
     req.policy_document = document.as_ptr();
     // SAFETY: ctx is open; req and its strings are live.
-    unsafe { agc_create_policy(ctx, &req) }
+    unsafe { agc_create_policy(ctx, &req, ptr::null_mut()) }
 }
 
 fn close(ctx: *mut agc_ctx) {
@@ -228,11 +228,26 @@ fn policy_crud() {
     upd.struct_size = size_of::<agc_update_policy_request>();
     upd.name = c"p".as_ptr();
     upd.policy_document = c"".as_ptr(); // an empty document is valid: it allows nothing
-    // SAFETY: ctx is open; upd and its strings are live.
-    assert_eq!(unsafe { agc_update_policy(ctx, &upd) }, AGC_OK as agc_rc);
+    let mut version = 0i64;
+    // SAFETY: ctx is open; upd, its strings and version are live.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd, &mut version) }, AGC_OK as agc_rc);
+    assert_eq!(version, 2, "1 on create, one more per update");
+    // Optimistic concurrency: a stale expected_version changes nothing.
+    upd.expected_version = 1;
+    // SAFETY: as above.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd, &mut version) }, AGC_ERR_CRYPTO_POLICY_VERSION_CONFLICT);
+    upd.expected_version = 2;
+    // SAFETY: as above.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd, &mut version) }, AGC_OK as agc_rc);
+    assert_eq!(version, 3);
+    upd.expected_version = 0;
+    upd.format = c"rego".as_ptr();
+    // SAFETY: as above.
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd, ptr::null_mut()) }, AGC_ERR_INVALID_ARGUMENT, "only json");
+    upd.format = c"json".as_ptr();
     upd.name = c"missing".as_ptr();
     // SAFETY: as above.
-    assert_eq!(unsafe { agc_update_policy(ctx, &upd) }, AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
+    assert_eq!(unsafe { agc_update_policy(ctx, &upd, ptr::null_mut()) }, AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
 
     // SAFETY: ctx is open; the names are static.
     unsafe {
@@ -275,7 +290,7 @@ fn listing_policies_by_prefix_and_retrying_a_small_buffer() {
     // A NULL region first: BUFFER_TOO_SMALL, and the cursor stays.
     // SAFETY: it is live; out is a live local.
     assert_eq!(unsafe { agc_policy_iter_next(it, &mut out) }, AGC_ERR_BUFFER_TOO_SMALL);
-    assert_eq!(out.storage_used, "team-a".len() + 1);
+    assert_eq!(out.storage_used, "team-a".len() + 1 + "json".len() + 1, "name and format");
     out.storage = agc_buf { data: storage.as_mut_ptr(), cap: storage.len() };
     loop {
         // SAFETY: as above; out.storage points to `storage`.

@@ -21,21 +21,25 @@ static void crud(agc_ctx *ctx)
     agc_read_policy_response r;
     AGC_INIT(&r);
     CHECK_RC(agc_read_policy(ctx, "p", &r), AGC_ERR_BUFFER_TOO_SMALL); /* size query */
-    CHECK(r.storage_used == strlen("p") + 1 + strlen("{}") + 1);
+    CHECK(r.storage_used == strlen("p") + 1 + strlen("{}") + 1 + strlen("json") + 1);
     r.storage = (agc_buf){storage, sizeof storage};
     CHECK_RC(agc_read_policy(ctx, "p", &r), AGC_OK);
     CHECK_STR(r.name, "p");
     CHECK_STR(r.policy_document, "{}");
+    CHECK_STR(r.format, "json");
+    CHECK(r.version == 1 && r.created_at.present && r.updated_at.present);
 
     agc_update_policy_request u;
     AGC_INIT(&u);
     u.name = "p";
     u.policy_document = DEFAULT_POLICY;
-    CHECK_RC(agc_update_policy(ctx, &u), AGC_OK);
+    int64_t version = 0;
+    CHECK_RC(agc_update_policy(ctx, &u, &version), AGC_OK);
+    CHECK(version == 2);
     CHECK_RC(agc_read_policy(ctx, "p", &r), AGC_OK);
     CHECK_STR(r.policy_document, DEFAULT_POLICY);
     u.name = "missing";
-    CHECK_RC(agc_update_policy(ctx, &u), AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
+    CHECK_RC(agc_update_policy(ctx, &u, NULL), AGC_ERR_CRYPTO_POLICY_NOT_FOUND);
 
     CHECK_RC(agc_delete_policy(ctx, "p"), AGC_OK);
     CHECK_RC(agc_delete_policy(ctx, "p"), AGC_ERR_CRYPTO_POLICY_NOT_FOUND);

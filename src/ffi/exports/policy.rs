@@ -10,8 +10,23 @@ use crate::ffi::translation::{
 };
 use crate::ffi::versioned;
 
+/// Writes the policy's version to the caller's optional output.
+///
+/// # Safety
+/// `out` is NULL or valid for writing an `i64`.
+unsafe fn put_version(out: *mut i64, version: i64) {
+    if !out.is_null() {
+        // SAFETY: non-null and writable (this function's contract).
+        unsafe { out.write(version) };
+    }
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agc_create_policy(ctx: *mut agc_ctx, req: *const agc_create_policy_request) -> agc_rc {
+pub unsafe extern "C" fn agc_create_policy(
+    ctx: *mut agc_ctx,
+    req: *const agc_create_policy_request,
+    out_version: *mut i64,
+) -> agc_rc {
     guard(|| {
         // SAFETY: ctx is NULL or a live context (agc_core.h contract).
         let ctx = unsafe { context(ctx) }?;
@@ -21,13 +36,21 @@ pub unsafe extern "C" fn agc_create_policy(ctx: *mut agc_ctx, req: *const agc_cr
         let name = unsafe { required_str(req.name, "name") }?;
         // SAFETY: as above.
         let document = unsafe { document(req.policy_document) }?;
-        ctx.policies.create(name, document)?;
+        // SAFETY: as above.
+        let format = unsafe { optional_str(req.format, "format") }?.unwrap_or_default();
+        let p = ctx.policies.create(name, document, format)?;
+        // SAFETY: out_version is NULL or the caller's variable (agc_policy.h contract).
+        unsafe { put_version(out_version, p.version()) };
         Ok(())
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agc_update_policy(ctx: *mut agc_ctx, req: *const agc_update_policy_request) -> agc_rc {
+pub unsafe extern "C" fn agc_update_policy(
+    ctx: *mut agc_ctx,
+    req: *const agc_update_policy_request,
+    out_version: *mut i64,
+) -> agc_rc {
     guard(|| {
         // SAFETY: ctx is NULL or a live context (agc_core.h contract).
         let ctx = unsafe { context(ctx) }?;
@@ -37,7 +60,11 @@ pub unsafe extern "C" fn agc_update_policy(ctx: *mut agc_ctx, req: *const agc_up
         let name = unsafe { required_str(req.name, "name") }?;
         // SAFETY: as above.
         let document = unsafe { document(req.policy_document) }?;
-        ctx.policies.update(name, document)?;
+        // SAFETY: as above.
+        let format = unsafe { optional_str(req.format, "format") }?.unwrap_or_default();
+        let p = ctx.policies.update(name, document, format, req.expected_version)?;
+        // SAFETY: out_version is NULL or the caller's variable (agc_policy.h contract).
+        unsafe { put_version(out_version, p.version()) };
         Ok(())
     })
 }

@@ -149,8 +149,10 @@ fn export_case(template: &str, algorithm: &api::AlgorithmDetails, context: Optio
         provider_output: Some(output.clone()),
         // What the library stamps (app::API_VERSION; adapters may not
         // import the app layer).
-        api_version: "1.0".into(),
+        api_version: "2.0".into(),
         user_context: BTreeMap::from([("tenant".to_owned(), "acme".to_owned())]),
+        // Digest signing records its hash, as the library does.
+        digest_hash: if kind == "digest_sign" { hash as i32 } else { HashAlgorithm::Unspecified as i32 },
     };
     let encoded = metadata::encode(&md, MetadataEncoding::Protobuf).unwrap();
     let (public, public_encoding) = key.public.clone().unwrap_or_default_pair();
@@ -240,17 +242,15 @@ fn check_go_case(c: &Case) -> Result<(), String> {
             }
         }
     }
-    // The metadata as the Go server builds it. Digest signing adds
-    // `digest_hash`, a field the pinned API does not have (G28), which the
-    // strict decoder must refuse rather than drop.
-    let decoded = metadata::decode_body(MetadataEncoding::Protobuf, &unhex(&c.metadata));
-    match (c.kind.as_str(), decoded) {
-        ("digest_sign", Ok(_)) => Err("Go's digest_hash metadata decoded; G28 may be resolved".into()),
-        ("digest_sign", Err(_)) => Ok(()),
-        (_, Ok(md)) if md.key_version == 1 && md.provider_output.as_ref() == Some(&output) => Ok(()),
-        (_, Ok(md)) => Err(format!("metadata decoded to {md:?}")),
-        (_, Err(e)) => Err(format!("metadata: {e:?}")),
+    // The metadata as the Go server builds it: digest signing records the
+    // hash in digest_hash (api v0.3.0), which the strict decoder now accepts.
+    let md = metadata::decode_body(MetadataEncoding::Protobuf, &unhex(&c.metadata))
+        .map_err(|e| format!("metadata: {e:?}"))?;
+    let want_hash = if c.kind == "digest_sign" { hash as i32 } else { HashAlgorithm::Unspecified as i32 };
+    if md.key_version != 1 || md.provider_output.as_ref() != Some(&output) || md.digest_hash != want_hash {
+        return Err(format!("metadata decoded to {md:?}"));
     }
+    Ok(())
 }
 
 #[test]

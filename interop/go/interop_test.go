@@ -109,8 +109,12 @@ func checkRust(t *testing.T, p *software.Provider, c interopCase) error {
 	if err := proto.Unmarshal(unhex(t, c.Metadata), md); err != nil {
 		return fmt.Errorf("metadata: %w", err)
 	}
-	if md.GetKeyVersion() != 1 || md.GetApiVersion() != "1.0" || md.GetUserContext()["tenant"] != "acme" ||
-		!proto.Equal(md.GetProviderOutput(), out) {
+	wantHash := api.HashAlgorithm_HASH_ALGORITHM_UNSPECIFIED
+	if c.Kind == "digest_sign" {
+		wantHash = api.HashAlgorithm(c.Hash)
+	}
+	if md.GetKeyVersion() != 1 || md.GetApiVersion() != "2.0" || md.GetUserContext()["tenant"] != "acme" ||
+		md.GetDigestHash() != wantHash || !proto.Equal(md.GetProviderOutput(), out) {
 		return fmt.Errorf("metadata decoded to %v", md)
 	}
 

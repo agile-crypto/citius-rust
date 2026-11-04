@@ -2,7 +2,7 @@ use std::ffi::c_char;
 use std::ptr;
 use std::time::SystemTime;
 
-use crate::app::KeyMetadata;
+use crate::app::{KeyMetadata, POLICY_FORMAT};
 use crate::bindings::*;
 use crate::domain::core::{Scope, ScopeKind, ScopeSpecification, SecurityProperties};
 use crate::domain::policy::Policy;
@@ -194,6 +194,11 @@ pub fn pack_strings<const N: usize>(
     pack(storage, storage_used, |p| strings.map(|s| p.str(s)))
 }
 
+/// An absent optional timestamp.
+pub fn c_no_timestamp() -> agc_timestamp {
+    agc_timestamp { seconds: 0, nanos: 0, present: 0 }
+}
+
 /// A time as the C API's optional timestamp.
 pub fn c_timestamp(t: SystemTime) -> agc_timestamp {
     // Times before 1970 do not occur here (they come from the system clock).
@@ -259,10 +264,15 @@ pub fn c_scope_spec(spec: &ScopeSpecification, p: &mut Packer) -> agc_scope_spec
         }};
     }
     match spec.scope {
-        Scope::Signature(_) => set!(signature {
-            non_malleable: c_tribool(props.non_malleable),
-            deterministic: c_tribool(props.deterministic)
-        }),
+        Scope::Signature(_) => {
+            let hashes: Vec<agc_hash_algorithm> = props.accepted_digest_hashes.iter().map(|&h| h as u32).collect();
+            set!(signature {
+                non_malleable: c_tribool(props.non_malleable),
+                deterministic: c_tribool(props.deterministic),
+                accepted_digest_hashes: p.array(&hashes),
+                accepted_digest_hashes_count: hashes.len()
+            })
+        }
         Scope::Aead(_) => set!(aead { nonce_misuse_resistant: c_tribool(props.nonce_misuse_resistant) }),
         Scope::KeyAgreement(_) => set!(key_agreement { forward_secrecy: c_tribool(props.forward_secrecy) }),
         Scope::Kdf(_) => set!(kdf { memory_hard: c_tribool(props.memory_hard) }),
@@ -325,6 +335,10 @@ pub fn c_key_info(k: &KeyMetadata, p: &mut Packer) -> agc_key_info {
         public_key_format,
         provider_metadata: agc_kv_list { items: ptr::null(), count: 0 },
         implementation_props: c_impl_props(&k.implementation, p),
+        // No cryptoperiod is scheduled: create_key refuses one, as Go does.
+        activation_time: c_no_timestamp(),
+        expiration_time: c_no_timestamp(),
+        origin: k.origin as u32,
     }
 }
 
@@ -345,20 +359,27 @@ pub fn key_info_size(key: &KeyMetadata) -> usize {
 
 /// Writes `policy` into `resp` under the STORAGE CONTRACT.
 pub fn fill_read_policy_response(resp: &mut agc_read_policy_response, policy: &Policy) -> Result<(), FfiError> {
-    let [name, document] = pack_strings(resp.storage, &mut resp.storage_used, [policy.name(), policy.document()])?;
+    let [name, document, format] =
+        pack_strings(resp.storage, &mut resp.storage_used, [policy.name(), policy.document(), POLICY_FORMAT])?;
     resp.name = name;
     resp.policy_document = document;
+    resp.format = format;
+    resp.version = policy.version();
+    resp.created_at = c_timestamp(policy.created_at());
+    resp.updated_at = c_timestamp(policy.updated_at());
     Ok(())
 }
 
 /// Writes one policy summary (as listed) into `resp` under the STORAGE CONTRACT.
 pub fn fill_policy_summary_response(resp: &mut agc_policy_summary_response, policy: &Policy) -> Result<(), FfiError> {
-    let [name] = pack_strings(resp.storage, &mut resp.storage_used, [policy.name()])?;
+    let [name, format] = pack_strings(resp.storage, &mut resp.storage_used, [policy.name(), POLICY_FORMAT])?;
     resp.summary = agc_policy_summary {
         struct_size: size_of::<agc_policy_summary>(),
         name,
         created_at: c_timestamp(policy.created_at()),
         updated_at: c_timestamp(policy.updated_at()),
+        version: policy.version(),
+        format,
     };
     Ok(())
 }
@@ -396,6 +417,7 @@ mod tests {
                 memory_safe_language: Some(true),
                 ..Default::default()
             },
+            origin: api::KeyOrigin::Generated,
         }
     }
 

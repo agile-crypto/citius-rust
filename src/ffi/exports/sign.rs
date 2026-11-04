@@ -143,25 +143,34 @@ pub unsafe extern "C" fn agc_digest_sign(
     })
 }
 
-/// The signing metadata a verify request carries: its encoding (the
-/// response's, too) and the version it names. `{NULL, 0}` means the latest
-/// version, and the response is in WIRE_V1 (agc_verify_response).
+/// What a verify request's signing metadata says.
+struct VerifyMetadata {
+    /// The response's encoding: the request's, or WIRE_V1 without one.
+    encoding: MetadataEncoding,
+    /// The version to verify against; `None` is the latest.
+    key_version: Option<u32>,
+    /// The hash a digest signature was made over; `None` without metadata.
+    digest_hash: Option<i32>,
+}
+
+/// The signing metadata a verify request carries. `{NULL, 0}` means the
+/// latest version, and the response is in WIRE_V1 (agc_verify_response).
 ///
 /// # Safety
 /// `md` is valid for the call (agc_crypto.h contract).
-unsafe fn verify_metadata(md: agc_slice) -> Result<(MetadataEncoding, Option<u32>), FfiError> {
+unsafe fn verify_metadata(md: agc_slice) -> Result<VerifyMetadata, FfiError> {
     // SAFETY: forwarded from this function's contract.
     let bytes = unsafe { slice(md, "metadata") }?;
     let Some(&first) = bytes.first() else {
-        return Ok((MetadataEncoding::WireV1, None));
+        return Ok(VerifyMetadata { encoding: MetadataEncoding::WireV1, key_version: None, digest_hash: None });
     };
-    let enc = MetadataEncoding::from_byte(first)
+    let encoding = MetadataEncoding::from_byte(first)
         .ok_or_else(|| FfiError::invalid("metadata must begin with its encoding byte"))?;
-    let version = metadata::decode(enc, bytes)?.key_version;
-    if version == 0 {
+    let md = metadata::decode(encoding, bytes)?;
+    if md.key_version == 0 {
         return Err(FfiError::invalid("the metadata names no key version"));
     }
-    Ok((enc, Some(version)))
+    Ok(VerifyMetadata { encoding, key_version: Some(md.key_version), digest_hash: Some(md.digest_hash) })
 }
 
 /// The common half of agc_verify and agc_digest_verify, on a response whose
@@ -233,7 +242,7 @@ pub unsafe extern "C" fn agc_verify(
             // SAFETY: req is NULL or the caller's struct with struct_size readable bytes.
             let r = unsafe { versioned::read(req, "req") }?;
             // SAFETY: the pointers and slices in req are NULL or valid for the call.
-            let (enc, key_version) = unsafe { verify_metadata(r.metadata) }?;
+            let md = unsafe { verify_metadata(r.metadata) }?;
             let request = VerifyRequest {
                 // SAFETY: as above.
                 key_name: unsafe { required_str(r.key_name, "key_name") }?,
@@ -241,13 +250,13 @@ pub unsafe extern "C" fn agc_verify(
                 input: SignInput::Message(unsafe { slice(r.input, "input") }?),
                 // SAFETY: as above.
                 signature: unsafe { slice(r.signature, "signature") }?,
-                key_version,
+                key_version: md.key_version,
                 // SAFETY: as above.
                 context: unsafe { sign_params(r.params) }?,
                 // SAFETY: as above.
                 user_context: unsafe { kv_list(&r.user_context, "user_context") }?,
             };
-            verify_into(&ctx.crypto, request, enc, out)
+            verify_into(&ctx.crypto, request, md.encoding, out)
         };
         // SAFETY: resp is NULL or the caller's struct (agc_crypto.h contract).
         unsafe { fail_closed(resp, body) }
@@ -267,24 +276,29 @@ pub unsafe extern "C" fn agc_digest_verify(
             // SAFETY: req is NULL or the caller's struct with struct_size readable bytes.
             let r = unsafe { versioned::read(req, "req") }?;
             // SAFETY: the pointers and slices in req are NULL or valid for the call.
-            let (enc, key_version) = unsafe { verify_metadata(r.metadata) }?;
+            let md = unsafe { verify_metadata(r.metadata) }?;
+            // The hash comes from the signing metadata (DigestVerifyRequest
+            // has none of its own since api v0.3.0), so it is required.
+            let digest_hash = md.digest_hash.ok_or_else(|| {
+                FfiError::invalid("metadata is required: it names the hash the digest was signed with")
+            })?;
             let request = VerifyRequest {
                 // SAFETY: as above.
                 key_name: unsafe { required_str(r.key_name, "key_name") }?,
                 input: SignInput::Digest {
                     // SAFETY: as above.
                     digest: unsafe { slice(r.digest, "digest") }?,
-                    hash: hash(r.hash_algorithm)?,
+                    hash: hash(digest_hash as u32)?,
                 },
                 // SAFETY: as above.
                 signature: unsafe { slice(r.signature, "signature") }?,
-                key_version,
+                key_version: md.key_version,
                 // SAFETY: as above.
                 context: unsafe { sign_params(r.params) }?,
                 // SAFETY: as above.
                 user_context: unsafe { kv_list(&r.user_context, "user_context") }?,
             };
-            verify_into(&ctx.crypto, request, enc, out)
+            verify_into(&ctx.crypto, request, md.encoding, out)
         };
         // SAFETY: resp is NULL or the caller's struct (agc_crypto.h contract).
         unsafe { fail_closed(resp, body) }

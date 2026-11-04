@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use crate::domain::core::ScopeSpecification;
-use crate::domain::key::{Key, KeyId, Version};
+use crate::domain::key::{Key, KeyId, Origin, Version};
 use crate::domain::provider::{Encoding, GeneratedKey, ProviderRegistry};
 use crate::proto::api;
 
@@ -24,6 +24,8 @@ pub struct KeyMetadata {
     pub extractable: bool,
     pub public_key: Option<(Vec<u8>, Encoding)>,
     pub implementation: api::ImplementationProperties,
+    /// How the material first came into existence (Go: `materialOrigin`).
+    pub origin: api::KeyOrigin,
 }
 
 impl KeyMetadata {
@@ -45,6 +47,28 @@ impl KeyMetadata {
             extractable: v.provenance().extractable,
             public_key,
             implementation: providers.get(v.provider()).map(|p| p.implementation()).unwrap_or_default(),
+            origin: material_origin(key, v),
+        }
+    }
+}
+
+/// The origin of `v`'s material: material a version retained, or had
+/// transferred from an earlier version, has that version's origin, because
+/// a transform or a migration creates no material (Go: `materialOrigin`).
+/// UNSPECIFIED if the chain names a version that is not earlier, which the
+/// aggregate's invariants rule out.
+fn material_origin(key: &Key, v: &Version) -> api::KeyOrigin {
+    let mut v = v;
+    // Each step goes to a strictly earlier version, so the walk ends.
+    loop {
+        let source = match &v.provenance().origin {
+            Origin::Generated => return api::KeyOrigin::Generated,
+            Origin::Imported => return api::KeyOrigin::Imported,
+            Origin::Retained { source_version } | Origin::Transferred { source_version, .. } => *source_version,
+        };
+        match key.version(source) {
+            Some(earlier) if source < v.number() => v = earlier,
+            _ => return api::KeyOrigin::Unspecified,
         }
     }
 }

@@ -140,6 +140,26 @@ impl CryptoOrchestrator {
         let (_, r) = self.resolve(key_name, version, direction, op, declared)?;
         Self::check_sign_params(&r, input, context)?;
         if let SignInput::Digest { digest, hash } = *input {
+            // The key version accepts only the hashes it recorded when it was
+            // created (Go: validateDigestHash).
+            let accepted = &r.version.scope_spec().properties.accepted_digest_hashes;
+            if accepted.is_empty() {
+                return Err(Error::new(
+                    Code::Internal,
+                    OP,
+                    format!("key version {} records no accepted digest hash", r.version.number()),
+                ));
+            }
+            if !accepted.contains(&hash) {
+                return Err(Error::new(
+                    Code::InvalidArgument,
+                    OP,
+                    format!(
+                        "key version {} does not accept digest hash {hash:?} (accepted: {accepted:?})",
+                        r.version.number()
+                    ),
+                ));
+            }
             r.signer()?.check_digest(r.algorithm(), digest, hash)?;
         }
         Ok(r)
@@ -150,7 +170,7 @@ impl CryptoOrchestrator {
     pub fn sign_sizes(&self, req: &SignRequest, enc: MetadataEncoding) -> Result<(usize, usize), Error> {
         let r = self.resolve_sign(req.key_name, None, &req.input, &req.context, false)?;
         let signer = r.signer()?;
-        let md = Self::metadata(r.version.number(), signer.output_shape(r.algorithm())?, req.user_context.clone());
+        let md = signed_metadata(r.version.number(), signer.output_shape(r.algorithm())?, req);
         Ok((signer.signature_len_bound(r.algorithm())?, metadata::encode(&md, enc)?.len()))
     }
 
@@ -169,7 +189,8 @@ impl CryptoOrchestrator {
         if signature.len() > signer.signature_len_bound(r.algorithm())? {
             return Err(Error::new(Code::ProviderContractViolation, OP, "the signature exceeds the provider's bound"));
         }
-        Ok(Signed { signature, metadata: Self::metadata(r.version.number(), output, req.user_context) })
+        let metadata = signed_metadata(r.version.number(), output, &req);
+        Ok(Signed { signature, metadata })
     }
 
     /// The encoded length of the verification's metadata.
@@ -194,6 +215,17 @@ impl CryptoOrchestrator {
         };
         Ok(Verified { valid, metadata: Self::metadata(r.version.number(), no_output(), req.user_context) })
     }
+}
+
+/// A signature's metadata. Digest signing records the hash in `digest_hash`,
+/// which digest verification reads it from (Go: DigestSign); WIRE_V1 cannot
+/// carry it, so sizing fails there before any signing work (DV-15).
+fn signed_metadata(version: u32, output: api::ProviderOutput, req: &SignRequest) -> api::OperationMetadata {
+    let mut md = CryptoOrchestrator::metadata(version, output, req.user_context.clone());
+    if let SignInput::Digest { hash, .. } = req.input {
+        md.digest_hash = hash as i32;
+    }
+    md
 }
 
 #[cfg(test)]
@@ -311,6 +343,53 @@ mod tests {
         assert_eq!(code(w.crypto.verify(req)), Code::KeyNotFound);
     }
 
+    /// Accepted digest hashes per key version (Go: resolveDigestHashes and
+    /// validateDigestHash): the template's list, or a narrower requested one.
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn a_key_version_accepts_the_digest_hashes_it_recorded() {
+        let w = world();
+        let prehashed = Scope::Signature(SignatureScope::Prehashed);
+        let spec = |name: &str, hashes: Vec<HashAlgorithm>| {
+            let mut s = ScopeSpecification::any_of(prehashed);
+            s.properties.accepted_digest_hashes = hashes;
+            KeyCreationSpec {
+                name: name.into(),
+                policy: "p".into(),
+                template_id: Some("ecdsa-p256-prehashed-der".into()),
+                scope_spec: s,
+                provider_id: None,
+                provider_requirements: ProviderRequirements::default(),
+            }
+        };
+        let all = w.keys.create_key(spec("all", vec![])).unwrap();
+        assert_eq!(
+            all.scope_spec.properties.accepted_digest_hashes,
+            [HashAlgorithm::Sha256, HashAlgorithm::Sha384, HashAlgorithm::Sha512],
+            "the template's list, preferred first"
+        );
+        let narrow = w.keys.create_key(spec("narrow", vec![HashAlgorithm::Sha384])).unwrap();
+        assert_eq!(narrow.scope_spec.properties.accepted_digest_hashes, [HashAlgorithm::Sha384]);
+
+        let d256 = sha2::Sha256::digest(b"m");
+        let as256 = SignInput::Digest { digest: &d256, hash: HashAlgorithm::Sha256 };
+        assert!(w.crypto.sign(sign("all", as256, SignContext::None)).is_ok());
+        assert_eq!(code(w.crypto.sign(sign("narrow", as256, SignContext::None))), Code::InvalidArgument);
+        let d384 = sha2::Sha384::digest(b"m");
+        let as384 = SignInput::Digest { digest: &d384, hash: HashAlgorithm::Sha384 };
+        assert!(w.crypto.sign(sign("narrow", as384, SignContext::None)).is_ok());
+
+        // A requested hash the template does not offer is a requirement it
+        // does not meet, so the template does not match (Go: pickTemplate).
+        let err = w.keys.create_key(spec("weak", vec![HashAlgorithm::Sha224])).unwrap_err();
+        assert_eq!(err.code(), Code::NoMatchingTemplate);
+        // A list on a scope that signs messages.
+        let mut message = spec("msg", vec![HashAlgorithm::Sha512]);
+        message.template_id = Some("ed25519".into());
+        message.scope_spec.scope = Scope::Signature(SignatureScope::Standard);
+        assert_eq!(w.keys.create_key(message).unwrap_err().code(), Code::InvalidArgument);
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
     fn digest_sign_checks_the_declared_hash() {
@@ -318,10 +397,14 @@ mod tests {
         create(&w, "pre", "ecdsa-p256-prehashed-der", SignatureScope::Prehashed);
         let digest = sha2::Sha384::digest(b"m");
         let input = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Sha384 };
-        let (bound, _) = w.crypto.sign_sizes(&sign("pre", input, SignContext::None), MetadataEncoding::WireV1).unwrap();
+        // The metadata records the hash, which only PROTOBUF can carry (DV-15).
+        let err = w.crypto.sign_sizes(&sign("pre", input, SignContext::None), MetadataEncoding::WireV1).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "WIRE_V1 is refused before any signing work");
+        let (bound, _) = w.crypto.sign_sizes(&sign("pre", input, SignContext::None), MetadataEncoding::Protobuf).unwrap();
         let s = w.crypto.sign(sign("pre", input, SignContext::None)).unwrap();
         assert!(s.signature.len() <= bound);
         assert_eq!(s.metadata.provider_output.as_ref().unwrap().encoding, "der");
+        assert_eq!(s.metadata.digest_hash, HashAlgorithm::Sha384 as i32, "the hash is recorded");
         assert!(w.crypto.verify(verify("pre", input, &s, SignContext::None)).unwrap().valid);
         // The same bytes declared as another hash do not verify: the hash is bound.
         let as512 = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Sha512 };
@@ -390,6 +473,7 @@ mod tests {
                 "p",
                 r#"{"version": "1", "allowed_templates": ["ed25519"],
                     "allowed_operations": {"key_operations": ["create_key", "sign"]}}"#,
+                0,
             )
             .unwrap();
         assert_eq!(
@@ -398,7 +482,7 @@ mod tests {
         );
 
         // An encryption key does not sign.
-        w.policy.update_policy("p", POLICY).unwrap();
+        w.policy.update_policy("p", POLICY, 0).unwrap();
         w.keys
             .create_key(KeyCreationSpec {
                 name: "aead".into(),

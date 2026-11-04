@@ -153,6 +153,9 @@ mod canonical {
         /// refuses it (PROVIDER_NOT_FOUND) without interpreting it.
         Vendor,
         Uint32,
+        /// An `int32` enum: a varint whose value is an `int32`, a negative
+        /// one in its canonical 64-bit sign extension.
+        Enum,
         Bytes,
         Str,
         Message(&'static [Field]),
@@ -193,6 +196,7 @@ mod canonical {
         f(2, Kind::Message(PROVIDER_OUTPUT)),
         f(3, Kind::Str),
         Field { num: 4, kind: Kind::MapEntry, repeated: true },
+        f(5, Kind::Enum),
     ];
     const MAP_ENTRY: &[Field] = &[f(1, Kind::Str), f(2, Kind::Str)];
 
@@ -245,6 +249,13 @@ mod canonical {
                     let (v, n) = varint(b)?;
                     if v > u64::from(u32::MAX) {
                         return Err(invalid("metadata has a uint32 out of range"));
+                    }
+                    b = &b[n..];
+                }
+                (Kind::Enum, 0) => {
+                    let (v, n) = varint(b)?;
+                    if i32::try_from(v as i64).is_err() {
+                        return Err(invalid("metadata has an enum value out of range"));
                     }
                     b = &b[n..];
                 }
@@ -334,6 +345,10 @@ mod wire {
     }
 
     pub fn encode(md: &api::OperationMetadata, out: &mut Vec<u8>) -> Result<(), Error> {
+        // v1 has no slot for it (docs/representing_metadata.md §6.7, DV-15).
+        if md.digest_hash != api::HashAlgorithm::Unspecified as i32 {
+            return Err(invalid("WIRE_V1 cannot express digest_hash: use PROTOBUF for digest signing"));
+        }
         let (major, minor) = api_version(&md.api_version)?;
         let po = md.provider_output.as_ref().expect("arm() checked it");
         let encoding_id = ENCODINGS
@@ -462,6 +477,7 @@ mod wire {
             provider_output: Some(api::ProviderOutput { encoding: encoding.to_owned(), algorithm_output: Some(output) }),
             api_version: format!("{major}.{minor}"),
             user_context,
+            digest_hash: api::HashAlgorithm::Unspecified as i32,
         })
     }
 }
@@ -526,6 +542,7 @@ mod tests {
             }),
             api_version: "1.0".into(),
             user_context: BTreeMap::new(),
+            ..Default::default()
         };
         let w = encode(&md, MetadataEncoding::WireV1).unwrap();
         let mut want = vec![0x02, 0x01, 0x00, 0, 0, 0, 3, 0x01, 0x0B, 0x00, 0x0E, 0x0C];
@@ -567,7 +584,8 @@ mod tests {
         reject(pb, &hex("0801080112025200"), "out of order or duplicated");
         reject(pb, &hex("08810012025200"), "non-minimal varint");
         reject(pb, &hex("0880"), "truncated");
-        reject(pb, &hex("0801120252002801"), "unknown field 5");
+        // Field 5 is digest_hash since v0.3.0; 6 is still unknown.
+        reject(pb, &hex("0801120252003001"), "unknown field 6");
         reject(pb, &hex("0801120452006200"), "more than one output kind");
         reject(pb, &hex("08011200"), "no provider output kind");
         reject(pb, &hex("088080808010120252 00".replace(' ', "").as_str()), "uint32 out of range");
@@ -590,6 +608,7 @@ mod tests {
                 }),
                 api_version: "1.0".into(),
                 user_context: BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]),
+                ..Default::default()
             },
             w,
         )
@@ -625,6 +644,7 @@ mod tests {
             }),
             api_version: "1.0".into(),
             user_context: BTreeMap::new(),
+            ..Default::default()
         };
         assert_eq!(encode(&md, MetadataEncoding::WireV1).unwrap_err().code(), Code::InvalidArgument);
         md.provider_output.as_mut().unwrap().encoding = "der".into();
@@ -635,6 +655,30 @@ mod tests {
         // Protobuf expresses all of them.
         md.api_version = "anything".into();
         assert!(encode(&md, MetadataEncoding::Protobuf).is_ok());
+    }
+
+    /// digest_hash (v0.3.0) has no slot in WIRE_V1 (DV-15); protobuf carries
+    /// it as field 5, and the strict decoder accepts it there.
+    #[test]
+    fn digest_hash_is_protobuf_only() {
+        let mut md = api::OperationMetadata {
+            key_version: 2,
+            provider_output: Some(api::ProviderOutput {
+                encoding: "der".into(),
+                algorithm_output: Some(AlgorithmOutput::NoOutput(api::NoAlgorithmOutput {})),
+            }),
+            api_version: "2.0".into(),
+            ..Default::default()
+        };
+        assert!(encode(&md, MetadataEncoding::WireV1).is_ok(), "UNSPECIFIED is expressible");
+        md.digest_hash = api::HashAlgorithm::Sha384 as i32;
+        assert_eq!(encode(&md, MetadataEncoding::WireV1).unwrap_err().code(), Code::InvalidArgument);
+        let pb = encode(&md, MetadataEncoding::Protobuf).unwrap();
+        assert_eq!(decode(MetadataEncoding::Protobuf, &pb).unwrap(), md);
+        // Field 5 holding a value outside int32 is not canonical.
+        let mut bad = pb.clone();
+        bad.extend([0x28, 0x80, 0x80, 0x80, 0x80, 0x10]); // 5: 2^32
+        assert!(decode(MetadataEncoding::Protobuf, &bad).is_err());
     }
 
     #[test]

@@ -3,18 +3,20 @@
 `standard_algorithms.json` is the catalog compiled into the library, used
 when `agc_ctx_config.catalog_path` is NULL.
 
-It is citius-server's catalog at the same commit that citius-c-api's pinned
-API descriptor (`conformance/api_descriptor.binpb`) was built from, so the
-catalog and the generated types describe the same API version. Later
+It is the catalog of the API release citius-c-api's pinned descriptor
+(`conformance/api_descriptor.binpb`) was built from, so the catalog and
+the generated types describe the same API version. Later
 catalogs use fields this descriptor does not have.
 
 | | |
 |---|---|
-| Source repo | `citius-server` |
-| Source commit | `476f9dd1ef20dedbbe7483474cc71acf41637445` |
+| Source repo | `citius/api` |
+| Source tag | `v0.3.0` (`2eb364a69b5a7ba41d3770af35248f452930a787`) |
 | Source path | `proto/standard_algorithms.json` |
-| Catalog version | 0.1.0 (72 templates) |
-| `sha256` | `3df8d0fd1ef6513e094c0bc7cc6fd3bc52971851504dedeb7f21cc6eeb324b12` |
+| Catalog version | 0.2.1 (72 templates) |
+| `sha256` | `9a46a0ecfc9104473405bc88b1c3ebd9faef5b451b9e5064930b429fe332b69e` |
+
+It is byte-identical to the catalog citius-server ships (`proto/standard_algorithms.json`).
 
 Bump it together with the descriptor, as a deliberate commit:
 

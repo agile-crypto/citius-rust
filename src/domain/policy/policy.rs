@@ -14,6 +14,8 @@ pub struct Policy {
     name: String,
     document: String,
     rules: Rules,
+    /// 1 when created, one more on each update (Go: `Policy.Version`).
+    version: i64,
     created_at: SystemTime,
     updated_at: SystemTime,
 }
@@ -28,16 +30,19 @@ impl Policy {
             name: name.to_owned(),
             document: document.to_owned(),
             rules: parse(name, document, OP)?,
+            version: 1,
             created_at: now,
             updated_at: now,
         })
     }
 
-    /// This policy with a new document; the name and creation time stay.
+    /// This policy with a new document, at the next version; the name and
+    /// creation time stay.
     pub fn with_document(&self, document: &str, now: SystemTime) -> Result<Policy, Error> {
         Ok(Policy {
             document: document.to_owned(),
             rules: parse(&self.name, document, "Policy::with_document")?,
+            version: self.version + 1,
             updated_at: now,
             ..self.clone()
         })
@@ -53,6 +58,10 @@ impl Policy {
 
     pub fn rules(&self) -> &Rules {
         &self.rules
+    }
+
+    pub fn version(&self) -> i64 {
+        self.version
     }
 
     pub fn created_at(&self) -> SystemTime {

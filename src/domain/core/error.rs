@@ -43,6 +43,8 @@ pub enum Code {
     NotImplemented,
     /// The policy denies the operation; also a policy still bound to keys.
     PolicyViolation,
+    /// A policy update made from a version that is no longer current.
+    PolicyVersionConflict,
     /// A streaming operation that does not exist (any more).
     OperationExpired,
     /// An invariant the library itself is responsible for was broken, e.g. a

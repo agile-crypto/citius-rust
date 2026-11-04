@@ -38,6 +38,7 @@ impl Capability {
             | O::ReadKey
             | O::DeleteKey
             | O::RotateKey
+            | O::UpdateKeyState
             | O::TransformKey
             | O::ImportKey
             | O::ExportKey

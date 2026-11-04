@@ -195,7 +195,7 @@ static agc_rc digest_sign(agc_ctx *ctx, const char *key, const uint8_t *digest, 
     dr.digest = (agc_slice){digest, len};
     dr.params = &sp;
     dr.hash_algorithm = h;
-    dr.metadata_encoding = AGC_ENCODING_WIRE_V1;
+    dr.metadata_encoding = AGC_ENCODING_PROTOBUF; /* WIRE_V1 cannot carry digest_hash */
     agc_sign_response resp;
     AGC_INIT(&resp);
     resp.signature = (agc_buf){out->sig, sizeof out->sig};
@@ -206,7 +206,8 @@ static agc_rc digest_sign(agc_ctx *ctx, const char *key, const uint8_t *digest, 
     return rc;
 }
 
-static agc_rc digest_verify(agc_ctx *ctx, const char *key, const uint8_t *digest, size_t len, agc_hash_algorithm h,
+/* The hash comes from the signing metadata (s->md), not from the request. */
+static agc_rc digest_verify(agc_ctx *ctx, const char *key, const uint8_t *digest, size_t len,
                             const signed_msg *s, int *valid)
 {
     agc_sign_params sp = no_context();
@@ -217,7 +218,6 @@ static agc_rc digest_verify(agc_ctx *ctx, const char *key, const uint8_t *digest
     dr.signature = (agc_slice){s->sig, s->sig_len};
     dr.metadata = (agc_slice){s->md, s->md_len};
     dr.params = &sp;
-    dr.hash_algorithm = h;
     agc_verify_response resp;
     AGC_INIT(&resp); /* metadata {NULL, 0}: opted out */
     resp.valid = 1;
@@ -246,10 +246,17 @@ static void digest_signatures(agc_ctx *ctx)
     for (size_t i = 0; i < sizeof ok / sizeof *ok; i++) {
         size_t len = agc_hash_algorithm_output_len(ok[i].h);
         CHECK_RC(digest_sign(ctx, ok[i].key, digest, len, ok[i].h, &s), AGC_OK);
-        CHECK_RC(digest_verify(ctx, ok[i].key, digest, len, ok[i].h, &s, &valid), AGC_OK);
+        /* The metadata records the hash; verification reads it from there. */
+        uint8_t mstore[256];
+        agc_decode_metadata_result r;
+        AGC_INIT(&r);
+        r.storage = (agc_buf){mstore, sizeof mstore};
+        CHECK_RC(agc_metadata_decode(AGC_ENCODING_PROTOBUF, (agc_slice){s.md, s.md_len}, &r), AGC_OK);
+        CHECK(r.metadata.digest_hash == ok[i].h);
+        CHECK_RC(digest_verify(ctx, ok[i].key, digest, len, &s, &valid), AGC_OK);
         CHECK(valid == 1);
         digest[0] ^= 1;
-        CHECK_RC(digest_verify(ctx, ok[i].key, digest, len, ok[i].h, &s, &valid), AGC_ERR_CRYPTO_SIGNATURE_INVALID);
+        CHECK_RC(digest_verify(ctx, ok[i].key, digest, len, &s, &valid), AGC_ERR_CRYPTO_SIGNATURE_INVALID);
         CHECK(valid == 0);
         digest[0] ^= 1;
     }
@@ -277,6 +284,13 @@ static void digest_signatures(agc_ctx *ctx)
     agc_sign_response resp;
     AGC_INIT(&resp);
     CHECK_RC(agc_sign(ctx, &sr, &resp), AGC_ERR_CRYPTO_KEY_OPERATION_NOT_ALLOWED);
+
+    /* Digest verification needs the metadata: it alone names the hash. */
+    size_t len = agc_hash_algorithm_output_len(AGC_HASH_ALGORITHM_SHA256);
+    CHECK_RC(digest_sign(ctx, "p256pre", digest, len, AGC_HASH_ALGORITHM_SHA256, &s), AGC_OK);
+    s.md_len = 0;
+    CHECK_RC(digest_verify(ctx, "p256pre", digest, len, &s, &valid), AGC_ERR_INVALID_ARGUMENT);
+    CHECK(valid == 0);
 }
 
 static void verify_fails_closed(agc_ctx *ctx)

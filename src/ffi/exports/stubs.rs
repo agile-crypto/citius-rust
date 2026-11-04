@@ -10,7 +10,7 @@
 //! every export; a session argument is never dereferenced (no session can
 //! exist while streaming is a stub).
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_int};
 
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
@@ -68,7 +68,7 @@ unsafe fn clear<T>(out: *mut *mut T) {
 // --- agc_key.h: KeyManagementService ---------------------------------------
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agc_delete_key(ctx: *mut agc_ctx, _key_name: *const c_char) -> agc_rc {
+pub unsafe extern "C" fn agc_delete_key(ctx: *mut agc_ctx, _key_name: *const c_char, _remove_metadata: c_int) -> agc_rc {
     // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
     unsafe { not_implemented(ctx, "DeleteKey (the Go server does not implement it)") }
 }
@@ -77,10 +77,23 @@ pub unsafe extern "C" fn agc_delete_key(ctx: *mut agc_ctx, _key_name: *const c_c
 pub unsafe extern "C" fn agc_rotate_key(
     ctx: *mut agc_ctx,
     _key_name: *const c_char,
+    _reason: *const c_char,
     _resp: *mut agc_key_info_response,
 ) -> agc_rc {
     // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
     unsafe { not_implemented(ctx, "RotateKey (the Go server does not implement it)") }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_update_key_state(
+    ctx: *mut agc_ctx,
+    _key_name: *const c_char,
+    _target_state: agc_key_lifecycle_state,
+    _reason: *const c_char,
+    _resp: *mut agc_key_info_response,
+) -> agc_rc {
+    // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
+    unsafe { not_implemented(ctx, "UpdateKeyState (the Go server does not implement it)") }
 }
 
 #[unsafe(no_mangle)]
@@ -273,13 +286,14 @@ pub extern "C" fn agc_encrypt_message_begin(
 pub extern "C" fn agc_encrypt_message_next(
     _s: *mut agc_session,
     _plaintext_chunk: agc_slice,
+    _end_of_message: c_int,
     _resp: *mut agc_stream_chunk_response,
 ) -> agc_rc {
     session_not_implemented("EncryptMessageNext (the Go server does not implement it)")
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn agc_encrypt_message_final(_s: *mut agc_session, _resp: *mut agc_stream_final_response) -> agc_rc {
+pub extern "C" fn agc_encrypt_message_final(_s: *mut agc_session) -> agc_rc {
     session_not_implemented("EncryptMessageFinal (the Go server does not implement it)")
 }
 
@@ -318,13 +332,14 @@ pub extern "C" fn agc_decrypt_message_begin(
 pub extern "C" fn agc_decrypt_message_next(
     _s: *mut agc_session,
     _ciphertext_chunk: agc_slice,
+    _end_of_message: c_int,
     _resp: *mut agc_stream_chunk_response,
 ) -> agc_rc {
     session_not_implemented("DecryptMessageNext (the Go server does not implement it)")
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn agc_decrypt_message_final(_s: *mut agc_session, _resp: *mut agc_stream_final_response) -> agc_rc {
+pub extern "C" fn agc_decrypt_message_final(_s: *mut agc_session) -> agc_rc {
     session_not_implemented("DecryptMessageFinal (the Go server does not implement it)")
 }
 
@@ -406,12 +421,17 @@ pub extern "C" fn agc_sign_message_begin(_s: *mut agc_session) -> agc_rc {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn agc_sign_message_next(_s: *mut agc_session, _message_chunk: agc_slice) -> agc_rc {
+pub extern "C" fn agc_sign_message_next(
+    _s: *mut agc_session,
+    _message_chunk: agc_slice,
+    _end_of_message: c_int,
+    _resp: *mut agc_sign_response,
+) -> agc_rc {
     session_not_implemented("SignMessageNext (the Go server does not implement it)")
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn agc_sign_message_final(_s: *mut agc_session, _resp: *mut agc_sign_response) -> agc_rc {
+pub extern "C" fn agc_sign_message_final(_s: *mut agc_session) -> agc_rc {
     session_not_implemented("SignMessageFinal (the Go server does not implement it)")
 }
 
@@ -445,18 +465,20 @@ pub extern "C" fn agc_verify_message_begin(_s: *mut agc_session) -> agc_rc {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn agc_verify_message_next(_s: *mut agc_session, _message_chunk: agc_slice) -> agc_rc {
-    session_not_implemented("VerifyMessageNext (the Go server does not implement it)")
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn agc_verify_message_final(
+pub unsafe extern "C" fn agc_verify_message_next(
     _s: *mut agc_session,
+    _message_chunk: agc_slice,
+    _end_of_message: c_int,
     _signature: agc_slice,
     resp: *mut agc_verify_response,
 ) -> agc_rc {
     // SAFETY: resp is NULL or the caller's struct (header contract).
     unsafe { clear_valid(resp) };
+    session_not_implemented("VerifyMessageNext (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agc_verify_message_final(_s: *mut agc_session) -> agc_rc {
     session_not_implemented("VerifyMessageFinal (the Go server does not implement it)")
 }
 
@@ -547,6 +569,66 @@ pub extern "C" fn agc_decrypt_verify_update(
     _resp: *mut agc_stream_chunk_response,
 ) -> agc_rc {
     session_not_implemented("DecryptVerifyUpdate (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_generate_mac_init(
+    ctx: *mut agc_ctx,
+    _req: *const agc_generate_mac_init_request,
+    out_session: *mut *mut agc_session,
+) -> agc_rc {
+    // SAFETY: out_session is NULL or the caller's pointer variable (header contract).
+    unsafe { clear(out_session) };
+    // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
+    unsafe { not_implemented(ctx, "GenerateMACInit (the Go server does not implement it)") }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agc_generate_mac_update(_s: *mut agc_session, _data_chunk: agc_slice) -> agc_rc {
+    session_not_implemented("GenerateMACUpdate (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agc_generate_mac_final(_s: *mut agc_session, _resp: *mut agc_mac_response) -> agc_rc {
+    session_not_implemented("GenerateMACFinal (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_verify_mac_init(
+    ctx: *mut agc_ctx,
+    _req: *const agc_verify_mac_init_request,
+    out_session: *mut *mut agc_session,
+) -> agc_rc {
+    // SAFETY: out_session is NULL or the caller's pointer variable (header contract).
+    unsafe { clear(out_session) };
+    // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
+    unsafe { not_implemented(ctx, "VerifyMACInit (the Go server does not implement it)") }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agc_verify_mac_update(_s: *mut agc_session, _data_chunk: agc_slice) -> agc_rc {
+    session_not_implemented("VerifyMACUpdate (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_verify_mac_final(
+    _s: *mut agc_session,
+    _mac: agc_slice,
+    resp: *mut agc_verify_response,
+) -> agc_rc {
+    // SAFETY: resp is NULL or the caller's struct (header contract).
+    unsafe { clear_valid(resp) };
+    session_not_implemented("VerifyMACFinal (the Go server does not implement it)")
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agc_cancel_operation(
+    ctx: *mut agc_ctx,
+    _operation_id: *const c_char,
+    _reason: *const c_char,
+) -> agc_rc {
+    // SAFETY: ctx is NULL or a context from agc_ctx_open (agc_core.h).
+    unsafe { not_implemented(ctx, "CancelOperation (the Go server does not implement it)") }
 }
 
 // --- agc_establish.h: KeyEstablishmentService ------------------------------

@@ -47,6 +47,11 @@ impl Template {
                     .iter()
                     .map(|&o| api::CryptoOperation::try_from(o).map_err(|_| invalid(format!("unknown operation {o}"))))
                     .collect::<Result<_, _>>()?;
+                // Go's catalog rule (ValidateAcceptedDigestHashes): a
+                // prehashed scope says which digest hashes it accepts.
+                if is_prehashed(spec.scope) && spec.properties.accepted_digest_hashes.is_empty() {
+                    return Err(invalid(format!("prehashed scope {:?} must list accepted_digest_hashes", spec.scope)));
+                }
                 Ok(Capability { spec, operations })
             })
             .collect::<Result<_, Error>>()?;
@@ -82,6 +87,43 @@ impl Template {
         self.capabilities.iter().find(|c| c.spec.satisfies(want)).map(|c| c.spec.scope)
     }
 
+    /// The scope specification a new key version of this template records
+    /// for `want` (Go: `resolveDigestHashes`): for a prehashed signature
+    /// scope, the digest hashes it accepts are the requested list, which may
+    /// narrow the template's, or the template's own when the request names
+    /// none. A list on any other scope is refused.
+    pub fn resolve_digest_hashes(&self, mut want: ScopeSpecification) -> Result<ScopeSpecification, Error> {
+        const OP: &str = "Template::resolve_digest_hashes";
+        check_requested_digest_hashes(&want)?;
+        if !is_prehashed(want.scope) {
+            return Ok(want);
+        }
+        let offered = self
+            .capabilities
+            .iter()
+            .find(|c| c.spec.scope == want.scope)
+            .map(|c| &c.spec.properties.accepted_digest_hashes)
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Internal,
+                    OP,
+                    format!("template {} lists no accepted digest hash for {:?}", self.id(), want.scope),
+                )
+            })?;
+        if let Some(h) = want.properties.accepted_digest_hashes.iter().find(|h| !offered.contains(h)) {
+            return Err(Error::new(
+                Code::InvalidArgument,
+                OP,
+                format!("template {} does not accept digest hash {h:?} for {:?}", self.id(), want.scope),
+            ));
+        }
+        if want.properties.accepted_digest_hashes.is_empty() {
+            want.properties.accepted_digest_hashes = offered.clone();
+        }
+        Ok(want)
+    }
+
     /// The security properties of the first capability that satisfies `want`:
     /// what the template provides for that intent.
     pub fn security_for(&self, want: &ScopeSpecification) -> Option<SecurityProperties> {
@@ -96,6 +138,28 @@ impl Template {
     pub fn info(&self) -> &api::TemplateInfo {
         &self.info
     }
+}
+
+/// A requested digest-hash list belongs to a prehashed scope (Go:
+/// validateRequestedDigestHashes, run before a template is chosen, so the
+/// caller learns the request is wrong rather than that nothing matches).
+pub fn check_requested_digest_hashes(want: &ScopeSpecification) -> Result<(), Error> {
+    if !is_prehashed(want.scope) && !want.properties.accepted_digest_hashes.is_empty() {
+        return Err(Error::new(
+            Code::InvalidArgument,
+            "check_requested_digest_hashes",
+            format!("accepted_digest_hashes applies only to prehashed signature scopes, not {:?}", want.scope),
+        ));
+    }
+    Ok(())
+}
+
+/// The scopes that sign a caller's digest (Go: `Scope.IsPrehashed`).
+pub fn is_prehashed(scope: Scope) -> bool {
+    matches!(
+        scope,
+        Scope::Signature(api::SignatureScope::Prehashed | api::SignatureScope::PrehashedWithContext)
+    )
 }
 
 #[cfg(test)]

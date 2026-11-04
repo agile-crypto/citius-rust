@@ -165,6 +165,18 @@ pub unsafe fn scope_spec(s: &agc_scope_spec) -> Result<ScopeSpecification, FfiEr
             let m = unsafe { &s.u.signature };
             props.non_malleable = tribool(m.non_malleable, "scope_spec.u.signature.non_malleable")?;
             props.deterministic = tribool(m.deterministic, "scope_spec.u.signature.deterministic")?;
+            let hashes = if m.accepted_digest_hashes_count == 0 {
+                &[][..]
+            } else if m.accepted_digest_hashes.is_null() {
+                return Err(FfiError::invalid("accepted_digest_hashes is NULL but its count is not 0"));
+            } else {
+                // SAFETY: non-null and valid for count entries (agc_scope.h contract).
+                unsafe { std::slice::from_raw_parts(m.accepted_digest_hashes, m.accepted_digest_hashes_count) }
+            };
+            props.accepted_digest_hashes = hashes
+                .iter()
+                .map(|&h| proto_enum(h, "scope_spec.u.signature.accepted_digest_hashes"))
+                .collect::<Result<_, _>>()?;
             member!(signature, Signature, "signature")
         }
         ScopeKind::Aead => {
@@ -265,6 +277,11 @@ pub unsafe fn spec_from_params(
     // rather than silently dropped (as the Go handler does).
     if p.provider_configuration.count != 0 {
         return Err(FfiError::NotImplemented("provider_configuration"));
+    }
+    // The lifecycle does not schedule activation or expiration (Go's handler
+    // rejects both the same way).
+    if p.activation_time.present != 0 || p.expiration_time.present != 0 {
+        return Err(FfiError::invalid("activation_time and expiration_time are not supported"));
     }
     // SAFETY: provider_requirements is NULL or a valid struct (agc_key.h contract).
     let provider_requirements = unsafe { provider_requirements(p.provider_requirements) }?;

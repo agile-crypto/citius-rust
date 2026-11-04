@@ -12,12 +12,38 @@ pub struct MaterialProfile {
     pub shape: String,
 }
 
+/// The material profile a template declares (Go: `KeyMaterialProfileFor`):
+/// its `key_material_family`, which must be set and equal the family its
+/// typed algorithm implies, with the shape that algorithm defines. Fails
+/// closed for a template that declares no family, so its material is never
+/// retained by another template.
+pub fn template_material_profile(info: &api::TemplateInfo) -> Result<MaterialProfile, Error> {
+    const OP: &str = "template_material_profile";
+    let id = &info.template_id;
+    if info.key_material_family.is_empty() {
+        return Err(Error::new(
+            Code::IncompatibleParameters,
+            OP,
+            format!("template {id} declares no key_material_family, so its material cannot be retained"),
+        ));
+    }
+    let details = info.algorithm.as_ref().expect("templates always have an algorithm");
+    let derived = material_profile(details)?;
+    if derived.family != info.key_material_family {
+        return Err(Error::new(
+            Code::Internal,
+            OP,
+            format!(
+                "template {id}: key_material_family {:?} does not match its algorithm's family {:?}",
+                info.key_material_family, derived.family
+            ),
+        ));
+    }
+    Ok(derived)
+}
+
 /// The profile of an algorithm, from its typed details. Fails closed for
 /// algorithms whose material shape is not known here.
-///
-/// Go also requires the template to declare a `key_material_family` and
-/// checks it against this derivation; the pinned API version predates that
-/// field, so the derivation alone decides.
 pub fn material_profile(details: &api::AlgorithmDetails) -> Result<MaterialProfile, Error> {
     let p = |family, shape: String| Ok(MaterialProfile { family, shape });
     match details.algorithm.as_ref() {

@@ -14,7 +14,7 @@ use crate::proto::api::{self, provider_output::AlgorithmOutput};
 
 /// The API version stamped into every metadata (agc_abi.h
 /// AGC_API_VERSION_STRING; checked equal by the FFI layer's tests).
-pub const API_VERSION: &str = "1.0";
+pub const API_VERSION: &str = "2.0";
 
 /// Runs one crypto operation (Go: CryptoOrchestrator): loads the key,
 /// applies its lifecycle rule and policy, and dispatches to the provider
@@ -170,8 +170,16 @@ impl CryptoOrchestrator {
         Ok(())
     }
 
+    /// The metadata of an operation. `digest_hash` is set by digest signing
+    /// only (`with_digest_hash`); UNSPECIFIED otherwise.
     pub(super) fn metadata(version: u32, output: api::ProviderOutput, user_context: BTreeMap<String, String>) -> api::OperationMetadata {
-        api::OperationMetadata { key_version: version, provider_output: Some(output), api_version: API_VERSION.into(), user_context }
+        api::OperationMetadata {
+            key_version: version,
+            provider_output: Some(output),
+            api_version: API_VERSION.into(),
+            user_context,
+            digest_hash: api::HashAlgorithm::Unspecified as i32,
+        }
     }
 
     /// What `encrypt` will produce in size: the ciphertext and the encoded
@@ -430,6 +438,7 @@ mod tests {
                 "p",
                 r#"{"version": "1", "allowed_templates": ["aes-256-gcm-128-96"],
                     "allowed_operations": {"key_operations": ["create_key", "encrypt"]}}"#,
+                0,
             )
             .unwrap();
         assert_eq!(w.crypto.decrypt(decrypt("k", &e, aead())).err().unwrap().code(), Code::PolicyViolation);
