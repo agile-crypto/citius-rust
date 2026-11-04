@@ -59,7 +59,7 @@ Open points for you:
 
 No file-backed key repository exists yet; only the in-memory one does. (An earlier version of this note said one was ready. That was wrong.)
 
-**Status: header field added** on citius-c-api branch `feat/header-team-issues`. citius-rust reads it and refuses every non-NULL value with `AGC_ERR_NOT_IMPLEMENTED` until at-rest protection is agreed (C7).
+**Status: header field added** in citius-c-api `main` (PR #2, `6094f00`). citius-rust reads it and refuses every non-NULL value with `AGC_ERR_NOT_IMPLEMENTED` until at-rest protection is agreed (C7).
 
 ## 3. Asymmetric-encryption scope: defined in C and proto, unsupported in Go (medium)
 
@@ -74,7 +74,7 @@ No file-backed key repository exists yet; only the in-memory one does. (An earli
 - (a) Go adds the scope, which needs a template and provider work; or
 - (b) the headers mark the kind reserved / not yet supported, so the refusal is documented rather than surprising.
 
-**Status: done, option (b).** citius-c-api branch `feat/header-team-issues` marks the kind reserved. citius-rust refuses it with `AGC_ERR_INVALID_ARGUMENT`, as Go does (G31).
+**Status: done, option (b).** citius-c-api `main` (PR #2, `6094f00`) marks the kind reserved. citius-rust refuses it with `AGC_ERR_INVALID_ARGUMENT`, as Go does (G31).
 
 ## 4. Fork handling: the header prescribes a mechanism, not a behaviour (low)
 
@@ -84,7 +84,7 @@ No file-backed key repository exists yet; only the in-memory one does. (An earli
 - in a forked child, every call on an inherited context fails with `AGC_ERR_INVALID_HANDLE`;
 - `agc_ctx_reinit_after_fork` yields a fresh context from the same configuration.
 
-**Status: done.** citius-c-api branch `feat/header-team-issues` states the contract and leaves the mechanism unspecified. citius-rust records the pid that opened each context and compares it on every call; a C test with a real `fork()` covers it.
+**Status: done.** citius-c-api `main` (PR #2, `6094f00`) states the contract and leaves the mechanism unspecified. citius-rust records the pid that opened each context and compares it on every call; a C test with a real `fork()` covers it.
 
 ## 5. `agc_ctx_config` fields that no implementation honours yet (low)
 
@@ -94,7 +94,7 @@ No file-backed key repository exists yet; only the in-memory one does. (An earli
 - `provider_config_path`: providers are not configurable.
 - `require_locked_memory`: key material is not yet held in locked memory.
 
-**Status: done.** citius-c-api branch `feat/header-team-issues` states, at `agc_ctx_open`, that a setting the build cannot honour is refused with `AGC_ERR_NOT_IMPLEMENTED`, never ignored.
+**Status: done.** citius-c-api `main` (PR #2, `6094f00`) states, at `agc_ctx_open`, that a setting the build cannot honour is refused with `AGC_ERR_NOT_IMPLEMENTED`, never ignored.
 
 ---
 
