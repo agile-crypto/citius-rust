@@ -11,8 +11,9 @@ domain-driven, with the same domains and orchestrators.
 - `build.rs` runs bindgen on `agilecrypto.h` (all headers) to generate the
   Rust types and declarations. It also generates compile-time checks that
   every function in `src/ffi/exports` matches its C declaration.
-- Functions that are not implemented yet are listed in `abi_skip.txt`,
-  grouped by header. When you implement one, remove its line from that file.
+- Every header function is exported (`abi_skip.txt`, the list of missing
+  ones, is empty). The operations the Go server does not implement return
+  `AGC_ERR_NOT_IMPLEMENTED`; they are in `src/ffi/exports/stubs.rs`.
 - `DEVIATIONS.md` records every deliberate difference from the Go
   implementation and from the C stub in citius-c-api.
 
@@ -95,11 +96,59 @@ of a read-only deploy key on citius-c-api.
 GitHub Actions is currently disabled for the repository, so the pre-push hook
 is the gate until it is enabled.
 
-## Build and run the C example
-
-From the crate root, after `cargo build`:
+## Install and use from C
 
 ```sh
-cc -Wall -Wextra -I ../citius-c-api/include/agc examples/c/main.c -L target/debug -lagilecrypto -o target/c_example
-./target/c_example
+cargo xtask install --prefix /opt/agilecrypto
 ```
+
+installs the release library, the headers and the build-system files:
+
+```
+lib/libagilecrypto.2.dylib        (libagilecrypto.so.2 on Linux)
+lib/libagilecrypto.dylib          -> libagilecrypto.2.dylib, for linking
+lib/libagilecrypto.a
+include/agc/*.h
+lib/pkgconfig/agilecrypto.pc
+lib/cmake/agilecrypto/            find_package(agilecrypto 2.0)
+```
+
+The shared library's name carries the API's major version (2): a program
+built against it records `libagilecrypto.so.2` and never loads a library of
+another major version. `build.rs` refuses to build if Cargo.toml's major
+version and the headers' `AGC_API_VERSION_MAJOR` differ.
+
+```sh
+cc app.c $(pkg-config --cflags --libs agilecrypto)          # dynamic
+cc app.c $(pkg-config --cflags agilecrypto) /opt/agilecrypto/lib/libagilecrypto.a \
+   $(pkg-config --static --libs-only-l agilecrypto | sed 's/-lagilecrypto//')   # static
+```
+
+```cmake
+find_package(agilecrypto 2.0 REQUIRED)
+target_link_libraries(app PRIVATE agilecrypto::agilecrypto)
+```
+
+`examples/c/` holds three small programs, built and run by `cargo xtask
+test-c` with the tests: encrypt/decrypt, sign/verify, and a persistent key
+store.
+
+## Keeping keys: the file key store
+
+By default a context keeps keys in memory. To keep them across runs:
+
+```c
+cfg.key_store_uri = "file:/var/lib/myapp/keys";
+cfg.key_store_wrapping_key_path = "/etc/myapp/wrapping.key";
+```
+
+- Each key is one file in the directory, sealed with AES-256-GCM under the
+  wrapping key and bound to its key id, so a record that is edited or moved
+  onto another key does not open. Writes replace a file atomically.
+- The wrapping key file holds 32 bytes and must be readable by its owner
+  only; it is read once, when the context opens. Losing it loses the keys.
+- One context uses a store at a time: a second, in any process, fails with
+  `AGC_ERR_CRYPTO_CONCURRENT_ACCESS`. That includes a forked child, while the
+  parent keeps the store open.
+- Policies are not stored. An application creates them each time it opens
+  a context; keys name their policy, and fail closed until it exists.
