@@ -91,7 +91,33 @@ int main(void)
     }
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    /* Once the parent has closed the store, the child takes it over: its
+     * own inherited copy of the lock must not keep it out. */
+    int go[2];
+    CHECK(pipe(go) == 0);
+    fflush(NULL);
+    pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        char c;
+        close(go[1]);
+        CHECK(read(go[0], &c, 1) == 1);
+        agc_ctx *fresh = NULL;
+        CHECK_RC(agc_ctx_reinit_after_fork(ctx, &fresh), AGC_OK);
+        CHECK_RC(create_policy(fresh, "default", DEFAULT_POLICY), AGC_OK);
+        agc_key_info_response child_kr;
+        AGC_INIT(&child_kr);
+        child_kr.storage = (agc_buf){storage, sizeof storage};
+        CHECK_RC(agc_read_key(fresh, "persistent", 0, &child_kr), AGC_OK);
+        agc_ctx_close(fresh);
+        _exit(0);
+    }
+    close(go[0]);
     agc_ctx_close(ctx);
+    CHECK(write(go[1], "x", 1) == 1);
+    close(go[1]);
+    CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
     /* ... is there after reopening. Policies live in memory, so the caller
      * restores them (the key names its policy by name). */

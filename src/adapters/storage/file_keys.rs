@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -78,8 +78,10 @@ pub struct FileKeyRepository {
     dir: PathBuf,
     key: WrappingKey,
     state: RwLock<State>,
-    /// Held for the store's lifetime: the directory lock.
-    _lock: File,
+    /// Held for the store's lifetime: the directory lock. `None` once a
+    /// forked child has let go of its inherited copy (see
+    /// `release_inherited_lock`).
+    lock: Mutex<Option<File>>,
 }
 
 #[derive(Default)]
@@ -127,7 +129,18 @@ impl FileKeyRepository {
             }
             state.keys.insert(id, k);
         }
-        Ok(FileKeyRepository { dir: dir.to_owned(), key, state: RwLock::new(state), _lock: lock })
+        Ok(FileKeyRepository { dir: dir.to_owned(), key, state: RwLock::new(state), lock: Mutex::new(Some(lock)) })
+    }
+
+    /// In a forked child: closes the child's copy of the lock descriptor,
+    /// so that a fresh store can lock the directory once the parent has let
+    /// go of it. The lock belongs to the open file description that parent
+    /// and child share, so this only closes; it never unlocks, which would
+    /// release the parent's lock too. The store is unusable afterwards; only
+    /// a poisoned context, about to be replaced, calls this.
+    pub fn release_inherited_lock(&self) {
+        // A poisoned mutex still hands out the file: the child closes it either way.
+        drop(self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
     }
 
     fn path(&self, id: &KeyId) -> PathBuf {
@@ -162,6 +175,14 @@ impl FileKeyRepository {
 
 /// Makes a rename or removal in `dir` durable.
 fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    // Miri cannot fsync a directory handle; everything else about a write
+    // still runs under it.
+    #[cfg(miri)]
+    {
+        let _ = dir;
+        Ok(())
+    }
+    #[cfg(not(miri))]
     File::open(dir)?.sync_all()
 }
 
@@ -474,7 +495,8 @@ mod tests {
         // The wrong wrapping key opens nothing.
         assert_eq!(FileKeyRepository::open(&d, WrappingKey::from_bytes([8; 32])).err().unwrap().code(), Code::Internal);
         // A record moved over another key's file does not open as that key.
-        fs::copy(d.join("key_1.key"), d.join("key_2.key")).unwrap();
+        // read + write rather than fs::copy, which Miri cannot run on macOS (fclonefileat).
+        fs::write(d.join("key_2.key"), fs::read(d.join("key_1.key")).unwrap()).unwrap();
         assert_eq!(FileKeyRepository::open(&d, wk()).err().unwrap().code(), Code::Internal);
         let _ = fs::remove_dir_all(&d);
     }

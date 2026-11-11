@@ -110,10 +110,17 @@ pub unsafe extern "C" fn agc_ctx_reinit_after_fork(poisoned: *mut agc_ctx, out_c
         if old.pid == crate::ffi::context::pid() {
             return Err(FfiError::invalid("the context is not poisoned: it was opened in this process"));
         }
+        // The inherited context still holds the child's copy of the key
+        // store's lock descriptor; with it open, the fresh context could
+        // never lock the store, even after the parent has closed it.
+        // Releasing it first leaves the poisoned context unusable but still
+        // valid to close, should opening fail.
+        old.release_inherited();
         let fresh = Box::new(Context::open(old.config.clone())?);
         // agc_core.h: "The inherited context is closed". The child owns its
         // copy of the parent's memory, so freeing it touches nothing of the
-        // parent's. (A context holds no file descriptors or threads.)
+        // parent's. (A context holds no threads; its only descriptor, the
+        // store lock, was closed above.)
         // SAFETY: poisoned came from Box::into_raw in agc_ctx_open; the
         // child's caller hands it over and does not use it again.
         drop(unsafe { Box::from_raw(poisoned.cast::<Context>()) });

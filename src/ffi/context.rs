@@ -30,6 +30,9 @@ pub struct Context {
     pub discovery: Discovery,
     /// `agc_ctx_config.default_policy`: used when a call names no policy.
     pub default_policy: Option<String>,
+    /// The file key store, if any, for agc_ctx_reinit_after_fork to release
+    /// the directory lock this context holds.
+    file_store: Option<Arc<FileKeyRepository>>,
 }
 
 /// The owned part of `agc_ctx_config` that a context depends on (the C
@@ -106,6 +109,15 @@ pub fn pid() -> u32 {
 }
 
 impl Context {
+    /// In a forked child: lets go of what this (poisoned) context shares
+    /// with the parent and would keep a fresh context from opening: the key
+    /// store's directory lock.
+    pub fn release_inherited(&self) {
+        if let Some(store) = &self.file_store {
+            store.release_inherited_lock();
+        }
+    }
+
     /// Builds a context from a configuration: the composition root, like
     /// `WireFactorySet` in the Go server, run once per context.
     pub fn open(config: Config) -> Result<Context, FfiError> {
@@ -115,11 +127,15 @@ impl Context {
         providers.register(Arc::new(RustCrypto))?;
         validate_providers(&providers, templates.as_ref())?;
 
-        let keys: Arc<dyn KeyRepository> = match &config.key_store {
-            KeyStore::Memory => Arc::new(InMemoryKeyRepository::new()),
+        let file_store = match &config.key_store {
+            KeyStore::Memory => None,
             KeyStore::File { dir, wrapping_key_path } => {
-                Arc::new(FileKeyRepository::open(dir, WrappingKey::from_file(wrapping_key_path)?)?)
+                Some(Arc::new(FileKeyRepository::open(dir, WrappingKey::from_file(wrapping_key_path)?)?))
             }
+        };
+        let keys: Arc<dyn KeyRepository> = match &file_store {
+            None => Arc::new(InMemoryKeyRepository::new()),
+            Some(store) => store.clone(),
         };
         let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
         let providers = Arc::new(providers);
@@ -127,6 +143,7 @@ impl Context {
             pid: pid(),
             default_policy: config.default_policy.clone(),
             config,
+            file_store,
             keys: KeyOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
             crypto: CryptoOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
             discovery: Discovery::new(templates, providers),
