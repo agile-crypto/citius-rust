@@ -80,6 +80,7 @@ static void unhonoured_settings_are_refused(void)
         }
         agc_ctx *ctx = (agc_ctx *)&cfg; /* deliberately non-NULL */
         CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
+        CHECK(ctx == NULL); /* agc_core.h convention 6 */
     }
     /* A file: store without its wrapping key is a configuration error
      * (test_key_store covers the store itself). */

@@ -12,7 +12,7 @@ use std::ffi::c_char;
 use crate::app::{InstanceView, ProviderView, TemplateFilter};
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
-use crate::ffi::exports::core::context;
+use crate::ffi::exports::core::{clear_handle, context};
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::translation::{
     Packer, c_matched_provider, c_provider_info, c_provider_instance, c_scope_info, c_template_info, optional_str,
@@ -77,7 +77,10 @@ unsafe fn start<T, H>(items: Vec<T>, out: *mut *mut H) {
     unsafe { out.write(Box::into_raw(it).cast()) };
 }
 
+/// Clears the caller's handle (agc_core.h convention 6), then requires one.
 fn required_out<T>(out: *mut *mut T, what: &str) -> Result<(), FfiError> {
+    // SAFETY: out is NULL or the caller's handle variable (the exports' contract).
+    unsafe { clear_handle(out) };
     if out.is_null() {
         return Err(FfiError::invalid(format!("{what} must not be NULL")));
     }

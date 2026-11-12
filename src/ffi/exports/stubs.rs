@@ -14,7 +14,7 @@ use std::ffi::{c_char, c_int};
 
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
-use crate::ffi::exports::core::context;
+use crate::ffi::exports::core::{clear_handle as clear, context};
 use crate::ffi::guard::guard;
 
 /// The stub body: check the context, then refuse.
@@ -50,18 +50,6 @@ unsafe fn clear_valid(resp: *mut agc_verify_response) {
     if size >= std::mem::offset_of!(agc_verify_response, valid) + size_of::<std::ffi::c_int>() {
         // SAFETY: the caller's struct has the field (size checked above).
         unsafe { std::ptr::addr_of_mut!((*resp).valid).write_unaligned(0) };
-    }
-}
-
-/// Sets an output handle to NULL, so a caller that ignores the rc does not
-/// use an uninitialised pointer.
-///
-/// # Safety
-/// `out` is NULL or valid for writing one pointer.
-unsafe fn clear<T>(out: *mut *mut T) {
-    if !out.is_null() {
-        // SAFETY: non-null and writable (this function's contract).
-        unsafe { out.write(std::ptr::null_mut()) };
     }
 }
 

@@ -3,7 +3,7 @@
 use crate::bindings::*;
 use crate::domain::policy::Policy;
 use crate::ffi::error::FfiError;
-use crate::ffi::exports::core::context;
+use crate::ffi::exports::core::{clear_handle, context};
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::translation::{
     fill_policy_summary_response, fill_read_policy_response, null_check_c_string, optional_str, required_str,
@@ -119,6 +119,8 @@ pub unsafe extern "C" fn agc_list_policies(
     out_iter: *mut *mut agc_policy_iter,
 ) -> agc_rc {
     guard(|| {
+        // SAFETY: out_iter is NULL or the caller's handle variable.
+        unsafe { clear_handle(out_iter) };
         // SAFETY: ctx is NULL or a live context (agc_core.h contract).
         let ctx = unsafe { context(ctx) }?;
         // SAFETY: req is NULL or the caller's struct with struct_size readable bytes.

@@ -8,7 +8,7 @@ use crate::ffi::context::Context;
 use crate::ffi::error::FfiError;
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::translation::{fill_key_info_response, key_info_size, optional_str, required_str, scope_spec, spec_from_params};
-use crate::ffi::{exports::core::context, versioned};
+use crate::ffi::{exports::core::{clear_handle, context}, versioned};
 use crate::proto::api;
 
 #[unsafe(no_mangle)]
@@ -134,6 +134,8 @@ pub unsafe extern "C" fn agc_list_keys(
     out_iter: *mut *mut agc_key_iter,
 ) -> agc_rc {
     guard(|| {
+        // SAFETY: out_iter is NULL or the caller's handle variable.
+        unsafe { clear_handle(out_iter) };
         // SAFETY: ctx is NULL or a live context (agc_core.h contract).
         let ctx = unsafe { context(ctx) }?;
         // SAFETY: params is NULL or the caller's struct with struct_size readable bytes.

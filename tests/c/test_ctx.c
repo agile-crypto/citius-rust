@@ -57,6 +57,26 @@ static void older_config_struct_is_accepted(void)
     agc_ctx_close(ctx);
 }
 
+/* A caller compiled against a newer header: a larger config. Accepted while
+ * the fields this library does not know are zero; refused, not ignored, once
+ * the caller sets one (agc_abi.h). */
+static void newer_config_struct(void)
+{
+    struct {
+        agc_ctx_config known;
+        uint64_t newer_field;
+    } cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.known.struct_size = sizeof cfg;
+    agc_ctx *ctx = NULL;
+    CHECK_RC(agc_ctx_open(&cfg.known, &ctx), AGC_OK);
+    agc_ctx_close(ctx);
+
+    cfg.newer_field = 1;
+    CHECK_RC(agc_ctx_open(&cfg.known, &ctx), AGC_ERR_ABI_MISMATCH);
+    CHECK(ctx == NULL);
+}
+
 static void clear_error(void)
 {
     agc_ctx *ctx = NULL;
@@ -105,6 +125,7 @@ int main(void)
     remote_modes_are_not_implemented();
     bad_arguments();
     older_config_struct_is_accepted();
+    newer_config_struct();
     clear_error();
     older_error_detail_gets_only_its_fields();
     rc_names_and_messages();

@@ -1,7 +1,10 @@
 //! Structs that begin with `size_t struct_size` (agc_abi.h, D7). A caller
 //! built against an older header passes a smaller struct: the fields it does
 //! not know take their zero default. A caller built against a newer header
-//! passes a larger one: the tail this library does not know is ignored.
+//! passes a larger one: accepted if the tail this library does not know is
+//! all zero (the caller set none of the newer fields), refused with
+//! AGC_ERR_ABI_MISMATCH otherwise, since ignoring a field the caller set
+//! would silently drop what they asked for.
 //!
 //! So a caller's struct is never used in place. `read` copies the prefix both
 //! sides know into a zeroed value of the type this library was compiled
@@ -81,7 +84,8 @@ const SIZE_FIELD: usize = size_of::<usize>();
 ///
 /// Fails with `InvalidArgument` if `p` is NULL or `struct_size` is 0 (the
 /// caller forgot `AGC_INIT`), and with `AbiMismatch` if `struct_size` cannot
-/// even hold the `struct_size` field.
+/// even hold the `struct_size` field, or if a larger (newer) struct has a
+/// non-zero byte beyond this library's layout.
 ///
 /// # Safety
 /// `p` is NULL or aligned for `T`, with at least `struct_size` readable bytes
@@ -97,6 +101,16 @@ pub unsafe fn read<T: CStruct>(p: *const T, what: &'static str) -> Result<T, Ffi
     }
     if caller_size < SIZE_FIELD {
         return Err(FfiError::AbiMismatch(what));
+    }
+    if caller_size > size_of::<T>() {
+        // SAFETY: the caller guarantees caller_size readable bytes at p, and
+        // the tail [size_of::<T>(), caller_size) lies within them.
+        let tail = unsafe {
+            std::slice::from_raw_parts(p.cast::<u8>().add(size_of::<T>()), caller_size - size_of::<T>())
+        };
+        if tail.iter().any(|&b| b != 0) {
+            return Err(FfiError::AbiMismatch(what));
+        }
     }
     let n = caller_size.min(size_of::<T>());
     let mut v = MaybeUninit::<T>::zeroed();
@@ -189,8 +203,14 @@ mod tests {
     }
 
     #[test]
-    fn newer_caller_tail_is_ignored() {
+    fn newer_caller_that_sets_an_unknown_field_is_abi_mismatch() {
         let caller = V3 { struct_size: size_of::<V3>(), a: 1, b: 2, c: 3 };
+        assert!(matches!(read_from(&caller), Err(FfiError::AbiMismatch("v"))));
+    }
+
+    #[test]
+    fn newer_caller_with_unknown_fields_left_zero_is_accepted() {
+        let caller = V3 { struct_size: size_of::<V3>(), a: 1, b: 2, c: 0 };
         let v = read_from(&caller).unwrap();
         assert_eq!(v, V2 { struct_size: size_of::<V2>(), a: 1, b: 2 });
     }

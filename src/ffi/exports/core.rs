@@ -67,9 +67,24 @@ pub(in crate::ffi) unsafe fn context<'a>(ctx: *mut agc_ctx) -> Result<&'a Contex
     Ok(ctx)
 }
 
+/// Sets an output handle to NULL. Every function that hands out a handle
+/// calls this first, so on failure the caller's variable holds NULL
+/// (agc_core.h convention 6), never a stale or uninitialised pointer.
+///
+/// # Safety
+/// `out` is NULL or valid for writing one pointer.
+pub(in crate::ffi) unsafe fn clear_handle<T>(out: *mut *mut T) {
+    if !out.is_null() {
+        // SAFETY: non-null and writable (this function's contract).
+        unsafe { out.write(ptr::null_mut()) };
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agc_ctx_open(cfg: *const agc_ctx_config, out_ctx: *mut *mut agc_ctx) -> agc_rc {
     guard(|| {
+        // SAFETY: out_ctx is NULL or the caller's agc_ctx* variable.
+        unsafe { clear_handle(out_ctx) };
         if out_ctx.is_null() {
             return Err(FfiError::invalid("out_ctx must not be NULL"));
         }
@@ -101,6 +116,8 @@ pub unsafe extern "C" fn agc_ctx_close(ctx: *mut agc_ctx) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agc_ctx_reinit_after_fork(poisoned: *mut agc_ctx, out_ctx: *mut *mut agc_ctx) -> agc_rc {
     guard(|| {
+        // SAFETY: out_ctx is NULL or the caller's agc_ctx* variable.
+        unsafe { clear_handle(out_ctx) };
         if out_ctx.is_null() {
             return Err(FfiError::invalid("out_ctx must not be NULL"));
         }
