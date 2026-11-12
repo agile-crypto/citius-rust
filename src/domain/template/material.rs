@@ -78,9 +78,14 @@ mod tests {
     use super::*;
     use crate::domain::template::parse_catalog;
 
+    // Parsed once: under Miri a parse takes minutes, and the tests look up
+    // ten templates each.
+    static CATALOG: std::sync::LazyLock<Vec<crate::domain::template::Template>> = std::sync::LazyLock::new(|| {
+        parse_catalog(include_str!("../../../catalog/standard_algorithms.json")).unwrap()
+    });
+
     fn profile(id: &str) -> Result<MaterialProfile, Error> {
-        let catalog = parse_catalog(include_str!("../../../catalog/standard_algorithms.json")).unwrap();
-        let t = catalog.iter().find(|t| t.id() == id).unwrap();
+        let t = CATALOG.iter().find(|t| t.id() == id).unwrap();
         material_profile(t.info().algorithm.as_ref().unwrap())
     }
 
