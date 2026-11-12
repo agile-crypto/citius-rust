@@ -8,7 +8,8 @@ use crate::bindings::*;
 use crate::ffi::context::{Config, Context};
 use crate::ffi::error::{FfiError, rc_message, rc_name};
 use crate::ffi::guard::{guard, guard_value};
-use crate::ffi::{last_error, secure_memory, versioned};
+use crate::ffi::{last_error, versioned};
+use crate::secret as secure_memory;
 
 // --- Version ---------------------------------------------------------------
 

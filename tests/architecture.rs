@@ -109,7 +109,10 @@ fn is_below(path: &str, module: &str) -> bool {
 fn domains_use_only_core_and_themselves() {
     check("domain", |file, path| {
         let own = format!("crate::domain::{}", domain_of(file));
-        is_below(path, "crate::domain::core") || is_below(path, &own) || is_below(path, "crate::proto")
+        is_below(path, "crate::domain::core")
+            || is_below(path, &own)
+            || is_below(path, "crate::proto")
+            || is_below(path, "crate::secret")
     });
 }
 
@@ -123,7 +126,10 @@ fn application_layer_does_not_know_c() {
 #[test]
 fn adapters_depend_on_domains_only() {
     check("adapters", |_, path| {
-        is_below(path, "crate::domain") || is_below(path, "crate::adapters") || is_below(path, "crate::proto")
+        is_below(path, "crate::domain")
+            || is_below(path, "crate::adapters")
+            || is_below(path, "crate::proto")
+            || is_below(path, "crate::secret")
     });
 }
 

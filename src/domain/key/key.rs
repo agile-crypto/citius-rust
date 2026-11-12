@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::KeyLifecycleState as State;
+use crate::secret::SecretBytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyId(String);
@@ -56,7 +57,8 @@ pub struct Version {
     template_id: String,
     provider: String,
     scope_spec: ScopeSpecification,
-    material: Zeroizing<Vec<u8>>,
+    /// Locked, and shared by every clone of the version (and so of the key).
+    material: SecretBytes,
     provenance: Provenance,
     created_at: SystemTime,
 }
@@ -71,6 +73,7 @@ impl Version {
         provenance: Provenance,
         created_at: SystemTime,
     ) -> Self {
+        let material = SecretBytes::new(&material);
         Version { number, template_id, provider, scope_spec, material, provenance, created_at }
     }
 

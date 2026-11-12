@@ -1,4 +1,8 @@
-//! Memory for secrets (agc_core.h, "Memory hygiene").
+//! Memory for secrets (agc_core.h, "Memory hygiene"): the allocator behind
+//! agc_secure_alloc, and `SecretBytes`, which holds key material.
+//!
+//! A technical primitive below every layer, like `zeroize`: the domain may
+//! use it (tests/architecture.rs), and it uses nothing of the crate.
 //!
 //! Every allocation is its own page-aligned anonymous mapping, locked in RAM
 //! (best effort) and excluded from core dumps where the platform allows.
@@ -13,7 +17,10 @@
 //! The caller gets `base + HEADER`; HEADER keeps it 16-byte aligned, as
 //! malloc's result is.
 
+use std::fmt;
+use std::ops::Deref;
 use std::ptr;
+use std::sync::Arc;
 
 use zeroize::Zeroize;
 
@@ -126,6 +133,73 @@ unsafe fn unmap(base: *mut u8, total: usize, page: usize) {
     unsafe { std::alloc::dealloc(base, layout) }
 }
 
+/// Bytes that must stay secret, such as a key version's material: one
+/// allocation from `alloc` (its own pages, locked in RAM and kept out of core
+/// dumps where the platform allows), zeroed and released when the last clone
+/// is dropped. Cloning shares the allocation; it never copies the secret.
+#[derive(Clone)]
+pub struct SecretBytes(Arc<Region>);
+
+/// An allocation from `alloc` (NULL for no bytes), written once at creation.
+struct Region {
+    ptr: *mut u8,
+    len: usize,
+}
+
+// SAFETY: a Region owns its allocation alone and nothing writes to it after
+// SecretBytes::new, so handing it, and shared reads of it, to other threads
+// is sound.
+unsafe impl Send for Region {}
+// SAFETY: as above: after creation the bytes are only ever read.
+unsafe impl Sync for Region {}
+
+impl SecretBytes {
+    /// A locked copy of `bytes`. Fails only where a `Vec` would: when no
+    /// memory is left, through `handle_alloc_error`.
+    pub fn new(bytes: &[u8]) -> SecretBytes {
+        if bytes.is_empty() {
+            return SecretBytes(Arc::new(Region { ptr: ptr::null_mut(), len: 0 }));
+        }
+        let p = alloc(bytes.len());
+        if p.is_null() {
+            let layout = std::alloc::Layout::from_size_align(bytes.len(), 16).unwrap_or(std::alloc::Layout::new::<u8>());
+            std::alloc::handle_alloc_error(layout);
+        }
+        // SAFETY: p is a fresh allocation of bytes.len() writable bytes, so
+        // it cannot overlap `bytes`.
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
+        SecretBytes(Arc::new(Region { ptr: p, len: bytes.len() }))
+    }
+}
+
+impl Deref for SecretBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        let r = &*self.0;
+        if r.ptr.is_null() {
+            return &[];
+        }
+        // SAFETY: ptr holds len initialised bytes, alive as long as the
+        // Region and never written after creation.
+        unsafe { std::slice::from_raw_parts(r.ptr, r.len) }
+    }
+}
+
+impl Drop for Region {
+    fn drop(&mut self) {
+        // SAFETY: ptr is NULL or came from `alloc` and is freed only here.
+        unsafe { free(self.ptr, self.len) };
+    }
+}
+
+impl fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the secret.
+        write!(f, "<{} secret bytes>", self.0.len)
+    }
+}
+
 /// Overwrites `n` bytes at `p` with zeros in a way the optimiser may not
 /// remove (zeroize: volatile writes plus a compiler fence).
 ///
@@ -183,6 +257,19 @@ mod tests {
             free(ptr::null_mut(), 0);
             zero(ptr::null_mut(), 8);
         }
+    }
+
+    #[test]
+    fn secret_bytes_share_one_allocation_and_hide_their_content() {
+        let a = SecretBytes::new(b"key material");
+        let b = a.clone();
+        assert_eq!(&*b, b"key material");
+        assert_eq!(a.as_ptr(), b.as_ptr(), "a clone shares, never copies");
+        assert_eq!(a.as_ptr() as usize % 16, 0);
+        assert_eq!(format!("{a:?}"), "<12 secret bytes>");
+        drop(a);
+        assert_eq!(&*b, b"key material", "the last clone keeps it alive");
+        assert!(SecretBytes::new(&[]).is_empty());
     }
 
     #[test]

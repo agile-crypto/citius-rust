@@ -11,6 +11,5 @@ mod error;
 pub mod exports;
 mod guard;
 mod last_error;
-mod secure_memory;
 mod translation;
 mod versioned;
