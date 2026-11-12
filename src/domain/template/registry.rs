@@ -11,6 +11,7 @@ pub struct CandidateSet {
     restricted: bool,
 }
 
+#[cfg(test)]
 pub fn all_templates() -> CandidateSet {
     CandidateSet { ids: Vec::new(), restricted: false }
 }

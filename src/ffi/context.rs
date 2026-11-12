@@ -39,7 +39,6 @@ pub struct Context {
 /// strings are copied: agc_core.h says the caller need not keep them alive).
 #[derive(Clone)]
 pub struct Config {
-    pub mode: agc_mode,
     pub default_policy: Option<String>,
     /// Where keys live: in memory, or a sealed file store.
     pub key_store: KeyStore,
@@ -80,7 +79,7 @@ impl Config {
         let key_store = unsafe { key_store(cfg) }?;
         // SAFETY: default_policy is NULL or a C string (this function's contract).
         let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
-        Ok(Config { mode: cfg.mode, default_policy, key_store })
+        Ok(Config { default_policy, key_store })
     }
 }
 

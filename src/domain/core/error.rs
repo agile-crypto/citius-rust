@@ -75,10 +75,6 @@ impl Error {
         self.code
     }
 
-    pub fn op(&self) -> &'static str {
-        self.op
-    }
-
     pub fn message(&self) -> &str {
         &self.message
     }

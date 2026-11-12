@@ -40,6 +40,7 @@ pub struct MigrationResult {
     pub source_instance: String,
     /// The version that stays on the source provider; for REKEY_AND_ARCHIVE
     /// it is the archived material, addressed by the key's name and number.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Go's MigrationResult.SourceVersion; the C response has no field for it"))]
     pub source_version: u32,
     pub target_kind: String,
     pub target_instance: String,
@@ -177,6 +178,7 @@ impl KeyOrchestrator {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn migrate_key(&self, spec: MigrateSpec) -> Result<MigrationResult, Error> {
         self.migrate_key_admitting(spec, |_| Ok::<(), Error>(()))
     }

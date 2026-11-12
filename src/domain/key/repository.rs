@@ -17,9 +17,11 @@ pub trait KeyRepository: Send + Sync {
     /// at its new revision. `ConcurrentAccess` if it changed meanwhile,
     /// `KeyNotFound` if it is gone.
     fn update(&self, k: Key) -> Result<Key, Error>;
+    #[cfg_attr(not(test), expect(dead_code, reason = "Go's KeyRepository.GetByID; every C entry point names keys"))]
     fn get_by_id(&self, id: &KeyId) -> Result<Option<Key>, Error>;
     fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error>;
     /// `KeyNotFound` for an unknown id.
+    #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements DeleteKey"))]
     fn delete(&self, id: &KeyId) -> Result<(), Error>;
     /// Every key, ordered by name.
     fn list(&self) -> Result<Vec<Key>, Error>;

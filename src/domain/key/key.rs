@@ -200,10 +200,6 @@ impl Key {
         &self.policy
     }
 
-    pub fn kind(&self) -> ScopeKind {
-        self.kind
-    }
-
     pub fn state(&self) -> State {
         self.state
     }
@@ -256,6 +252,7 @@ impl Key {
     }
 
     /// Moves the key to `to` if NIST SP 800-57 allows it from its state.
+    #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements UpdateKeyState"))]
     pub fn transition(&mut self, to: State, now: SystemTime) -> Result<(), Error> {
         use State::*;
         let allowed: &[State] = match self.state {
@@ -292,6 +289,7 @@ impl Key {
         )
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements UpdateKeyState"))]
     pub fn is_terminal(&self) -> bool {
         matches!(self.state, State::Destroyed | State::DestroyedCompromised)
     }

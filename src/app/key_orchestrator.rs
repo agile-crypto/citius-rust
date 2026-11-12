@@ -28,16 +28,19 @@ impl KeyOrchestrator {
         Self { keys, templates, providers, policy }
     }
 
-    /// Go's CreateKey sequence: work out what the key needs from its
-    /// provider (custody), pick a template the policy allows for the intent
-    /// that a qualifying provider serves, check the policy allows creating a
-    /// key with it, have the provider generate the material, store the key.
+    /// `create_key_admitting` with nothing to check.
+    #[cfg(test)]
     pub fn create_key(&self, spec: KeyCreationSpec) -> Result<KeyMetadata, Error> {
         self.create_key_admitting(spec, |_| Ok::<(), Error>(()))
     }
 
-    /// `create_key` with a last check on the finished key before it is
-    /// stored: if `admit` fails, nothing is stored and its error is returned.
+    /// Go's CreateKey sequence: work out what the key needs from its
+    /// provider (custody), pick a template the policy allows for the intent
+    /// that a qualifying provider serves, check the policy allows creating a
+    /// key with it, have the provider generate the material, store the key.
+    ///
+    /// `admit` is a last check on the finished key before it is stored: if
+    /// it fails, nothing is stored and its error is returned.
     /// The C layer uses it to refuse a response region too small for the
     /// key's record before the key exists (agc_key_types.h, STORAGE
     /// CONTRACT for create operations).
@@ -236,6 +239,7 @@ impl KeyOrchestrator {
         Ok(TransformPlan { template_id: template.id().to_owned(), provider, scope_spec, retained, key: k })
     }
 
+    #[cfg(test)]
     pub fn transform_key(&self, spec: TransformSpec) -> Result<KeyMetadata, Error> {
         self.transform_key_admitting(spec, |_| Ok::<(), Error>(()))
     }
