@@ -43,7 +43,7 @@ reason. Anything that differs and is not listed here is a bug.
 | G36 | Policies persist with the keys (Vault). | Policies stay in memory even with a file key store: the application recreates them on every open, and a key fails closed (`PolicyNotFound`) until its policy exists. | Policies are application configuration, as the deck's slide 39 describes them for the embedded library. A key never runs under a policy nobody restated. |
 | G37 | Key material is a `[]byte` in the key version, copied wherever the key is. | Each version's material is one `SecretBytes`: its own pages, locked in RAM (best effort) and kept out of core dumps on Linux, shared by every clone of the key and zeroed when the last clone goes. | Go copies keys into ordinary heap memory, where they can be swapped out or dumped, and every copy is one more place a key lives. One page per version is the cost; past `RLIMIT_MEMLOCK` the pages stay usable but swappable (see C4). |
 
-## From the C stub (citius-c-api/src)
+## From the C stub (citius-c-api/src, removed in citius-c-api 6a8baa3)
 
 | # | Stub | Here | Why |
 |---|---|---|---|

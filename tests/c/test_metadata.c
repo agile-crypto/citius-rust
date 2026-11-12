@@ -1,7 +1,7 @@
 /* agc_metadata.h: the OperationMetadata codec and envelopes, from C. */
 #include "agc_test.h"
 
-/* The "aead" golden vector (citius-c-api tests/golden, the real protobuf
+/* The "aead" golden vector (citius-c-api conformance/golden, the real protobuf
  * library): key_version 3, encoding "raw", AEAD nonce 01..0c, tag 16,
  * api "1.0", user context {tenant: acme}. Encoding byte first. */
 static const uint8_t golden_aead[] = {
