@@ -100,8 +100,8 @@ impl FileKeyRepository {
     /// the Key aggregate's invariants, fails the whole open.
     pub fn open(dir: &Path, key: WrappingKey) -> Result<FileKeyRepository, Error> {
         const OP: &str = "FileKeyRepository::open";
-        fs::create_dir_all(dir).map_err(|e| io(OP, "cannot create the directory", e))?;
-        let lock = OpenOptions::new()
+        private_dir().create(dir).map_err(|e| io(OP, "cannot create the directory", e))?;
+        let lock = private_file()
             .create(true)
             .truncate(false)
             .write(true)
@@ -154,7 +154,7 @@ impl FileKeyRepository {
         let sealed = seal_record(&self.key, k.id(), &encode(k))?;
         let target = self.path(k.id());
         let tmp = self.dir.join(format!(".{}.tmp", k.id().as_str()));
-        let mut f = OpenOptions::new()
+        let mut f = private_file()
             .create(true)
             .truncate(true)
             .write(true)
@@ -166,6 +166,7 @@ impl FileKeyRepository {
         sync_dir(&self.dir).map_err(|e| io(OP, "cannot sync the directory", e))
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements DeleteKey"))]
     fn remove(&self, id: &KeyId) -> Result<(), Error> {
         const OP: &str = "FileKeyRepository::remove";
         fs::remove_file(self.path(id)).map_err(|e| io(OP, "cannot delete a key", e))?;
@@ -174,6 +175,24 @@ impl FileKeyRepository {
 }
 
 /// Makes a rename or removal in `dir` durable.
+/// Creates directories readable by their owner only (0700 on Unix): the
+/// records are sealed, but their names, number and sizes are not.
+fn private_dir() -> fs::DirBuilder {
+    let mut b = fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b
+}
+
+/// Opens files created as readable by their owner only (0600 on Unix).
+fn private_file() -> OpenOptions {
+    let mut o = OpenOptions::new();
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o
+}
+
 fn sync_dir(dir: &Path) -> std::io::Result<()> {
     // Miri cannot fsync a directory handle; everything else about a write
     // still runs under it.
@@ -499,6 +518,19 @@ mod tests {
         fs::write(d.join("key_2.key"), fs::read(d.join("key_1.key")).unwrap()).unwrap();
         assert_eq!(FileKeyRepository::open(&d, wk()).err().unwrap().code(), Code::Internal);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_store_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("private").join("nested");
+        let r = FileKeyRepository::open(&d, wk()).unwrap();
+        r.create(key("key_1", "one")).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&d), 0o700);
+        assert_eq!(mode(&d.join(".lock")), 0o600);
+        assert_eq!(mode(&d.join("key_1.key")), 0o600);
     }
 
     #[test]
