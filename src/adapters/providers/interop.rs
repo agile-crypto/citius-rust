@@ -149,7 +149,7 @@ fn export_case(template: &str, algorithm: &api::AlgorithmDetails, context: Optio
         provider_output: Some(output.clone()),
         // What the library stamps (app::API_VERSION; adapters may not
         // import the app layer).
-        api_version: "2.0".into(),
+        api_version: "1.0".into(),
         user_context: BTreeMap::from([("tenant".to_owned(), "acme".to_owned())]),
         // Digest signing records its hash, as the library does.
         digest_hash: if kind == "digest_sign" { hash as i32 } else { HashAlgorithm::Unspecified as i32 },

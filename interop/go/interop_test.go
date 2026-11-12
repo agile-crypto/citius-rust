@@ -113,7 +113,7 @@ func checkRust(t *testing.T, p *software.Provider, c interopCase) error {
 	if c.Kind == "digest_sign" {
 		wantHash = api.HashAlgorithm(c.Hash)
 	}
-	if md.GetKeyVersion() != 1 || md.GetApiVersion() != "2.0" || md.GetUserContext()["tenant"] != "acme" ||
+	if md.GetKeyVersion() != 1 || md.GetApiVersion() != "1.0" || md.GetUserContext()["tenant"] != "acme" ||
 		md.GetDigestHash() != wantHash || !proto.Equal(md.GetProviderOutput(), out) {
 		return fmt.Errorf("metadata decoded to %v", md)
 	}

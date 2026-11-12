@@ -14,7 +14,7 @@ use crate::proto::api::{self, provider_output::AlgorithmOutput};
 
 /// The API version stamped into every metadata (agc_abi.h
 /// AGC_API_VERSION_STRING; checked equal by the FFI layer's tests).
-pub const API_VERSION: &str = "2.0";
+pub const API_VERSION: &str = "1.0";
 
 /// Runs one crypto operation (Go: CryptoOrchestrator): loads the key,
 /// applies its lifecycle rule and policy, and dispatches to the provider

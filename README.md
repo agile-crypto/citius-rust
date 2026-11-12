@@ -105,16 +105,16 @@ cargo xtask install --prefix /opt/agilecrypto
 installs the release library, the headers and the build-system files:
 
 ```
-lib/libagilecrypto.2.dylib        (libagilecrypto.so.2 on Linux)
-lib/libagilecrypto.dylib          -> libagilecrypto.2.dylib, for linking
+lib/libagilecrypto.1.dylib        (libagilecrypto.so.1 on Linux)
+lib/libagilecrypto.dylib          -> libagilecrypto.1.dylib, for linking
 lib/libagilecrypto.a
 include/agc/*.h
 lib/pkgconfig/agilecrypto.pc
-lib/cmake/agilecrypto/            find_package(agilecrypto 2.0)
+lib/cmake/agilecrypto/            find_package(agilecrypto 1.0)
 ```
 
-The shared library's name carries the API's major version (2): a program
-built against it records `libagilecrypto.so.2` and never loads a library of
+The shared library's name carries the API's major version (1): a program
+built against it records `libagilecrypto.so.1` and never loads a library of
 another major version. `build.rs` refuses to build if Cargo.toml's major
 version and the headers' `AGC_API_VERSION_MAJOR` differ.
 
@@ -125,7 +125,7 @@ cc app.c $(pkg-config --cflags agilecrypto) /opt/agilecrypto/lib/libagilecrypto.
 ```
 
 ```cmake
-find_package(agilecrypto 2.0 REQUIRED)
+find_package(agilecrypto 1.0 REQUIRED)
 target_link_libraries(app PRIVATE agilecrypto::agilecrypto)
 ```
 

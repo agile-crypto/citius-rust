@@ -37,7 +37,7 @@ citius-core uses both:
   - a rule that WIRE_V1 cannot encode digest-signing metadata, and encoding it fails (as for an inexpressible `encoding` token today).
 - **`agc_digest_verify_request.hash_algorithm`:** decide whether it stays required (and must equal the metadata's value) or becomes optional when metadata is given. Go uses only the metadata.
 
-**Status: done, in a bump to api v0.3.0 (C API 2.0).** The descriptor is pinned to `citius/api` v0.3.0 and the headers mirror it. That is not binary compatible with 1.0, because records gained and lost fields where the proto did.
+**Status: done, in a bump to api v0.3.0.** The descriptor is pinned to `citius/api` v0.3.0 and the headers mirror it. (This was briefly numbered C API 2.0; before the first public release the version was reset to 1.0.)
 - The digest-hash fields are in `agc_signature_scope_spec` and `agc_metadata`.
 - `agc_digest_verify` takes the hash from the metadata.
 - WIRE_V1 cannot carry `digest_hash` (DV-15), so digest signing requires PROTOBUF.

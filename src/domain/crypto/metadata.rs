@@ -667,7 +667,7 @@ mod tests {
                 encoding: "der".into(),
                 algorithm_output: Some(AlgorithmOutput::NoOutput(api::NoAlgorithmOutput {})),
             }),
-            api_version: "2.0".into(),
+            api_version: "1.0".into(),
             ..Default::default()
         };
         assert!(encode(&md, MetadataEncoding::WireV1).is_ok(), "UNSPECIFIED is expressible");
