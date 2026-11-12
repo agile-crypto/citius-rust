@@ -5,7 +5,7 @@ use std::ptr;
 use std::sync::LazyLock;
 
 use crate::bindings::*;
-use crate::ffi::context::{Config, Context};
+use crate::ffi::context::{Config, Context, builtin_providers};
 use crate::ffi::error::{FfiError, rc_message, rc_name};
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::{last_error, versioned};
@@ -19,10 +19,13 @@ static VERSION: LazyLock<CString> = LazyLock::new(|| {
 });
 
 static BUILD_INFO: LazyLock<CString> = LazyLock::new(|| {
+    let providers: Vec<String> =
+        builtin_providers().iter().map(|p| format!("{} ({})", p.name(), p.kind())).collect();
     CString::new(format!(
-        "agilecrypto (Rust) {}; api {}; providers: none; fips=0",
+        "agilecrypto (Rust) {}; api {}; providers: {}; fips=0",
         env!("CARGO_PKG_VERSION"),
         VERSION.to_str().unwrap(),
+        providers.join(", "),
     ))
     .unwrap()
 });

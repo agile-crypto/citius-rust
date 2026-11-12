@@ -14,6 +14,7 @@ static void version(void)
     snprintf(want, sizeof want, "%d.%d.%d", major, minor, patch);
     CHECK_STR(agc_version_string(), want);
     CHECK(strstr(agc_build_info(), "fips=0") != NULL);
+    CHECK(strstr(agc_build_info(), "providers: rustcrypto (software)") != NULL);
 }
 
 static void secure_memory(void)

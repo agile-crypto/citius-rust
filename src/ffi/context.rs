@@ -8,7 +8,7 @@ use crate::adapters::storage::{
 use crate::domain::key::KeyRepository;
 use crate::app::{CryptoOrchestrator, Discovery, KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
-use crate::domain::provider::ProviderRegistry;
+use crate::domain::provider::{Backend, ProviderRegistry};
 use crate::bindings::*;
 use crate::ffi::error::FfiError;
 use crate::ffi::translation::optional_str;
@@ -102,6 +102,12 @@ unsafe fn key_store(cfg: &agc_ctx_config) -> Result<KeyStore, FfiError> {
     Ok(KeyStore::File { dir: PathBuf::from(dir), wrapping_key_path: PathBuf::from(wrapping_key_path) })
 }
 
+/// The providers every context registers: this build's provider set, also
+/// what agc_build_info reports.
+pub fn builtin_providers() -> Vec<Arc<dyn Backend>> {
+    vec![Arc::new(RustCrypto)]
+}
+
 /// The current process id.
 pub fn pid() -> u32 {
     std::process::id()
@@ -123,7 +129,9 @@ impl Context {
 
         let templates = Arc::new(InMemoryTemplateRegistry::standard());
         let mut providers = ProviderRegistry::new();
-        providers.register(Arc::new(RustCrypto))?;
+        for p in builtin_providers() {
+            providers.register(p)?;
+        }
         validate_providers(&providers, templates.as_ref())?;
 
         let file_store = match &config.key_store {
