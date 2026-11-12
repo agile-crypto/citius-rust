@@ -14,8 +14,11 @@ static void remote_modes_are_not_implemented(void)
 {
     agc_ctx_config cfg;
     AGC_INIT(&cfg);
-    cfg.mode = AGC_MODE_REMOTE;
     agc_ctx *ctx = NULL;
+    cfg.mode = AGC_MODE_LOCAL;
+    CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
+    CHECK(ctx == NULL);
+    cfg.mode = AGC_MODE_REMOTE;
     CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
     CHECK(ctx == NULL);
 

@@ -114,16 +114,25 @@ static void policies_govern_key_creation(agc_ctx *ctx)
 
 static void default_policy_from_config(void)
 {
+    /* agc_core.h: the config's strings are copied, so the caller's buffer
+     * may change or go away once agc_ctx_open returns. */
+    char name[] = "fallback";
     agc_ctx_config cfg;
     AGC_INIT(&cfg);
-    cfg.default_policy = "fallback";
+    cfg.default_policy = name;
     agc_ctx *ctx = NULL;
     CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_OK);
+    memset(name, 'x', sizeof name - 1);
     CHECK_RC(create_policy(ctx, "fallback", DEFAULT_POLICY), AGC_OK);
 
     agc_create_key_params p = AEAD_KEY_PARAMS("k");
     p.policy_name = NULL;
-    CHECK_RC(create(ctx, &p), AGC_OK);
+    uint8_t storage[1024];
+    agc_key_info_response kr;
+    AGC_INIT(&kr);
+    kr.storage = (agc_buf){storage, sizeof storage};
+    CHECK_RC(agc_create_key(ctx, &p, &kr), AGC_OK);
+    CHECK(strcmp(kr.key_info.policy_name, "fallback") == 0);
     agc_ctx_close(ctx);
 
     /* Without a configured default, a policy must be named. */

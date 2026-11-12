@@ -43,6 +43,10 @@ static void constant_time_equal(void)
     CHECK(agc_ct_equal(a, b, sizeof a) == 0);
     CHECK(agc_ct_equal(a, b, 31) == 1);
     CHECK(agc_ct_equal(NULL, b, 0) == 0);
+    CHECK(agc_ct_equal(a, NULL, sizeof a) == 0);
+    b[31] ^= 1;
+    b[0] ^= 1; /* a difference in the first byte counts as much as in the last */
+    CHECK(agc_ct_equal(a, b, sizeof a) == 0);
 }
 
 static void enum_names(void)

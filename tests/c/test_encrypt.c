@@ -51,6 +51,16 @@ static void encrypt(agc_ctx *ctx, const char *key, const agc_encrypt_params *ep,
     CHECK(resp.ciphertext_len > 0 && resp.metadata_len > 0);
     size_t want_ct = resp.ciphertext_len, want_md = resp.metadata_len;
 
+    /* A real region one byte short is refused the same way, with the exact
+     * sizes, and nothing is written to it. */
+    memset(ct, 0xEE, want_ct);
+    resp.ciphertext = (agc_buf){ct, want_ct - 1};
+    resp.metadata = (agc_buf){md, want_md};
+    CHECK_RC(agc_encrypt(ctx, &er, &resp), AGC_ERR_BUFFER_TOO_SMALL);
+    CHECK(resp.ciphertext_len == want_ct && resp.metadata_len == want_md);
+    for (size_t i = 0; i < want_ct; i++)
+        CHECK(ct[i] == 0xEE);
+
     resp.ciphertext = (agc_buf){ct, want_ct};
     resp.metadata = (agc_buf){md, want_md};
     CHECK_RC(agc_encrypt(ctx, &er, &resp), AGC_OK);

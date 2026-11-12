@@ -104,6 +104,15 @@ static void list_templates(agc_ctx *ctx)
     CHECK_STR(r.template_info.template_id, "ed25519ph");
     CHECK_RC(agc_template_iter_next(it, &r), AGC_ERR_ITERATOR_EXHAUSTED);
     agc_template_iter_free(it);
+
+    /* A standard no template meets: an empty listing, not an error. */
+    AGC_INIT(&p);
+    agc_str unmet[] = {"NO SUCH STANDARD"};
+    p.required_standards = (agc_str_list){unmet, 1};
+    CHECK_RC(agc_list_templates(ctx, &p, &it), AGC_OK);
+    r = template_response(sizeof storage);
+    CHECK_RC(agc_template_iter_next(it, &r), AGC_ERR_ITERATOR_EXHAUSTED);
+    agc_template_iter_free(it);
 }
 
 static void list_scopes(agc_ctx *ctx)
