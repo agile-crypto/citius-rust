@@ -10,6 +10,8 @@ use crate::domain::provider::Encoding;
 use crate::ffi::error::FfiError;
 use crate::proto::api;
 
+use super::strs;
+
 /// Lays out a record's variable-length data (strings, byte strings, arrays)
 /// in the caller's storage region, and hands back pointers into it, which
 /// the caller reads after we return.
@@ -299,17 +301,51 @@ pub fn c_key_format(e: Encoding) -> agc_key_format {
 /// The C summary of a provider's implementation properties; the language
 /// string goes into storage.
 pub fn c_impl_props(i: &api::ImplementationProperties, p: &mut Packer) -> agc_impl_props {
-    let fips = i.fips_140.as_ref().filter(|f| f.certified);
+    let fips = i.fips_140.as_ref();
+    let certified = fips.filter(|f| f.certified);
+    let audits: Vec<agc_audit_report> = i
+        .audits
+        .iter()
+        .map(|a| agc_audit_report {
+            auditor: p.str(&a.auditor),
+            report_date: c_proto_timestamp(a.report_date.as_ref()),
+            report_id: p.str(&a.report_id),
+            scope: p.str(&a.scope),
+            findings_summary: p.str(&a.findings_summary),
+            report_url: p.str(&a.report_url),
+        })
+        .collect();
+    let (hardware_features, hardware_features_count) = strs(p, &i.hardware_features);
+    let (unpatched_cves, unpatched_cves_count) = strs(p, &i.unpatched_cves);
     agc_impl_props {
-        fips_certified: i32::from(fips.is_some()),
-        fips_level: fips.map_or(0, |f| f.level as u32),
+        fips_certified: i32::from(certified.is_some()),
+        fips_level: certified.map_or(0, |f| f.level as u32),
+        fips_certificate_number: p.str(fips.map_or("", |f| &f.certificate_number)),
+        fips_module_name: p.str(fips.map_or("", |f| &f.module_name)),
+        fips_validation_date: c_proto_timestamp(fips.and_then(|f| f.validation_date.as_ref())),
+        fips_expiration_date: c_proto_timestamp(fips.and_then(|f| f.expiration_date.as_ref())),
+        common_criteria_certified: c_tribool(i.common_criteria_certified),
+        audits: p.array(&audits),
+        audits_count: audits.len(),
         formally_verified: c_tribool(i.formally_verified),
+        verification_framework: p.str(&i.verification_framework),
         memory_safe_language: c_tribool(i.memory_safe_language),
         implementation_language: p.str(&i.implementation_language),
         constant_time: c_tribool(i.constant_time),
         side_channel_hardened: c_tribool(i.side_channel_hardened),
         hardware_accelerated: c_tribool(i.hardware_accelerated),
+        hardware_features,
+        hardware_features_count,
+        no_known_cve: c_tribool(i.no_known_cve),
+        unpatched_cves,
+        unpatched_cves_count,
+        additional: p.kv_list(i.additional.iter()),
     }
+}
+
+/// A protobuf timestamp as the C API's optional timestamp.
+pub fn c_proto_timestamp(t: Option<&pbjson_types::Timestamp>) -> agc_timestamp {
+    t.map_or_else(c_no_timestamp, |t| agc_timestamp { seconds: t.seconds, nanos: t.nanos, present: 1 })
 }
 
 /// The C record of a key version, its variable-length data in storage.
@@ -459,6 +495,76 @@ mod tests {
         assert_eq!((read(props.implementation_language), props.memory_safe_language), ("rust", agc_tribool_AGC_TRUE));
         assert_eq!(props.fips_certified, 0);
         assert!(resp.storage_used <= storage.len());
+    }
+
+    #[test]
+    fn implementation_properties_carry_every_proto_field() {
+        let ts = |seconds| Some(pbjson_types::Timestamp { seconds, nanos: 0 });
+        let i = api::ImplementationProperties {
+            fips_140: Some(api::Fips140Certification {
+                certified: true,
+                level: api::Fips140Level::Fips140Level3 as i32,
+                certificate_number: "4282".into(),
+                module_name: "hsm-module".into(),
+                validation_date: ts(100),
+                expiration_date: None,
+            }),
+            common_criteria_certified: Some(false),
+            audits: vec![api::AuditReport {
+                auditor: "lab".into(),
+                report_date: ts(7),
+                report_id: "r-1".into(),
+                scope: "aead".into(),
+                findings_summary: "none".into(),
+                report_url: "https://example.org/r-1".into(),
+            }],
+            verification_framework: "HACL*".into(),
+            hardware_features: vec!["aes-ni".into(), "avx2".into()],
+            no_known_cve: Some(true),
+            unpatched_cves: vec!["CVE-2026-0001".into()],
+            additional: [("k".to_owned(), "v".to_owned())].into(),
+            ..Default::default()
+        };
+        let mut storage = [0u8; 1024];
+        let mut used = 0;
+        let c = pack(agc_buf { data: storage.as_mut_ptr(), cap: storage.len() }, &mut used, |p| c_impl_props(&i, p)).unwrap();
+
+        assert_eq!((c.fips_certified, c.fips_level), (1, 3));
+        assert_eq!((read(c.fips_certificate_number), read(c.fips_module_name)), ("4282", "hsm-module"));
+        assert_eq!((c.fips_validation_date.seconds, c.fips_validation_date.present), (100, 1));
+        assert_eq!(c.fips_expiration_date.present, 0, "absent stays absent");
+        assert_eq!((c.common_criteria_certified, c.no_known_cve), (agc_tribool_AGC_FALSE, agc_tribool_AGC_TRUE));
+        assert_eq!(c.audits_count, 1);
+        // SAFETY: audits points at one record in `storage`, which is alive.
+        let a = unsafe { &*c.audits };
+        assert_eq!((read(a.auditor), read(a.report_id), read(a.scope)), ("lab", "r-1", "aead"));
+        assert_eq!((read(a.findings_summary), read(a.report_url), a.report_date.seconds), ("none", "https://example.org/r-1", 7));
+        assert_eq!(read(c.verification_framework), "HACL*");
+        // SAFETY: both arrays point into `storage` with the counts given.
+        let (hw, cves) = unsafe {
+            (std::slice::from_raw_parts(c.hardware_features, 2), std::slice::from_raw_parts(c.unpatched_cves, 1))
+        };
+        assert_eq!((c.hardware_features_count, read(hw[0]), read(hw[1])), (2, "aes-ni", "avx2"));
+        assert_eq!((c.unpatched_cves_count, read(cves[0])), (1, "CVE-2026-0001"));
+        assert_eq!(c.additional.count, 1);
+        // SAFETY: one item in `storage`.
+        let kv = unsafe { &*c.additional.items };
+        assert_eq!((read(kv.key), read(kv.value)), ("k", "v"));
+        assert!(used <= storage.len());
+    }
+
+    #[test]
+    fn unset_implementation_properties_are_empty_not_null() {
+        let mut storage = [0u8; 64];
+        let mut used = 0;
+        let c = pack(agc_buf { data: storage.as_mut_ptr(), cap: storage.len() }, &mut used, |p| {
+            c_impl_props(&api::ImplementationProperties::default(), p)
+        })
+        .unwrap();
+        assert_eq!((read(c.verification_framework), read(c.fips_certificate_number)), ("", ""));
+        assert!(c.audits.is_null() && c.audits_count == 0);
+        assert!(c.hardware_features.is_null() && c.unpatched_cves.is_null() && c.additional.count == 0);
+        assert_eq!((c.no_known_cve, c.common_criteria_certified), (agc_tribool_AGC_UNSET, agc_tribool_AGC_UNSET));
     }
 
     #[test]
