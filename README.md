@@ -90,11 +90,7 @@ git config core.sshCommand "ssh -o ServerAliveInterval=15"
 `.github/workflows/ci.yml` checks out this repository and citius-c-api (at
 `HEADERS_PIN`) side by side and runs clippy, `cargo test`, `cargo xtask
 test-c`, Miri and TSan (on a pinned nightly, `XTASK_NIGHTLY`), and `cargo
-audit`. It needs a repository secret `CITIUS_C_API_SSH_KEY`: the private half
-of a read-only deploy key on citius-c-api.
-
-GitHub Actions is currently disabled for the repository, so the pre-push hook
-is the gate until it is enabled.
+audit`. citius-c-api is public, so CI needs no secrets.
 
 ## Install and use from C
 
@@ -152,3 +148,7 @@ cfg.key_store_wrapping_key_path = "/etc/myapp/wrapping.key";
   parent keeps the store open.
 - Policies are not stored. An application creates them each time it opens
   a context; keys name their policy, and fail closed until it exists.
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE).

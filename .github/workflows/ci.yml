@@ -11,8 +11,7 @@ on:
 # the workspace, so both repositories are checked out side by side inside it:
 #   $GITHUB_WORKSPACE/citius-rust    this repository
 #   $GITHUB_WORKSPACE/citius-c-api   the headers, at the pinned revision
-# citius-c-api is a separate repository: CITIUS_C_API_SSH_KEY is the private
-# half of a read-only deploy key on it.
+# citius-c-api is a separate, public repository: no credentials are needed.
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,9 +34,8 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          repository: citius/citius-c-api
+          repository: agile-crypto/citius-c-api
           ref: ${{ steps.pin.outputs.rev }}
-          ssh-key: ${{ secrets.CITIUS_C_API_SSH_KEY }}
           path: citius-c-api
 
       - name: Install toolchain
@@ -73,9 +71,8 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          repository: citius/citius-c-api
+          repository: agile-crypto/citius-c-api
           ref: ${{ steps.pin.outputs.rev }}
-          ssh-key: ${{ secrets.CITIUS_C_API_SSH_KEY }}
           path: citius-c-api
 
       - name: Install toolchains

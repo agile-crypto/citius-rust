@@ -10,7 +10,7 @@ catalogs use fields this descriptor does not have.
 
 | | |
 |---|---|
-| Source repo | `citius/api` |
+| Source repo | `agile-crypto/api` |
 | Source tag | `v0.3.0` (`2eb364a69b5a7ba41d3770af35248f452930a787`) |
 | Source path | `proto/standard_algorithms.json` |
 | Catalog version | 0.2.1 (72 templates) |
