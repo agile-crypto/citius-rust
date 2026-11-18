@@ -102,6 +102,8 @@ static void validating_a_migration(agc_ctx *ctx)
     for (size_t i = 0; i < v.option_count; i++) {
         CHECK(!v.options[i].feasible);                       /* nowhere to go */
         CHECK(strlen(v.options[i].infeasibility_reason) > 0); /* and it says why */
+        CHECK(v.options[i].security_notes_count > 0);         /* what it would imply */
+        CHECK(strlen(v.options[i].security_notes[0]) > 0);
     }
     CHECK(v.recommended_strategy == AGC_MIGRATION_STRATEGY_UNSPECIFIED);
     CHECK(strlen(v.recommendation_reason) > 0);
@@ -112,6 +114,8 @@ static void validating_a_migration(agc_ctx *ctx)
     v.storage = (agc_buf){storage, sizeof storage};
     CHECK_RC(agc_validate_key_operation(ctx, &p, &v), AGC_OK);
     CHECK(v.option_count == 1 && v.options[0].strategy == AGC_MIGRATION_STRATEGY_REKEY_AND_ARCHIVE);
+    CHECK(v.options[0].security_notes_count == 2);
+    CHECK_STR(v.options[0].security_notes[0], "new material: the public key changes");
 }
 
 static void validating_a_transform(agc_ctx *ctx)
@@ -129,6 +133,7 @@ static void validating_a_transform(agc_ctx *ctx)
     CHECK(v.option_count == 1);
     CHECK(v.options[0].strategy == AGC_MIGRATION_STRATEGY_UNSPECIFIED);
     CHECK(v.options[0].feasible == 1);
+    CHECK(v.options[0].security_notes_count == 0 && v.options[0].security_notes == NULL);
 
     p.u.transform.template_id = "ed25519"; /* not in the policy */
     CHECK_RC(agc_validate_key_operation(ctx, &p, &v), AGC_OK); /* a refusal is a result */

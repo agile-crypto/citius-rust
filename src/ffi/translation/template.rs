@@ -29,7 +29,8 @@ fn zeroed<T: crate::ffi::versioned::CStruct>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
-fn strs(p: &mut Packer, items: &[String]) -> (*mut *const c_char, usize) {
+/// An array of NUL-terminated copies of `items`, and its length.
+pub fn strs(p: &mut Packer, items: &[String]) -> (*mut *const c_char, usize) {
     let ptrs: Vec<*const c_char> = items.iter().map(|s| p.str(s)).collect();
     let slot = p.reserve_array::<*const c_char>(ptrs.len());
     p.fill_array(slot, &ptrs);

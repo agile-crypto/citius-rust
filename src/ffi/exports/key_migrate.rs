@@ -7,7 +7,7 @@ use crate::bindings::*;
 use crate::ffi::error::FfiError;
 use crate::ffi::exports::core::context;
 use crate::ffi::guard::guard;
-use crate::ffi::translation::{Packer, c_impl_props, c_key_info, optional_str, pack, required_str, scope_spec};
+use crate::ffi::translation::{Packer, c_impl_props, c_key_info, optional_str, pack, required_str, scope_spec, strs};
 use crate::ffi::versioned;
 use crate::proto::api;
 
@@ -125,6 +125,10 @@ fn layout_migration(
             has_archived_key: i32::from(archived),
             archived_key_name: if archived { p.str(&r.key.name) } else { ptr::null() },
             archived_provider_id: if archived { p.str(&r.source_instance) } else { ptr::null() },
+            // Go does not report which operations the archived version still
+            // allows (its ArchivedKeyInfo leaves allowed_operations empty).
+            archived_allowed_operations: ptr::null(),
+            archived_allowed_operations_count: 0,
             archived_expiration: agc_timestamp { seconds: 0, nanos: 0, present: 0 },
         }
     });
@@ -258,10 +262,13 @@ fn layout_validation(
 }
 
 fn c_option(o: &StrategyAssessment, p: &mut Packer) -> agc_strategy_option {
+    let (security_notes, security_notes_count) = strs(p, &o.security_notes);
     agc_strategy_option {
         strategy: o.strategy as u32,
         feasible: i32::from(o.feasible),
         infeasibility_reason: p.str(&o.reason),
+        security_notes,
+        security_notes_count,
         // The proto defines a 1-5 scale, which nothing here can substantiate
         // (Go does not set it either): 0, "not assessed".
         complexity_level: 0,
@@ -354,6 +361,7 @@ mod tests {
         assert_eq!((s(rep.source_provider_id), s(rep.source_instance_id)), ("software", "rustcrypto"));
         assert_eq!((s(rep.target_provider_id), s(rep.target_instance_id)), ("hsm", "hsm-1"));
         assert_eq!((rep.has_archived_key, s(rep.archived_key_name), s(rep.archived_provider_id)), (1, "k", "rustcrypto"));
+        assert!(rep.archived_allowed_operations.is_null() && rep.archived_allowed_operations_count == 0, "as in Go: not reported");
         assert_eq!(s(rep.wrapping_key_name), "");
         assert_eq!(rep.has_target_implementation_properties, 1);
         assert_eq!(rep.target_implementation_properties, &raw mut props, "the caller's pointer is kept");
@@ -375,6 +383,28 @@ mod tests {
         none.storage = agc_buf { data: ptr::null_mut(), cap: 0 };
         fill_migrate_response(&mut none, &result()).unwrap();
         assert_eq!(none.storage_used, 0, "a bare migration needs no storage");
+    }
+
+    #[test]
+    fn an_option_carries_its_security_notes() {
+        let o = StrategyAssessment {
+            strategy: api::MigrationStrategy::RekeyAndDestroy,
+            feasible: false,
+            reason: "no".into(),
+            target_instance: None,
+            security_notes: vec!["first".into(), "second".into()],
+        };
+        let mut storage = [0u8; 256];
+        let mut used = 0;
+        let c = pack(agc_buf { data: storage.as_mut_ptr(), cap: storage.len() }, &mut used, |p| c_option(&o, p)).unwrap();
+        assert_eq!(c.security_notes_count, 2);
+        // SAFETY: security_notes points at two string pointers in storage.
+        let notes = unsafe { std::slice::from_raw_parts(c.security_notes, 2) };
+        assert_eq!((s(notes[0]), s(notes[1]), s(c.infeasibility_reason)), ("first", "second", "no"));
+
+        let none = StrategyAssessment { security_notes: Vec::new(), ..o };
+        let c = pack(agc_buf { data: storage.as_mut_ptr(), cap: storage.len() }, &mut used, |p| c_option(&none, p)).unwrap();
+        assert!(c.security_notes.is_null() && c.security_notes_count == 0, "empty is NULL, 0");
     }
 
     #[test]

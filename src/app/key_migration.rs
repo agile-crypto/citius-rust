@@ -55,6 +55,9 @@ pub struct StrategyAssessment {
     /// Why not, if not.
     pub reason: String,
     pub target_instance: Option<String>,
+    /// What the strategy implies for the key's material and the data it
+    /// protects, whether or not it is feasible (Go: SecurityNotes).
+    pub security_notes: Vec<String>,
 }
 
 /// A migration pre-flight (Go: MigrationValidation).
@@ -79,6 +82,28 @@ const STRATEGIES: [Strategy; 5] = [
     Strategy::RekeyAndArchive,
     Strategy::RekeyAndDestroy,
 ];
+
+/// What each strategy implies, word for word as Go's strategySecurityNotes
+/// (citius-core service/key_migrate_validate.go). None for a transform.
+fn security_notes(s: Strategy) -> Vec<String> {
+    let notes: &[&str] = match s {
+        Strategy::ProviderSwitch => &[
+            "the same material stays in the key's earlier version on the source provider; destroy that version to keep a single copy",
+        ],
+        Strategy::ExtractAndImport => &["the material leaves the source provider in plaintext"],
+        Strategy::WrappedTransfer => &["the material leaves the source provider only encrypted under a transport key"],
+        Strategy::RekeyAndArchive => &[
+            "new material: the public key changes",
+            "data the current version protects stays usable only through that version, on the source provider",
+        ],
+        Strategy::RekeyAndDestroy => &[
+            "new material: the public key changes",
+            "data the current version protects becomes unusable once it is destroyed",
+        ],
+        _ => &[],
+    };
+    notes.iter().map(|n| (*n).to_owned()).collect()
+}
 
 /// The strategies `migrate_key` carries out (as in Go).
 fn implemented(s: Strategy) -> bool {
@@ -209,12 +234,14 @@ impl KeyOrchestrator {
                     feasible: false,
                     reason: format!("{s:?} is not implemented"),
                     target_instance: None,
+                    security_notes: security_notes(s),
                 },
                 Ok(t) => StrategyAssessment {
                     strategy: s,
                     feasible: true,
                     reason: String::new(),
                     target_instance: Some(t.name().to_owned()),
+                    security_notes: security_notes(s),
                 },
                 // Refusals become reasons; anything else is a failure to assess.
                 Err(e) if is_refusal(e.code()) => StrategyAssessment {
@@ -222,6 +249,7 @@ impl KeyOrchestrator {
                     feasible: false,
                     reason: e.message().to_owned(),
                     target_instance: None,
+                    security_notes: security_notes(s),
                 },
                 Err(e) => return Err(e),
             };
@@ -278,7 +306,13 @@ impl KeyOrchestrator {
             source_instance: version.provider().to_owned(),
             extractable: version.provenance().extractable,
             source_implementation: source.as_ref().map(|s| s.implementation()),
-            options: vec![StrategyAssessment { strategy: Strategy::Unspecified, feasible, reason, target_instance: None }],
+            options: vec![StrategyAssessment {
+                strategy: Strategy::Unspecified,
+                feasible,
+                reason,
+                target_instance: None,
+                security_notes: Vec::new(),
+            }],
             recommended: Strategy::Unspecified,
             recommendation_reason,
         })
@@ -670,6 +704,8 @@ mod tests {
         let v = ko.validate_migration("k", MigrateTarget::Any, None).unwrap();
         assert_eq!(v.recommended, Strategy::RekeyAndArchive);
         assert!(v.recommendation_reason.starts_with("the key's material cannot move unchanged"));
+        assert!(v.options.iter().all(|o| o.security_notes == security_notes(o.strategy) && !o.security_notes.is_empty()),
+            "every assessed strategy carries Go's notes, feasible or not");
         let switch = v.options.iter().find(|o| o.strategy == Strategy::ProviderSwitch).unwrap();
         assert!(!switch.feasible && switch.reason.contains("not extractable"), "{}", switch.reason);
         // Only one strategy, on request.
