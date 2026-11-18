@@ -57,21 +57,24 @@ int main(void)
         .policy_name = "app",
         .scope_spec = {.struct_size = sizeof(agc_scope_spec), .kind = AGC_SCOPE_KIND_AEAD},
     };
-    uint8_t storage[1024];
     agc_key_info_response info;
-    AGC_INIT(&info);
-    info.storage = (agc_buf){storage, sizeof storage};
+    AGC_INIT(&info); /* no storage: a size query; no key is created */
+    size_query(agc_create_key(ctx, &kp, &info), "agc_create_key");
+    info.storage = (agc_buf){xmalloc(info.storage_used), info.storage_used};
     check(agc_create_key(ctx, &kp, &info), "agc_create_key");
     printf("created %s (id %s)\n", info.key_info.key_name, info.key_info.key_id);
+    free(info.storage.data);
     agc_ctx_close(ctx);
 
     /* Second run: the key is still there. */
     ctx = open_store(uri, wrapping_key);
-    AGC_INIT(&info);
-    info.storage = (agc_buf){storage, sizeof storage};
+    AGC_INIT(&info); /* a size query; for a read the size is exact */
+    size_query(agc_read_key(ctx, "customer-data", 0, &info), "agc_read_key");
+    info.storage = (agc_buf){xmalloc(info.storage_used), info.storage_used};
     check(agc_read_key(ctx, "customer-data", 0, &info), "agc_read_key");
     printf("reopened: %s, version %u, template %s\n", info.key_info.key_name, info.key_info.version,
            info.key_info.template_id);
+    free(info.storage.data);
     agc_ctx_close(ctx);
 
     char rm[128];

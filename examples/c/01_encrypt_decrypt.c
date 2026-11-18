@@ -23,12 +23,13 @@ int main(void)
         .policy_name = "app",
         .scope_spec = {.struct_size = sizeof(agc_scope_spec), .kind = AGC_SCOPE_KIND_AEAD},
     };
-    uint8_t key_storage[1024];
     agc_key_info_response key;
-    AGC_INIT(&key);
-    key.storage = (agc_buf){key_storage, sizeof key_storage};
+    AGC_INIT(&key); /* no storage: a size query; no key is created */
+    size_query(agc_create_key(ctx, &kp, &key), "agc_create_key");
+    key.storage = (agc_buf){xmalloc(key.storage_used), key.storage_used};
     check(agc_create_key(ctx, &kp, &key), "agc_create_key");
     printf("created %s, template %s\n", key.key_info.key_name, key.key_info.template_id);
+    free(key.storage.data);
 
     /* Encrypt, with associated data that is authenticated but not secret. */
     const char *plaintext = "ship 3 crates to Basel";
@@ -46,10 +47,9 @@ int main(void)
 
     agc_encrypt_response enc;
     AGC_INIT(&enc); /* NULL buffers: a size query */
-    if (agc_encrypt(ctx, &er, &enc) != AGC_ERR_BUFFER_TOO_SMALL)
-        check(AGC_ERR_INTERNAL, "size query");
-    uint8_t *ciphertext = malloc(enc.ciphertext_len);
-    uint8_t *metadata = malloc(enc.metadata_len);
+    size_query(agc_encrypt(ctx, &er, &enc), "agc_encrypt");
+    uint8_t *ciphertext = xmalloc(enc.ciphertext_len);
+    uint8_t *metadata = xmalloc(enc.metadata_len);
     enc.ciphertext = (agc_buf){ciphertext, enc.ciphertext_len};
     enc.metadata = (agc_buf){metadata, enc.metadata_len};
     check(agc_encrypt(ctx, &er, &enc), "agc_encrypt");
@@ -64,10 +64,11 @@ int main(void)
     dr.ciphertext = (agc_slice){ciphertext, enc.ciphertext_len};
     dr.metadata = (agc_slice){metadata, enc.metadata_len};
     dr.params = &ep;
-    uint8_t out[64];
     agc_decrypt_response dec;
-    AGC_INIT(&dec); /* metadata {NULL, 0}: not wanted back */
-    dec.plaintext = (agc_buf){out, sizeof out};
+    AGC_INIT(&dec); /* NULL plaintext: a size query; metadata {NULL, 0}: not wanted back */
+    size_query(agc_decrypt(ctx, &dr, &dec), "agc_decrypt");
+    uint8_t *out = xmalloc(dec.plaintext_len);
+    dec.plaintext = (agc_buf){out, dec.plaintext_len};
     check(agc_decrypt(ctx, &dr, &dec), "agc_decrypt");
     printf("decrypted: %.*s\n", (int)dec.plaintext_len, out);
 
@@ -76,6 +77,7 @@ int main(void)
     agc_rc rc = agc_decrypt(ctx, &dr, &dec);
     printf("after tampering: %s\n", agc_rc_name(rc));
 
+    free(out);
     free(ciphertext);
     free(metadata);
     agc_ctx_close(ctx);

@@ -1,11 +1,15 @@
-/* Sign a message with Ed25519; sign a digest with ECDSA P-256.
+/* Sign a message and sign a digest. The keys ask only for the kind of
+ * signing; the policy picks the algorithms: Ed25519 for messages, ECDSA
+ * P-256 for digests.
  *
  * Verification fails closed twice: `valid` is 0 unless the signature
  * checks, and a bad signature also returns AGC_ERR_CRYPTO_SIGNATURE_INVALID,
  * so checking either one is enough. */
 #include "example.h"
 
-static void create(agc_ctx *ctx, const char *name, const char *template_id, agc_signature_scope scope)
+/* A signing key by intent: the signature scope says what kind of signing,
+ * the policy picks the algorithm. */
+static void create(agc_ctx *ctx, const char *name, agc_signature_scope scope)
 {
     agc_create_key_params kp = {
         .struct_size = sizeof kp,
@@ -14,13 +18,14 @@ static void create(agc_ctx *ctx, const char *name, const char *template_id, agc_
         .scope_spec = {.struct_size = sizeof(agc_scope_spec),
                        .kind = AGC_SCOPE_KIND_SIGNATURE,
                        .u.signature.scope = scope},
-        .template_id = template_id,
     };
-    uint8_t storage[2048];
     agc_key_info_response key;
-    AGC_INIT(&key);
-    key.storage = (agc_buf){storage, sizeof storage};
+    AGC_INIT(&key); /* no storage: a size query; no key is created */
+    size_query(agc_create_key(ctx, &kp, &key), "agc_create_key");
+    key.storage = (agc_buf){xmalloc(key.storage_used), key.storage_used};
     check(agc_create_key(ctx, &kp, &key), "agc_create_key");
+    printf("created %s, template %s\n", key.key_info.key_name, key.key_info.template_id);
+    free(key.storage.data);
 }
 
 int main(void)
@@ -33,8 +38,8 @@ int main(void)
                "{\"version\": \"1\", \"allowed_templates\": [\"ed25519\", \"ecdsa-p256-prehashed-der\"],"
                " \"allowed_operations\": {\"key_operations\": [\"create_key\", \"sign\", \"verify\","
                " \"digest_sign\", \"digest_verify\"]}}");
-    create(ctx, "release", "ed25519", AGC_SIGNATURE_SCOPE_STANDARD);
-    create(ctx, "firmware", "ecdsa-p256-prehashed-der", AGC_SIGNATURE_SCOPE_PREHASHED);
+    create(ctx, "release", AGC_SIGNATURE_SCOPE_STANDARD);   /* signs messages */
+    create(ctx, "firmware", AGC_SIGNATURE_SCOPE_PREHASHED); /* signs digests */
 
     agc_sign_params no_context;
     AGC_INIT(&no_context);
@@ -48,11 +53,13 @@ int main(void)
     sr.input = (agc_slice){(const uint8_t *)msg, strlen(msg)};
     sr.params = &no_context;
     sr.metadata_encoding = AGC_ENCODING_WIRE_V1;
-    uint8_t sig[128], md[128];
     agc_sign_response signed_msg;
-    AGC_INIT(&signed_msg);
-    signed_msg.signature = (agc_buf){sig, sizeof sig};
-    signed_msg.metadata = (agc_buf){md, sizeof md};
+    AGC_INIT(&signed_msg); /* NULL buffers: a size query */
+    size_query(agc_sign(ctx, &sr, &signed_msg), "agc_sign");
+    uint8_t *sig = xmalloc(signed_msg.signature_len);
+    uint8_t *md = xmalloc(signed_msg.metadata_len);
+    signed_msg.signature = (agc_buf){sig, signed_msg.signature_len};
+    signed_msg.metadata = (agc_buf){md, signed_msg.metadata_len};
     check(agc_sign(ctx, &sr, &signed_msg), "agc_sign");
 
     agc_verify_request vr;
@@ -82,17 +89,20 @@ int main(void)
     dsr.hash_algorithm = AGC_HASH_ALGORITHM_SHA256;
     dsr.metadata_encoding = AGC_ENCODING_PROTOBUF;
     agc_sign_response signed_digest;
-    AGC_INIT(&signed_digest);
-    signed_digest.signature = (agc_buf){sig, sizeof sig};
-    signed_digest.metadata = (agc_buf){md, sizeof md};
+    AGC_INIT(&signed_digest); /* NULL buffers: a size query */
+    size_query(agc_digest_sign(ctx, &dsr, &signed_digest), "agc_digest_sign");
+    uint8_t *dsig = xmalloc(signed_digest.signature_len);
+    uint8_t *dmd = xmalloc(signed_digest.metadata_len);
+    signed_digest.signature = (agc_buf){dsig, signed_digest.signature_len};
+    signed_digest.metadata = (agc_buf){dmd, signed_digest.metadata_len};
     check(agc_digest_sign(ctx, &dsr, &signed_digest), "agc_digest_sign");
 
     agc_digest_verify_request dvr;
     AGC_INIT(&dvr);
     dvr.key_name = "firmware";
     dvr.digest = dsr.digest;
-    dvr.signature = (agc_slice){sig, signed_digest.signature_len};
-    dvr.metadata = (agc_slice){md, signed_digest.metadata_len};
+    dvr.signature = (agc_slice){dsig, signed_digest.signature_len};
+    dvr.metadata = (agc_slice){dmd, signed_digest.metadata_len};
     dvr.params = &no_context;
     AGC_INIT(&verdict);
     check(agc_digest_verify(ctx, &dvr, &verdict), "agc_digest_verify");
@@ -103,6 +113,10 @@ int main(void)
     agc_rc rc = agc_digest_verify(ctx, &dvr, &verdict);
     printf("changed digest: %s, valid=%d\n", agc_rc_name(rc), verdict.valid);
 
+    free(sig);
+    free(md);
+    free(dsig);
+    free(dmd);
     agc_ctx_close(ctx);
     return rc == AGC_ERR_CRYPTO_SIGNATURE_INVALID && verdict.valid == 0 ? 0 : 1;
 }
