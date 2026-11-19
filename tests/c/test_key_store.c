@@ -1,4 +1,8 @@
 /* agc_core.h: key_store_uri = "file:<directory>" with a wrapping key. */
+/* mkdtemp is POSIX 2008: glibc hides it under -std=c11 unless asked, and
+ * macOS hides it again once a POSIX level is set, unless _DARWIN_C_SOURCE. */
+#define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
