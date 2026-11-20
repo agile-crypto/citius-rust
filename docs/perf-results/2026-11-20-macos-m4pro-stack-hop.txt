@@ -1,0 +1,6 @@
+# Cost of the stack guard's helper thread (commit 1dccd1d): ML-DSA sign p50 over 400 calls,
+# on a 16 MiB thread (inline), the macOS default 512 KiB, and musl's 128 KiB. 1 µs clock; two runs.
+ml-dsa-44 sign p50: 16 MiB stack 164.0 us | 512 KiB 159.0 us | 128 KiB 194.0 us
+ml-dsa-87 sign p50: 16 MiB stack 336.0 us | 512 KiB 374.0 us | 128 KiB 374.0 us
+ml-dsa-44 sign p50: 16 MiB stack 161.0 us | 512 KiB 154.0 us | 128 KiB 184.0 us
+ml-dsa-87 sign p50: 16 MiB stack 341.0 us | 512 KiB 386.0 us | 128 KiB 374.0 us

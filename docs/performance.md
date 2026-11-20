@@ -1,8 +1,10 @@
 # Performance of citius-rust compared with RustCrypto
 
-Status: **work in progress (2026-11-19/20): macOS (Rust layers and the C path), plus Linux in an arm64 VM**. This file collects every
-finding so far, as the basis for a later discussion about improvements. Nothing in the library
-has been changed because of it yet.
+Status: **measurements done (2026-11-19/20) on macOS (Rust layers and the C path) and Linux in an
+arm64 VM; defects fixed on `main` (2026-11-20)**. This file collects every finding as the basis
+for a discussion about improvements. The performance findings are unchanged in the library and
+open for that discussion. The defects they uncovered are fixed: F8 (keys silently unlocked), F12
+(stack overflows) and B1 (the build needed rustfmt), plus the related defects in §4.1.
 
 Goal: tell clients who care about performance, or who have real-time constraints, how much using
 `agc_*` (citius-c-api) through citius-rust costs them, compared with calling RustCrypto directly.
@@ -259,7 +261,24 @@ buffer on top of that.
 ## 4. Findings, ranked by impact
 
 Each finding has the evidence for it, its status, and a candidate fix with its expected gain.
-The fixes are for later discussion and have not been implemented.
+The performance fixes are for later discussion and have not been implemented. The defects are
+fixed on `main`.
+
+| # | Finding | Status (2026-11-20) |
+|---|---|---|
+| F1 | Key parsed and expanded on every operation | open, for discussion: biggest gain (signing 1.5–3×, ML-DSA verify 2.4–3.1×, ML-DSA stack) |
+| F2 | Wiping the decrypted plaintext, ~0.4 ms/MiB | open, for discussion (with F6) |
+| F3 | Two lookups and copies of key/policy/template per call | open, for discussion |
+| F4 | ECDSA layer gaps | resolved: measurement artefacts |
+| F5 | Syscalls: `getentropy`; `getpid` on Linux | open, for discussion |
+| F6 | Data copies | partly fixed: the copies left unwiped by outgrown buffers (§4.1); the rest open |
+| F7 | Small operations scale to ~5× across threads | open, for discussion |
+| F8 | Memory per key and context; **keys silently unlocked past `RLIMIT_MEMLOCK`** | **locking fixed** (`require_locked_memory`); memory per key/context open |
+| F9 | File store create ~8 ms (2× F_FULLFSYNC) | open (by design for durability) |
+| F10 | ML-DSA latency tail | inherent to FIPS 204 |
+| F11 | Binary size ~2.2 MiB per client | open, for discussion |
+| F12 | **Stack overflows crash the process** (ML-DSA, first P-521 use) | **fixed** (stack guard); depth itself open (F1) |
+| B1 | **The build needed rustfmt** | **fixed** |
 
 ### F1. The private key is decoded and expanded on every operation (biggest cost for signatures)
 - Code:
@@ -436,6 +455,11 @@ The parked "copying" topic. Copies per operation, as far as traced so far:
 
 Memory overhead for large messages is therefore about one extra message-sized buffer.
 
+Fixed (2026-11-20, §4.1): two buffers that hold key material on its way, the stored record and
+`GeneratedKey::to_bytes`, used to outgrow their capacity and hand earlier buffers, private keys
+included, back to the allocator unwiped. The copies listed above are open for the copying
+discussion.
+
 ### F7. Small operations stop scaling at ~5× across threads, even with one key per thread
 - Measured: one context, 1..12 threads (M4 Pro: 8 performance and 4 efficiency cores).
 
@@ -495,7 +519,7 @@ Memory overhead for large messages is therefore about one extra message-sized bu
   Expected: 8-thread per-op cost close to the 1-thread cost, and the 1-thread cost from ~4.8 µs to
   ~1.5–2 µs together with F3.
 
-### F8. Each key costs ~16–17 KiB of resident memory: one locked page per secret
+### F8. Each key costs ~16–17 KiB of resident memory: one locked page per secret (silent unlocking fixed)
 - Measured, in a fresh process: 1000 keys add 16.1–17.6 MiB, the same for AES-256, Ed25519 and
   ML-DSA-65. The page size on Apple silicon is 16 KiB, and `secret.rs` gives every secret its own
   page-aligned, mlock'd mapping.
@@ -535,10 +559,18 @@ Memory overhead for large messages is therefore about one extra message-sized bu
   - locked memory per key is the same page. On Linux the default `RLIMIT_MEMLOCK` (often 8 MiB)
     is reached after ~2000 keys with 4 KiB pages. Beyond that, locking quietly stops, because it
     is best effort (DEVIATIONS C4). **Confirmed on Linux (§2.6):** `VmLck` stops at exactly
-    8192 KiB. Every later key is created normally, unlocked, and nothing tells the caller. For
-    clients who rely on locked memory this is a silent downgrade. Candidates: count the failed
-    `mlock`s and expose them (e.g. in `agc_ctx_info`/stats), or refuse with an error once
-    `require_locked_memory` is supported.
+    8192 KiB. Every later key is created normally, unlocked, and nothing tells the caller.
+  - **Fixed (2026-11-20, commits `2816175`, `0abdc52`).** `require_locked_memory` is honoured
+    (DEVIATIONS C4):
+    - `agc_ctx_open` fails with `AGC_ERR_OUT_OF_MEMORY` if memory cannot be locked, or if the
+      file store's wrapping key or a stored key cannot be;
+    - create, rotate and migrate fail the same way and store nothing when the new material
+      cannot be locked;
+    - forked children get no copy of the secrets (wiped on Linux, not mapped on macOS), because
+      locks do not survive fork.
+
+    Without the flag, locking stays best effort, as the header allows.
+    `tests/c/test_locked_memory.c` checks it under a lowered `RLIMIT_MEMLOCK`.
 - Candidate fix: a slab of secrets sharing locked pages, with care for the munlock problem that
   `secret.rs` documents, or one locked arena per context. Expected gain: ~100 B per AES key
   instead of a page.
@@ -637,7 +669,7 @@ Memory overhead for large messages is therefore about one extra message-sized bu
   - `panic = "abort"` is not an option: `ffi::guard` relies on `catch_unwind`. Building std with
     `panic_immediate_abort` is not either.
 
-### F12. Stack: ML-DSA needs up to 631 KiB; creating an ML-DSA-87 key crashes a default macOS thread
+### F12. Stack: ML-DSA needs up to 631 KiB; small threads crashed (fixed: helper thread)
 - Measured (2026-11-19). Each operation runs on a thread whose 8 MiB stack is ours and filled
   with a pattern, and the deepest overwritten byte is taken, net of an empty thread. C path:
   `cargo xtask bench --only stack`; Rust layers: `cargo bench --features bench --bench stack`.
@@ -657,7 +689,7 @@ Memory overhead for large messages is therefore about one extra message-sized bu
   | AES-GCM, ChaCha20-Poly1305, CBC, CTR encrypt / decrypt (32 B and 1 MiB alike) | – | – | 10 / 12 |
   | `agc_ctx_open` + 12 policies | – | – | 16 |
 
-- **Confirmed crash:** `agc_create_key` for ML-DSA-87 on a thread with the default macOS
+- **Confirmed crash (before the fix):** `agc_create_key` for ML-DSA-87 on a thread with the default macOS
   secondary-thread stack (512 KiB) kills the process with SIGBUS (exit 138; stack overflow into
   the guard page). `catch_unwind` cannot catch it. ML-DSA-87 signing (507 KiB) still fits, with
   ~5 KiB to spare for the caller's own frames. Reproduce with `benches/c/default_stack.c`.
@@ -681,15 +713,65 @@ Memory overhead for large messages is therefore about one extra message-sized bu
   - glibc: 8 MiB, from `RLIMIT_STACK`, and safe.
   - RTOS / embedded threads are often 8–64 KiB. Only the symmetric operations and ECDSA/Ed25519
     signing fit (10–12 KiB).
-- Candidate fixes:
-  1. F1: cache the expanded ML-DSA key. Signing then takes 120 KiB instead of 507.
+- **Fixed (2026-11-20, commit `1dccd1d`): the crashes.** `src/stack.rs` checks how much stack the
+  caller's thread has left (its bounds are looked up once per thread). An operation that would not
+  fit runs on a short-lived helper thread with its own stack. The budgets
+  (`adapters/providers/stack_budget.rs`) come from the table above: ×1.5 in release, ×4 in debug.
+  - ML-DSA keygen, sign and verify use these budgets.
+  - ECDSA uses one only for a curve's first use, which builds the curve's table on the big stack.
+  - Ed25519, ECDSA after first use, and the ciphers run inline with no check.
+  - `tests/c/test_small_stacks.c` runs every signature algorithm on a 128 KiB thread. Before the
+    fix it died with SIGBUS; now it passes on macOS, glibc and musl.
+- **The cost of the fix: one thread start per operation that does not fit**, ~25–45 µs, which is
+  11–15 % of an ML-DSA signature. Measured as the median over 400 signatures; raw output in
+  `docs/perf-results/2026-11-20-macos-m4pro-stack-hop.txt`:
+
+  | ML-DSA sign p50 | 16 MiB thread (inline) | 512 KiB (macOS default) | 128 KiB (musl default) |
+  |---|---|---|---|
+  | ML-DSA-44 | 161–164 µs | 154–159 µs (fits, inline) | 184–194 µs (hop) |
+  | ML-DSA-87 | 336–341 µs | 374–386 µs (hop) | 374 µs (hop) |
+
+  On threads with enough stack (glibc's 8 MiB default, the main thread) nothing changes.
+- Still open, for discussion:
+  1. F1: cache the expanded ML-DSA key. Signing then needs ~120 KiB instead of 507, fits a
+     512 KiB thread inline, and the hop is gone for signing.
   2. Document the stack needed per operation in the C API (e.g. in `agc_crypto.h` and the
-     catalog), and recommend ≥ 1 MiB thread stacks for ML-DSA key management.
-  3. Run ML-DSA key generation (and expansion) on an internal thread with a known stack (e.g.
-     2 MiB), so a caller's small stack never sees it. That costs a thread hop per keygen, which is
-     acceptable for a rare operation.
-  4. Upstream: ask RustCrypto `ml-dsa` to box its large intermediates, or to offer a
+     catalog), so real-time callers can size threads and avoid the hop.
+  3. Upstream: ask RustCrypto `ml-dsa` to box its large intermediates, or to offer a
      heap-backed expansion.
+
+## 4.1 Related defects found while fixing F8, F12 and B1
+
+Searched for after the defects above: code that is affected by them, and code that fails the same
+way (a secret left where it is not protected, stack depth decided by something other than the
+library, a silent fallback, text parsing of generated output). All are fixed on `main`, with a
+regression test that fails on the old code.
+
+| Defect | Pattern | Fix (commit) |
+|---|---|---|
+| The file store's **wrapping key**, which seals every stored key, was a `Zeroizing<[u8; 32]>` on the ordinary heap: swappable and in core dumps, while the keys it protects are locked and excluded | secret not protected | now a `SecretBytes` like the key material (`2816175`) |
+| `GeneratedKey::to_bytes` reserved `16 + private.len()` and then appended the public key: for **every asymmetric key** the private key was left in freed heap memory | secret reaches the allocator unwiped | exact size, and `secret::extend_secret` moves to a bigger zeroizing buffer before growing (`2816175`) |
+| The file store's **record encoder** grew from empty, leaving earlier versions' material in freed buffers | as above | `extend_secret` for every write (`2816175`) |
+| **Forked children** held unlocked copies of every secret: locks do not survive fork (found in code review) | silent loss of a guarantee | pages wiped in the child (Linux `MADV_WIPEONFORK`) or not mapped (macOS `VM_INHERIT_NONE`); `Required` fails where neither exists (`0abdc52`) |
+| `build.rs`'s `rc_table` reads `agc_types.h` as text and skips lines it does not recognise: a reformatted header would silently drop codes from `agc_rc_name` | text parsing of generated input | the build fails if a result code in the bindings is missing from the table (`6c8ce7f`) |
+| `agc_metadata_storage_len` promises an "exact" size, but the requirement depends on the storage's alignment, which no header states | contract gap, safe (the library refuses and writes nothing) | reported to the header team (docs/header-team-issues.md, item 6) |
+
+How the leaks are tested: a scanning global allocator for unit tests (`secret::leak_check`)
+searches every freed heap block for a canary.
+
+Checked and found sound:
+- policy JSON nesting: bounded at ~40 KiB of stack by serde_json's recursion limit, so it fits
+  a musl thread;
+- the remaining `let _ =` uses: test clean-up, a Miri stub, and `agc_ctx_close`, which returns
+  `void`.
+
+New checks for out-of-bounds access inside the library, which the C side's ASan does not see:
+- `tests/c/test_buffer_bounds.c` puts every caller buffer, slice, string and versioned struct
+  against a guard page, sweeps every output capacity against the size-query contract, and uses
+  every `struct_size` (6243 calls).
+- `cargo xtask memcheck` runs all C tests under Guard Malloc (macOS) and valgrind (Linux).
+
+Neither found an out-of-bounds access.
 
 ## 5. What performance-sensitive and real-time clients will want to know
 
@@ -704,10 +786,11 @@ Memory overhead for large messages is therefore about one extra message-sized bu
 | Startup and warm-up (`agc_ctx_open`, file store load, first call compared with steady state, ML-DSA keygen) | §2.4 |
 | Static footprint: RSS per context and per key, mlock'd pages per key (`RLIMIT_MEMLOCK`), binary size | F8: 228 KiB heap per context (the parsed catalog), plus ~1.5 MiB once per process (mostly shared code pages); one page per key. F11: ~2.2 MiB stripped per client, whatever it uses (RustCrypto: 0.3–0.9 MiB) |
 | Cost of the two-call sizing protocol | §2.3: +~1.5 µs per call |
-| Stack high-water mark (ML-DSA is stack heavy; small RT thread stacks) | F12: 10–12 KiB for symmetric operations and ECDSA/Ed25519; ML-DSA up to 507 KiB (sign) and 631 KiB (keygen); ML-DSA-87 keygen crashes a default macOS thread |
+| Stack high-water mark (ML-DSA is stack heavy; small RT thread stacks) | F12: 10–12 KiB for symmetric operations and ECDSA/Ed25519; ML-DSA up to 507 KiB (sign) and 631 KiB (keygen). Small threads no longer crash: such work moves to a helper thread (+25–45 µs) |
 | Size scaling: no streaming (the `*_init/update/final` functions are stubs), whole messages in memory, one extra copy | §3, F6 |
 | Constant-time behaviour | inherited from RustCrypto, not measured |
-| Fork and thread-safety guarantees | documented elsewhere (DEVIATIONS, code review) |
+| Fork and thread-safety guarantees | documented elsewhere (DEVIATIONS, code review); forked children get no copy of the library's secrets (§4.1) |
+| Locked memory for keys | best effort by default; with `require_locked_memory` guaranteed or the operation fails with `AGC_ERR_OUT_OF_MEMORY` (F8) |
 
 Short version for clients so far:
 - Signatures cost 1.5–3× a well-written native RustCrypto client (ECDSA 2.7–3.0×, Ed25519 2.1×,
@@ -724,14 +807,16 @@ Short version for clients so far:
   on Linux add one `getpid` syscall per call (~0.2 µs). No page faults in steady state (F5).
 - Each context costs 228 KiB of heap and ~300 µs, both for parsing the built-in catalog
   again; the first one also pages in ~1 MiB of shared library code (F8).
-- Each key takes one memory page, locked (F8). On Linux, locking silently stops at
-  `RLIMIT_MEMLOCK` (8 MiB, ~2000 keys).
+- Each key takes one memory page, locked (F8). By default locking is best effort: on Linux it
+  stops at `RLIMIT_MEMLOCK` (8 MiB, ~2000 keys). With `require_locked_memory`, an operation that
+  cannot lock fails instead.
 - Each C client grows by ~2.2 MiB whatever it uses, because dead-stripping can't remove
   algorithms that are selected at run time (F11).
 - Stack: 10–12 KiB for symmetric operations and ECDSA/Ed25519, but up to 507 KiB for ML-DSA
-  signing and 631 KiB for ML-DSA key creation. ML-DSA-87 key creation crashes a thread with
-  macOS's default 512 KiB stack, and on musl (Alpine, 128 KiB) every ML-DSA operation crashes a
-  default thread (F12).
+  signing and 631 KiB for ML-DSA key creation. On a thread too small for that (macOS default
+  512 KiB, musl 128 KiB) the operation runs on a helper thread. That costs ~25–45 µs, but no
+  longer crashes the process (F12). Real-time clients that size their threads ≥ 1 MiB avoid the
+  hop.
 - Creating a key in the file store takes milliseconds (F9).
 - ML-DSA signing has a p99.9 of 6–8× its median. That is inherent to the algorithm, the same in
   plain RustCrypto, and deterministic signing doesn't help (F10).
@@ -755,10 +840,17 @@ distributions, first calls, threads, RSS and the file store. Also: `cargo test -
    (deterministic instruction counts, usable as a CI gate), heaptrack. Measure layer differences
    interleaved.
 7. (Done: F4 resolved by interleaved measurement.)
+8. (Done 2026-11-20: the defects F8, F12, B1 and §4.1 fixed on `main`, with regression tests.)
+   Next: the improvement discussion over the open findings, starting with F1. Fixing it would
+   also remove most of F12's helper-thread hops.
 
 ### Build issue found on the way
 
-**B1. The build needs `rustfmt`.** Without it bindgen emits unformatted bindings, e.g.
+**B1. The build needed `rustfmt`. Fixed (2026-11-20, commit `532749d`):** the constant is now
+read as a parsed `const` item, and a build in a container without rustfmt succeeds. The original
+finding:
+
+Without rustfmt, bindgen emits unformatted bindings, e.g.
 `pub const AGC_API_VERSION_MAJOR : u32 = 1 ;`. `set_library_name` in `build.rs:421` only matches
 the formatted spelling, so the build panics with "the bindings define AGC_API_VERSION_MAJOR".
 That hits minimal toolchains, such as the `rust:1-*` Docker images and CI images without the
