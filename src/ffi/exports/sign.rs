@@ -60,13 +60,15 @@ fn sign_into(
     // SIZE QUERIES: every length is set, and a NULL or short region stops
     // the call before the key is touched or randomness drawn. The signature
     // length is a bound (DER-encoded ECDSA varies); the metadata's is exact.
-    let (sig_len, md_len) = crypto.sign_sizes(&request, enc)?;
-    out.signature_len = sig_len;
-    out.metadata_len = md_len;
-    if short(out.signature, sig_len) || short(out.metadata, md_len) {
-        return Err(FfiError::BufferTooSmall { needed: sig_len.max(md_len) });
-    }
-    let s = crypto.sign(request)?;
+    // The sizes and the signature come from one lookup of the key.
+    let s = crypto.sign_admitting(request, enc, |sizes| {
+        out.signature_len = sizes.artifact;
+        out.metadata_len = sizes.metadata;
+        if short(out.signature, sizes.artifact) || short(out.metadata, sizes.metadata) {
+            return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
+        }
+        Ok(())
+    })?;
     let md = metadata::encode(&s.metadata, enc)?;
     out.signature_len = s.signature.len();
     out.metadata_len = md.len();
@@ -183,14 +185,15 @@ fn verify_into(
     // The metadata output is optional: {NULL, 0} opts out; it is not a size
     // query. A short region stops the call before the key is touched.
     let wants_md = !(out.metadata.data.is_null() && out.metadata.cap == 0);
-    if wants_md {
-        let md_len = crypto.verify_sizes(&request, enc)?;
-        out.metadata_len = md_len;
-        if short(out.metadata, md_len) {
-            return Err(FfiError::BufferTooSmall { needed: md_len });
+    let v = crypto.verify_admitting(request, wants_md.then_some(enc), |sizes| {
+        if wants_md {
+            out.metadata_len = sizes.metadata;
+            if short(out.metadata, sizes.metadata) {
+                return Err(FfiError::BufferTooSmall { needed: sizes.metadata });
+            }
         }
-    }
-    let v = crypto.verify(request)?;
+        Ok(())
+    })?;
     out.key_version = v.metadata.key_version;
     if !v.valid {
         out.metadata_len = 0;

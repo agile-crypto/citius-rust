@@ -75,24 +75,27 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
         };
 
         // SIZE QUERIES: every length is set, and a NULL or short region stops
-        // the call before any provider work or randomness.
-        let (ct_len, md_len) = ctx.crypto.encrypt_sizes(&request, enc)?;
-        out.ciphertext_len = ct_len;
-        out.metadata_len = md_len;
-        let result = if short(out.ciphertext, ct_len) || short(out.metadata, md_len) {
-            Err(FfiError::BufferTooSmall { needed: ct_len.max(md_len) })
-        } else {
-            ctx.crypto.encrypt(request).map_err(FfiError::from).and_then(|e| {
+        // the call before any provider work or randomness. The sizes and the
+        // ciphertext come from one lookup of the key.
+        let result = ctx
+            .crypto
+            .encrypt_admitting(request, enc, |sizes| {
+                out.ciphertext_len = sizes.artifact;
+                out.metadata_len = sizes.metadata;
+                if short(out.ciphertext, sizes.artifact) || short(out.metadata, sizes.metadata) {
+                    return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
+                }
+                Ok(())
+            })
+            .and_then(|e| {
                 let md = metadata::encode(&e.metadata, enc)?;
-                debug_assert_eq!((e.ciphertext.len(), md.len()), (ct_len, md_len), "sizes were exact");
                 out.ciphertext_len = e.ciphertext.len();
                 out.metadata_len = md.len();
                 put(out.ciphertext, &e.ciphertext)?;
                 put(out.metadata, &md)?;
                 out.key_version = e.metadata.key_version;
                 Ok(())
-            })
-        };
+            });
         // SAFETY: resp passed versioned::read above.
         unsafe { versioned::write_back(resp, &out) };
         result
@@ -129,33 +132,34 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
         // The metadata output is optional here: {NULL, 0} opts out (the
         // caller already holds the input metadata); it is not a size query.
         let wants_md = !(out.metadata.data.is_null() && out.metadata.cap == 0);
-        let (pt_len, md_len) = ctx.crypto.decrypt_sizes(&request, enc)?;
-        out.plaintext_len = pt_len;
-        out.metadata_len = if wants_md { md_len } else { 0 };
-        let result = if short(out.plaintext, pt_len) || (wants_md && short(out.metadata, md_len)) {
-            Err(FfiError::BufferTooSmall { needed: pt_len.max(md_len) })
-        } else {
-            match ctx.crypto.decrypt(request) {
-                // Authentication failed: nothing is written (agc_crypto.h).
-                Err(e) => {
-                    out.plaintext_len = 0;
-                    out.metadata_len = 0;
-                    Err(e.into())
+        let result = ctx
+            .crypto
+            .decrypt_admitting(request, wants_md.then_some(enc), |sizes| {
+                out.plaintext_len = sizes.artifact;
+                out.metadata_len = sizes.metadata;
+                if short(out.plaintext, sizes.artifact) || (wants_md && short(out.metadata, sizes.metadata)) {
+                    return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
                 }
-                Ok(d) => {
-                    // Metadata first: if it cannot be written, no plaintext is.
-                    if wants_md {
-                        let md = metadata::encode(&d.metadata, enc)?;
-                        out.metadata_len = md.len();
-                        put(out.metadata, &md)?;
-                    }
-                    out.plaintext_len = d.plaintext.len();
-                    put(out.plaintext, &d.plaintext)?;
-                    out.key_version = d.metadata.key_version;
-                    Ok(())
+                Ok(())
+            })
+            .and_then(|d| {
+                // Metadata first: if it cannot be written, no plaintext is.
+                if wants_md {
+                    let md = metadata::encode(&d.metadata, enc)?;
+                    out.metadata_len = md.len();
+                    put(out.metadata, &md)?;
                 }
-            }
-        };
+                out.plaintext_len = d.plaintext.len();
+                put(out.plaintext, &d.plaintext)?;
+                out.key_version = d.metadata.key_version;
+                Ok(())
+            });
+        // Authentication failed (or any failure after sizing): nothing is
+        // written (agc_crypto.h), and no length promises output.
+        if matches!(&result, Err(e) if !matches!(e, FfiError::BufferTooSmall { .. })) {
+            out.plaintext_len = 0;
+            out.metadata_len = 0;
+        }
         // SAFETY: resp passed versioned::read above.
         unsafe { versioned::write_back(resp, &out) };
         result
