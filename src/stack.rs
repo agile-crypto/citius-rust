@@ -139,10 +139,11 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri does not model the machine's stack bounds")]
     fn remaining_reflects_the_thread_stack() {
-        let left = on_thread(1 << 20, || remaining().expect("bounds known on this platform"));
-        // The reported size may include the guard page (macOS: 16 KiB), which
-        // MARGIN covers.
-        assert!(left > 600 * 1024 && left <= (1 << 20) + MARGIN, "{left}");
+        // At least what was asked for is there. A thread may get more: glibc
+        // hands out a cached, bigger stack from a finished thread. What is
+        // left is never more than the stack the system reports.
+        let (left, (low, high)) = on_thread(1 << 20, || (remaining().expect("bounds known"), bounds().unwrap()));
+        assert!(left > 600 * 1024 && left <= high - low, "{left} of {}", high - low);
     }
 
     #[test]
