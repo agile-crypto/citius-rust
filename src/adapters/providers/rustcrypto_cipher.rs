@@ -302,6 +302,34 @@ fn ctr_apply(key: &[u8], iv: &[u8; BLOCK], buf: &mut [u8]) -> Result<(), Error> 
 
 #[cfg(test)]
 mod tests {
+    /// D2: every cipher state this provider builds from a key wipes itself
+    /// when dropped. Compiles only while the crates' "zeroize" features are
+    /// on (Cargo.toml); without them, round keys and GHASH/Poly1305 keys
+    /// outlive each operation in freed stack and heap memory.
+    #[test]
+    fn every_keyed_cipher_state_is_wiped_on_drop() {
+        fn wiped<T: zeroize::ZeroizeOnDrop>() {}
+        wiped::<aes::Aes128>();
+        wiped::<aes::Aes192>();
+        wiped::<aes::Aes256>();
+        wiped::<aes_gcm::Aes128Gcm>();
+        wiped::<aes_gcm::Aes256Gcm>();
+        wiped::<aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>>();
+        wiped::<chacha20poly1305::ChaCha20Poly1305>();
+        wiped::<chacha20poly1305::XChaCha20Poly1305>();
+        wiped::<cbc::Encryptor<aes::Aes256>>();
+        wiped::<cbc::Decryptor<aes::Aes256>>();
+        wiped::<ctr::Ctr128BE<aes::Aes256>>();
+        // Ed25519's SHA-512 over the secret, and RFC 6979's HMAC: Hmac has no
+        // marker of its own but is made of these cores and a block buffer,
+        // which wipe themselves with the features on.
+        wiped::<sha2::Sha512>();
+        wiped::<<sha2::Sha256 as hmac::digest::block_api::EagerHash>::Core>();
+        wiped::<<sha2::Sha512 as hmac::digest::block_api::EagerHash>::Core>();
+        // poly1305::Poly1305 wipes itself in Drop when its "zeroize" feature
+        // is on, without the marker trait, so it cannot be checked here.
+    }
+
     use super::*;
     use crate::domain::provider::Backend;
     use crate::domain::template::parse_catalog;

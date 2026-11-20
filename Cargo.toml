@@ -4,16 +4,22 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-aes = "0.9.3"
-aes-gcm = "0.11.1"
-cbc = "0.2.1"
-chacha20poly1305 = "0.11.0"
-cipher = "0.5"
-ctr = "0.10.1"
+# Every crate that holds key-derived state is built with "zeroize": without
+# it, round keys, GHASH/Poly1305 keys and HMAC state stay in freed memory
+# after each operation (docs/performance.md, D2). Some are named here only
+# to enable it (hmac: the RFC 6979 nonce DRBG; poly1305: ChaCha20-Poly1305's
+# one-time key, which chacha20poly1305/zeroize leaves out).
+aes = { version = "0.9.3", features = ["zeroize"] }
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+cbc = { version = "0.2.1", features = ["zeroize"] }
+chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
+cipher = { version = "0.5", features = ["zeroize"] }
+ctr = { version = "0.10.1", features = ["zeroize"] }
 der = "0.8"
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "alloc", "zeroize", "digest"] }
 elliptic-curve = { version = "0.14", features = ["arithmetic", "sec1", "pkcs8", "alloc"] }
 getrandom = { version = "0.4", features = ["sys_rng"] }
+hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
 libc = "0.2"
 ml-dsa = { version = "0.1.1", features = ["pkcs8", "alloc", "zeroize", "rand_core"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
@@ -22,13 +28,15 @@ p521 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"] }
 pbjson = "0.9.0"
 pbjson-types = "0.9.0"
 pkcs8 = "0.11"
+poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
 prost = "0.14.4"
 serde = "1.0.229"
 serde_json = "1.0.154"
-sha2 = "0.11"
+sha2 = { version = "0.11", features = ["zeroize"] }
 subtle = "2"
 ulid = "1"
-zeroize = "1"
+# 1.9.2: slice wipes are fill(0) behind a barrier (memset speed).
+zeroize = "1.9.2"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
