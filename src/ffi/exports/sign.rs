@@ -68,11 +68,10 @@ fn sign_into(
     }
     let s = crypto.sign(request)?;
     let md = metadata::encode(&s.metadata, enc)?;
-    debug_assert_eq!(md.len(), md_len, "metadata sizes are exact");
-    put(out.signature, &s.signature);
-    put(out.metadata, &md);
     out.signature_len = s.signature.len();
     out.metadata_len = md.len();
+    put(out.signature, &s.signature)?;
+    put(out.metadata, &md)?;
     out.key_version = s.metadata.key_version;
     Ok(())
 }
@@ -199,8 +198,8 @@ fn verify_into(
     }
     if wants_md {
         let md = metadata::encode(&v.metadata, enc)?;
-        put(out.metadata, &md);
         out.metadata_len = md.len();
+        put(out.metadata, &md)?;
     }
     out.valid = 1;
     Ok(())

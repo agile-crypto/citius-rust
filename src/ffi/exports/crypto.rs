@@ -37,11 +37,19 @@ pub(super) fn short(region: agc_buf, len: usize) -> bool {
     region.data.is_null() || region.cap < len
 }
 
-/// Copies `bytes` into a region `short` has accepted.
-pub(super) fn put(region: agc_buf, bytes: &[u8]) {
+/// Copies `bytes` into a caller region. The region was sized before the
+/// work; should the work have produced more than that (a provider breaking
+/// its bound), nothing is written and the caller learns the real need.
+/// Never trusts an earlier size check alone: that check is the only thing
+/// between the result and the caller's memory.
+pub(super) fn put(region: agc_buf, bytes: &[u8]) -> Result<(), FfiError> {
+    if short(region, bytes.len()) {
+        return Err(FfiError::BufferTooSmall { needed: bytes.len() });
+    }
     // SAFETY: the region is non-null with at least bytes.len() writable bytes
-    // (checked by `short` before any work), distinct from `bytes`.
+    // (checked just above), distinct from `bytes`.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), region.data, bytes.len()) };
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -77,10 +85,10 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
             ctx.crypto.encrypt(request).map_err(FfiError::from).and_then(|e| {
                 let md = metadata::encode(&e.metadata, enc)?;
                 debug_assert_eq!((e.ciphertext.len(), md.len()), (ct_len, md_len), "sizes were exact");
-                put(out.ciphertext, &e.ciphertext);
-                put(out.metadata, &md);
                 out.ciphertext_len = e.ciphertext.len();
                 out.metadata_len = md.len();
+                put(out.ciphertext, &e.ciphertext)?;
+                put(out.metadata, &md)?;
                 out.key_version = e.metadata.key_version;
                 Ok(())
             })
@@ -135,13 +143,14 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
                     Err(e.into())
                 }
                 Ok(d) => {
-                    put(out.plaintext, &d.plaintext);
-                    out.plaintext_len = d.plaintext.len();
+                    // Metadata first: if it cannot be written, no plaintext is.
                     if wants_md {
                         let md = metadata::encode(&d.metadata, enc)?;
-                        put(out.metadata, &md);
                         out.metadata_len = md.len();
+                        put(out.metadata, &md)?;
                     }
+                    out.plaintext_len = d.plaintext.len();
+                    put(out.plaintext, &d.plaintext)?;
                     out.key_version = d.metadata.key_version;
                     Ok(())
                 }
@@ -159,6 +168,19 @@ mod tests {
 
     use crate::app::API_VERSION;
     use crate::bindings::AGC_API_VERSION_STRING;
+
+    #[test]
+    fn put_never_writes_past_the_region() {
+        let mut buf = [0xA5u8; 8];
+        let region = super::agc_buf { data: buf.as_mut_ptr(), cap: 4 };
+        let err = super::put(region, &[1; 5]).unwrap_err();
+        assert!(matches!(err, super::FfiError::BufferTooSmall { needed: 5 }));
+        assert_eq!(buf, [0xA5; 8], "nothing written");
+        super::put(region, &[1; 4]).unwrap();
+        assert_eq!(buf, [1, 1, 1, 1, 0xA5, 0xA5, 0xA5, 0xA5]);
+        let null = super::agc_buf { data: std::ptr::null_mut(), cap: 0 };
+        assert!(super::put(null, &[]).is_err(), "a NULL region is never written");
+    }
 
     #[test]
     fn the_metadata_api_version_is_the_headers() {
