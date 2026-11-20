@@ -418,10 +418,19 @@ fn camel(snake: &str) -> String {
 /// implements cannot disagree about the ABI.
 fn set_library_name(bindings: &str) {
     let major: u32 = env::var("CARGO_PKG_VERSION_MAJOR").unwrap().parse().unwrap();
-    let header_major: u32 = bindings
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("pub const AGC_API_VERSION_MAJOR: u32 = "))
-        .and_then(|v| v.trim_end_matches(';').parse().ok())
+    // Parsed, not matched as text: without rustfmt, bindgen's output is
+    // unformatted (`pub const AGC_API_VERSION_MAJOR : u32 = 1 ;`).
+    let file = syn::parse_file(bindings).expect("bindings.rs is not valid Rust");
+    let header_major: u32 = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Const(c) if c.ident == "AGC_API_VERSION_MAJOR" => match &*c.expr {
+                syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => i.base10_parse().ok(),
+                _ => None,
+            },
+            _ => None,
+        })
         .expect("the bindings define AGC_API_VERSION_MAJOR");
     assert_eq!(
         major, header_major,
