@@ -161,7 +161,9 @@ impl KeyOrchestrator {
     /// `transform_key` would do, or why it cannot. Generates no material.
     pub fn plan_transform(&self, spec: TransformSpec) -> Result<TransformPlan, Error> {
         const OP: &str = "KeyOrchestrator::transform_key";
+        // An owned copy: the transform adds a version to it.
         let k = self.keys.get_by_name(&spec.key_name)?.ok_or_else(|| not_found(OP, &spec.key_name))?;
+        let k = Arc::unwrap_or_clone(k);
         k.can_originate()?;
         let current = k.current().clone();
 
@@ -673,7 +675,7 @@ mod tests {
     fn only_an_active_key_is_transformed() {
         let ko = orchestrator(AGILE);
         ko.create_key(spec("k", AEAD, None)).unwrap();
-        let mut stored = ko.keys.get_by_name("k").unwrap().unwrap();
+        let mut stored = Arc::unwrap_or_clone(ko.keys.get_by_name("k").unwrap().unwrap());
         stored.transition(crate::proto::api::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
         ko.keys.update(stored).unwrap();
         assert_eq!(code(ko.transform_key(transform("k", None, false))), Code::KeyOperationNotAllowed);

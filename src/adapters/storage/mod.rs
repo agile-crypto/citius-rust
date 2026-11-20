@@ -1,4 +1,5 @@
 mod file_keys;
+mod key_index;
 mod memory_keys;
 mod memory_policies;
 mod memory_templates;

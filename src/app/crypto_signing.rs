@@ -455,7 +455,8 @@ mod tests {
         let sha1 = [0u8; 20];
         #[allow(deprecated)]
         let weak = SignInput::Digest { digest: &sha1, hash: HashAlgorithm::Sha1 };
-        assert_eq!(code(sign_sized(&w, sign("pre", weak, SignContext::None), MetadataEncoding::WireV1)), Code::InvalidArgument);
+        let weak = sign_sized(&w, sign("pre", weak, SignContext::None), MetadataEncoding::WireV1);
+        assert_eq!(code(weak), Code::InvalidArgument);
         let unspecified = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Unspecified };
         assert_eq!(code(w.crypto.sign(sign("pre", unspecified, SignContext::None))), Code::InvalidArgument);
         let xof = SignInput::Digest { digest: &digest, hash: HashAlgorithm::Shake256 };
@@ -495,7 +496,7 @@ mod tests {
         let s = w.crypto.sign(sign("k", SignInput::Message(b"m"), SignContext::None)).unwrap();
 
         // A suspended key verifies what exists but signs nothing new.
-        let mut k = w.repo.get_by_name("k").unwrap().unwrap();
+        let mut k = Arc::unwrap_or_clone(w.repo.get_by_name("k").unwrap().unwrap());
         k.transition(api::KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
         w.repo.update(k).unwrap();
         assert_eq!(

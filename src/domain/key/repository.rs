@@ -1,10 +1,15 @@
+use std::sync::Arc;
+
 use crate::domain::core::Error;
 use crate::domain::key::{Key, KeyId};
 
 /// Persists the Key aggregate, versions included. Implementations are
 /// shared by every thread of a context: they take `&self` and synchronise
-/// internally. Lookups return owned keys (a reference could not outlive the
-/// lock); a miss is `Ok(None)`, `Err` means the store itself failed.
+/// internally. Lookups share the stored key (`Arc`): a reference could not
+/// outlive the lock, and a copy of every version on each lookup is what the
+/// hot path cannot afford. To change a key, take an owned copy
+/// (`Arc::unwrap_or_clone`) and `update` it. A miss is `Ok(None)`, `Err`
+/// means the store itself failed.
 ///
 /// Writes are optimistic: `update` stores a key only if it is still at the
 /// revision it was read at, so two concurrent changes cannot silently
@@ -18,11 +23,11 @@ pub trait KeyRepository: Send + Sync {
     /// `KeyNotFound` if it is gone.
     fn update(&self, k: Key) -> Result<Key, Error>;
     #[cfg_attr(not(test), expect(dead_code, reason = "Go's KeyRepository.GetByID; every C entry point names keys"))]
-    fn get_by_id(&self, id: &KeyId) -> Result<Option<Key>, Error>;
-    fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error>;
+    fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error>;
+    fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error>;
     /// `KeyNotFound` for an unknown id.
     #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements DeleteKey"))]
     fn delete(&self, id: &KeyId) -> Result<(), Error>;
     /// Every key, ordered by name.
-    fn list(&self) -> Result<Vec<Key>, Error>;
+    fn list(&self) -> Result<Vec<Arc<Key>>, Error>;
 }

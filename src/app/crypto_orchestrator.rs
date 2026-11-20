@@ -126,7 +126,7 @@ impl CryptoOrchestrator {
         direction: Direction,
         op: Operation,
         declared: api::CryptoOperation,
-    ) -> Result<(Key, Resolved), Error> {
+    ) -> Result<(Arc<Key>, Resolved), Error> {
         const OP: &str = "CryptoOrchestrator";
         if key_name.is_empty() {
             return Err(Error::new(Code::InvalidArgument, OP, "a key name is required"));
@@ -477,7 +477,7 @@ pub(super) mod tests {
         let e = w.crypto.encrypt(encrypt("k", b"x", aead())).unwrap();
 
         // A suspended key decrypts what exists but encrypts nothing new.
-        let mut k = w.repo.get_by_name("k").unwrap().unwrap();
+        let mut k = Arc::unwrap_or_clone(w.repo.get_by_name("k").unwrap().unwrap());
         k.transition(api::KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
         w.repo.update(k).unwrap();
         assert_eq!(w.crypto.encrypt(encrypt("k", b"x", aead())).err().unwrap().code(), Code::KeyOperationNotAllowed);
@@ -512,17 +512,17 @@ pub(super) mod tests {
         fn update(&self, k: crate::domain::key::Key) -> Result<crate::domain::key::Key, Error> {
             self.inner.update(k)
         }
-        fn get_by_id(&self, id: &crate::domain::key::KeyId) -> Result<Option<crate::domain::key::Key>, Error> {
+        fn get_by_id(&self, id: &crate::domain::key::KeyId) -> Result<Option<Arc<Key>>, Error> {
             self.inner.get_by_id(id)
         }
-        fn get_by_name(&self, name: &str) -> Result<Option<crate::domain::key::Key>, Error> {
+        fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
             self.lookups.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.inner.get_by_name(name)
         }
         fn delete(&self, id: &crate::domain::key::KeyId) -> Result<(), Error> {
             self.inner.delete(id)
         }
-        fn list(&self) -> Result<Vec<crate::domain::key::Key>, Error> {
+        fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
             self.inner.list()
         }
     }

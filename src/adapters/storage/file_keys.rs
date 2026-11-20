@@ -16,18 +16,18 @@
 //!   are served from memory under the same lock discipline as the in-memory
 //!   repository.
 
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use prost::Message;
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Code, Error, ScopeSpecification, poisoned};
+use super::key_index::KeyIndex;
+use crate::domain::core::{Code, Error, ScopeSpecification};
 use crate::domain::key::*;
 use crate::proto::api;
 use crate::secret::{Locking, SecretBytes, extend_secret};
@@ -81,17 +81,11 @@ impl WrappingKey {
 pub struct FileKeyRepository {
     dir: PathBuf,
     key: WrappingKey,
-    state: RwLock<State>,
+    index: KeyIndex,
     /// Held for the store's lifetime: the directory lock. `None` once a
     /// forked child has let go of its inherited copy (see
     /// `release_inherited_lock`).
     lock: Mutex<Option<File>>,
-}
-
-#[derive(Default)]
-struct State {
-    keys: HashMap<KeyId, Key>,
-    names: HashMap<String, KeyId>,
 }
 
 fn io(op: &'static str, what: &str, e: std::io::Error) -> Error {
@@ -116,7 +110,7 @@ impl FileKeyRepository {
         lock.try_lock().map_err(|_| {
             Error::new(Code::ConcurrentAccess, OP, format!("key store {} is in use by another context", dir.display()))
         })?;
-        let mut state = State::default();
+        let mut index = KeyIndex::default();
         for entry in fs::read_dir(dir).map_err(|e| io(OP, "cannot list the directory", e))? {
             let path = entry.map_err(|e| io(OP, "cannot list the directory", e))?.path();
             if path.extension().and_then(|e| e.to_str()) != Some(EXTENSION) {
@@ -130,12 +124,12 @@ impl FileKeyRepository {
             if k.id() != &id {
                 return Err(Error::new(Code::Internal, OP, format!("key store: {} holds another key", path.display())));
             }
-            if state.names.insert(k.name().to_owned(), id.clone()).is_some() {
-                return Err(Error::new(Code::Internal, OP, format!("key store: two keys are named {}", k.name())));
+            let name = k.name().to_owned();
+            if !index.load(k) {
+                return Err(Error::new(Code::Internal, OP, format!("key store: two keys are named {name}")));
             }
-            state.keys.insert(id, k);
         }
-        Ok(FileKeyRepository { dir: dir.to_owned(), key, state: RwLock::new(state), lock: Mutex::new(Some(lock)) })
+        Ok(FileKeyRepository { dir: dir.to_owned(), key, index, lock: Mutex::new(Some(lock)) })
     }
 
     /// In a forked child: closes the child's copy of the lock descriptor,
@@ -212,65 +206,29 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 impl KeyRepository for FileKeyRepository {
-    fn create(&self, mut k: Key) -> Result<Key, Error> {
-        const OP: &str = "FileKeyRepository.create";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        if s.keys.contains_key(k.id()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key id {} exists", k.id().as_str())));
-        }
-        if s.names.contains_key(k.name()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key name {} exists", k.name())));
-        }
-        k.set_revision(1);
-        // The file first: if it cannot be written, nothing is recorded.
-        self.write(&k)?;
-        s.names.insert(k.name().into(), k.id().clone());
-        s.keys.insert(k.id().clone(), k.clone());
-        Ok(k)
+    /// The file is written first: if it cannot be, nothing is recorded.
+    fn create(&self, k: Key) -> Result<Key, Error> {
+        self.index.create("FileKeyRepository.create", k, |k| self.write(k))
     }
 
-    fn update(&self, mut k: Key) -> Result<Key, Error> {
-        const OP: &str = "FileKeyRepository.update";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        let stored = s
-            .keys
-            .get(k.id())
-            .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("no key with id {}", k.id().as_str())))?;
-        if stored.revision() != k.revision() {
-            return Err(Error::new(Code::ConcurrentAccess, OP, format!("key {} changed since it was read; retry", k.name())));
-        }
-        k.set_revision(k.revision() + 1);
-        self.write(&k)?;
-        s.keys.insert(k.id().clone(), k.clone());
-        Ok(k)
+    fn update(&self, k: Key) -> Result<Key, Error> {
+        self.index.update("FileKeyRepository.update", k, |k| self.write(k))
     }
 
-    fn get_by_id(&self, id: &KeyId) -> Result<Option<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("FileKeyRepository.get_by_id"))?;
-        Ok(s.keys.get(id).cloned())
+    fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
+        self.index.get_by_id("FileKeyRepository.get_by_id", id)
     }
 
-    fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("FileKeyRepository.get_by_name"))?;
-        Ok(s.names.get(name).and_then(|id| s.keys.get(id)).cloned())
+    fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
+        self.index.get_by_name("FileKeyRepository.get_by_name", name)
     }
 
     fn delete(&self, id: &KeyId) -> Result<(), Error> {
-        const OP: &str = "FileKeyRepository.delete";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        let k = s.keys.get(id).ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("no key with id {}", id.as_str())))?;
-        let name = k.name().to_owned();
-        self.remove(id)?;
-        s.keys.remove(id);
-        s.names.remove(&name);
-        Ok(())
+        self.index.delete("FileKeyRepository.delete", id, |k| self.remove(k.id()))
     }
 
-    fn list(&self) -> Result<Vec<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("FileKeyRepository.list"))?;
-        let mut keys: Vec<Key> = s.keys.values().cloned().collect();
-        keys.sort_by(|a, b| a.name().cmp(b.name()));
-        Ok(keys)
+    fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
+        self.index.list("FileKeyRepository.list")
     }
 }
 
@@ -531,7 +489,7 @@ mod tests {
         let k = r.get_by_name("alpha").unwrap().unwrap();
         assert_eq!((k.versions().len(), k.state(), k.revision()), (2, api::KeyLifecycleState::Suspended, 2));
         assert_eq!(k.current().material(), version(2).material(), "material round-trips");
-        assert_eq!(r.list().unwrap().iter().map(Key::name).collect::<Vec<_>>(), ["alpha", "beta"]);
+        assert_eq!(r.list().unwrap().iter().map(|k| k.name()).collect::<Vec<_>>(), ["alpha", "beta"]);
         let _ = fs::remove_dir_all(&d);
     }
 

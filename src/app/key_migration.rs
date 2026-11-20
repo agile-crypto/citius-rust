@@ -321,7 +321,8 @@ impl KeyOrchestrator {
 
     fn load_migration(&self, key_name: &str) -> Result<Migration, Error> {
         const OP: &str = "KeyOrchestrator::migrate_key";
-        let key = self.keys.get_by_name(key_name)?.ok_or_else(|| not_found(OP, key_name))?;
+        // An owned copy: the migration adds a version to it.
+        let key = Arc::unwrap_or_clone(self.keys.get_by_name(key_name)?.ok_or_else(|| not_found(OP, key_name))?);
         // A migration adds a version, which only an ACTIVE key gets.
         key.can_originate()?;
         let version = key.current().clone();
@@ -588,7 +589,7 @@ mod tests {
         r.unwrap_err().code()
     }
 
-    fn stored(ko: &KeyOrchestrator) -> Key {
+    fn stored(ko: &KeyOrchestrator) -> Arc<Key> {
         ko.keys.get_by_name("k").unwrap().unwrap()
     }
 

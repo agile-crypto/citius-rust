@@ -1,95 +1,55 @@
-use crate::domain::core::{Code, Error, poisoned};
+use std::sync::Arc;
+
+use super::key_index::KeyIndex;
+use crate::domain::core::Error;
 use crate::domain::key::*;
-use std::collections::HashMap;
-use std::sync::RwLock;
 
 /// Keys held in process memory: lost when the context is closed.
-///
-/// One lock guards both maps, so the name index can never disagree with the
-/// keys, and every check-then-write is atomic.
 pub struct InMemoryKeyRepository {
-    state: RwLock<State>,
-}
-
-#[derive(Default)]
-struct State {
-    keys: HashMap<KeyId, Key>,
-    names: HashMap<String, KeyId>,
+    index: KeyIndex,
 }
 
 impl InMemoryKeyRepository {
     pub fn new() -> Self {
-        InMemoryKeyRepository { state: RwLock::new(State::default()) }
+        InMemoryKeyRepository { index: KeyIndex::default() }
     }
 }
 
+/// Nothing to persist.
+fn in_memory(_: &Key) -> Result<(), Error> {
+    Ok(())
+}
+
 impl KeyRepository for InMemoryKeyRepository {
-    fn create(&self, mut k: Key) -> Result<Key, Error> {
-        const OP: &str = "InMemoryKeyRepository.create";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        if s.keys.contains_key(k.id()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key id {} exists", k.id().as_str())));
-        }
-        if s.names.contains_key(k.name()) {
-            return Err(Error::new(Code::AlreadyExists, OP, format!("key name {} exists", k.name())));
-        }
-        k.set_revision(1);
-        s.names.insert(k.name().into(), k.id().clone());
-        s.keys.insert(k.id().clone(), k.clone());
-        Ok(k)
+    fn create(&self, k: Key) -> Result<Key, Error> {
+        self.index.create("InMemoryKeyRepository.create", k, in_memory)
     }
 
-    fn update(&self, mut k: Key) -> Result<Key, Error> {
-        const OP: &str = "InMemoryKeyRepository.update";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        let stored = s
-            .keys
-            .get_mut(k.id())
-            .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("no key with id {}", k.id().as_str())))?;
-        if stored.revision() != k.revision() {
-            return Err(Error::new(
-                Code::ConcurrentAccess,
-                OP,
-                format!("key {} changed since it was read; retry", k.name()),
-            ));
-        }
-        k.set_revision(k.revision() + 1);
-        *stored = k.clone();
-        Ok(k)
+    fn update(&self, k: Key) -> Result<Key, Error> {
+        self.index.update("InMemoryKeyRepository.update", k, in_memory)
     }
 
-    fn get_by_name(&self, name: &str) -> Result<Option<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("InMemoryKeyRepository.get_by_name"))?;
-        Ok(s.names.get(name).and_then(|id| s.keys.get(id)).cloned())
+    fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
+        self.index.get_by_name("InMemoryKeyRepository.get_by_name", name)
     }
 
-    fn get_by_id(&self, id: &KeyId) -> Result<Option<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("InMemoryKeyRepository.get_by_id"))?;
-        Ok(s.keys.get(id).cloned())
+    fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
+        self.index.get_by_id("InMemoryKeyRepository.get_by_id", id)
     }
 
     fn delete(&self, id: &KeyId) -> Result<(), Error> {
-        const OP: &str = "InMemoryKeyRepository.delete";
-        let mut s = self.state.write().map_err(|_| poisoned(OP))?;
-        let Some(k) = s.keys.remove(id) else {
-            return Err(Error::new(Code::KeyNotFound, OP, format!("no key with id {}", id.as_str())));
-        };
-        // Keep the name index consistent with `keys`.
-        s.names.remove(k.name());
-        Ok(())
+        self.index.delete("InMemoryKeyRepository.delete", id, in_memory)
     }
 
-    fn list(&self) -> Result<Vec<Key>, Error> {
-        let s = self.state.read().map_err(|_| poisoned("InMemoryKeyRepository.list"))?;
-        let mut keys: Vec<Key> = s.keys.values().cloned().collect();
-        keys.sort_by(|a, b| a.name().cmp(b.name()));
-        Ok(keys)
+    fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
+        self.index.list("InMemoryKeyRepository.list")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::core::Code;
     use crate::domain::key::testing::{key, version};
 
     fn code<T: std::fmt::Debug>(r: Result<T, Error>) -> Code {
@@ -173,16 +133,5 @@ mod tests {
         }
         let names: Vec<_> = r.list().unwrap().iter().map(|k| k.name().to_owned()).collect();
         assert_eq!(names, ["a", "b", "c"]);
-    }
-
-    #[test]
-    fn a_poisoned_lock_fails_closed() {
-        let r = InMemoryKeyRepository::new();
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = r.state.write().unwrap();
-            panic!("simulated bug while holding the lock");
-        }));
-        assert_eq!(code(r.get_by_name("x")), Code::Internal);
-        assert_eq!(code(r.create(key("key-1", "x"))), Code::Internal);
     }
 }
