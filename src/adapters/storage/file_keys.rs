@@ -30,19 +30,23 @@ use zeroize::Zeroizing;
 use crate::domain::core::{Code, Error, ScopeSpecification, poisoned};
 use crate::domain::key::*;
 use crate::proto::api;
+use crate::secret::{Locking, SecretBytes, extend_secret};
 
 const FORMAT_V1: u8 = 1;
 const NONCE_LEN: usize = 12;
 const EXTENSION: &str = "key";
 
-/// A wrapping key: 32 bytes, zeroized when dropped.
-pub struct WrappingKey(Zeroizing<[u8; 32]>);
+/// A wrapping key: 32 bytes in memory for secrets (locked, kept out of core
+/// dumps on Linux, zeroed when dropped), like the key material it guards.
+pub struct WrappingKey(SecretBytes);
 
 impl WrappingKey {
     /// Reads the key from `path`: exactly 32 bytes, in a regular file that
     /// neither the group nor others can read (Unix), so the key that guards
     /// every stored key is not itself left readable.
-    pub fn from_file(path: &Path) -> Result<WrappingKey, Error> {
+    /// With `Locking::Required` it fails (`ResourceExhausted`) if the key
+    /// cannot be locked in RAM.
+    pub fn from_file(path: &Path, locking: Locking) -> Result<WrappingKey, Error> {
         const OP: &str = "WrappingKey::from_file";
         let invalid = |m: String| Error::new(Code::InvalidArgument, OP, format!("{}: {m}", path.display()));
         let meta = fs::metadata(path).map_err(|e| invalid(format!("cannot read the wrapping key: {e}")))?;
@@ -57,20 +61,26 @@ impl WrappingKey {
             }
         }
         let bytes = Zeroizing::new(fs::read(path).map_err(|e| invalid(format!("cannot read the wrapping key: {e}")))?);
-        let key: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| invalid(format!("the wrapping key must be 32 bytes, not {}", bytes.len())))?;
-        Ok(WrappingKey(Zeroizing::new(key)))
+        if bytes.len() != 32 {
+            return Err(invalid(format!("the wrapping key must be 32 bytes, not {}", bytes.len())));
+        }
+        let key = SecretBytes::new_with(&bytes, locking).map_err(|_| {
+            Error::new(
+                Code::ResourceExhausted,
+                OP,
+                "the wrapping key cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required",
+            )
+        })?;
+        Ok(WrappingKey(key))
     }
 
     #[cfg(test)]
     pub fn from_bytes(key: [u8; 32]) -> WrappingKey {
-        WrappingKey(Zeroizing::new(key))
+        WrappingKey(SecretBytes::new_with(&key, Locking::BestEffort).unwrap())
     }
 
     fn cipher(&self) -> aes_gcm::Aes256Gcm {
-        aes_gcm::Aes256Gcm::new_from_slice(self.0.as_slice()).expect("a wrapping key is 32 bytes")
+        aes_gcm::Aes256Gcm::new_from_slice(&self.0).expect("a wrapping key is 32 bytes")
     }
 }
 
@@ -98,7 +108,9 @@ impl FileKeyRepository {
     /// Opens (creating if needed) the store in `dir`, locks it and loads
     /// every key. A record that does not open under `key`, or that breaks
     /// the Key aggregate's invariants, fails the whole open.
-    pub fn open(dir: &Path, key: WrappingKey) -> Result<FileKeyRepository, Error> {
+    /// The loaded key material is locked as `locking` asks; with
+    /// `Locking::Required` a key that cannot be locked fails the open.
+    pub fn open(dir: &Path, key: WrappingKey, locking: Locking) -> Result<FileKeyRepository, Error> {
         const OP: &str = "FileKeyRepository::open";
         private_dir().create(dir).map_err(|e| io(OP, "cannot create the directory", e))?;
         let lock = private_file()
@@ -120,7 +132,7 @@ impl FileKeyRepository {
                 Error::new(Code::Internal, OP, format!("key store: unexpected file {}", path.display()))
             })?;
             let sealed = fs::read(&path).map_err(|e| io(OP, "cannot read a key", e))?;
-            let k = decode(&open_record(&key, &id, &sealed)?)?;
+            let k = decode(&open_record(&key, &id, &sealed)?, locking)?;
             if k.id() != &id {
                 return Err(Error::new(Code::Internal, OP, format!("key store: {} holds another key", path.display())));
             }
@@ -311,7 +323,7 @@ fn open_record(key: &WrappingKey, id: &KeyId, sealed: &[u8]) -> Result<Zeroizing
 
 fn encode(k: &Key) -> Zeroizing<Vec<u8>> {
     let mut w = Writer(Zeroizing::new(Vec::new()));
-    w.0.push(FORMAT_V1);
+    w.push(FORMAT_V1);
     w.str(k.id().as_str());
     w.str(k.name());
     w.str(k.policy());
@@ -327,17 +339,17 @@ fn encode(k: &Key) -> Zeroizing<Vec<u8>> {
         w.bytes(&v.scope_spec().to_proto().encode_to_vec());
         w.bytes(v.material());
         let p = v.provenance();
-        w.0.push(u8::from(p.extractable));
-        w.0.push(u8::from(p.approved_lineage));
+        w.push(u8::from(p.extractable));
+        w.push(u8::from(p.approved_lineage));
         match &p.origin {
-            Origin::Generated => w.0.push(1),
-            Origin::Imported => w.0.push(2),
+            Origin::Generated => w.push(1),
+            Origin::Imported => w.push(2),
             Origin::Retained { source_version } => {
-                w.0.push(3);
+                w.push(3);
                 w.u32(*source_version);
             }
             Origin::Transferred { source_version, source_provider } => {
-                w.0.push(4);
+                w.push(4);
                 w.u32(*source_version);
                 w.str(source_provider);
             }
@@ -347,7 +359,7 @@ fn encode(k: &Key) -> Zeroizing<Vec<u8>> {
     w.0
 }
 
-fn decode(b: &[u8]) -> Result<Key, Error> {
+fn decode(b: &[u8], locking: Locking) -> Result<Key, Error> {
     let mut r = Reader(b);
     if r.u8()? != FORMAT_V1 {
         return Err(malformed());
@@ -386,7 +398,8 @@ fn decode(b: &[u8]) -> Result<Key, Error> {
             material,
             Provenance { extractable, approved_lineage, origin },
             created,
-        ));
+            locking,
+        )?);
     }
     if !r.0.is_empty() {
         return Err(malformed());
@@ -398,18 +411,24 @@ fn malformed() -> Error {
     Error::new(Code::Internal, "FileKeyRepository", "key store: a key record is malformed")
 }
 
+/// The record encoder. A record holds key material, so every write goes
+/// through `extend_secret`: growing the buffer must not hand an earlier one,
+/// with material in it, back to the allocator unwiped.
 struct Writer(Zeroizing<Vec<u8>>);
 
 impl Writer {
+    fn push(&mut self, b: u8) {
+        extend_secret(&mut self.0, &[b]);
+    }
     fn u32(&mut self, v: u32) {
-        self.0.extend_from_slice(&v.to_be_bytes());
+        extend_secret(&mut self.0, &v.to_be_bytes());
     }
     fn u64(&mut self, v: u64) {
-        self.0.extend_from_slice(&v.to_be_bytes());
+        extend_secret(&mut self.0, &v.to_be_bytes());
     }
     fn bytes(&mut self, b: &[u8]) {
         self.u32(u32::try_from(b.len()).expect("records are far below 4 GiB"));
-        self.0.extend_from_slice(b);
+        extend_secret(&mut self.0, b);
     }
     fn str(&mut self, s: &str) {
         self.bytes(s.as_bytes());
@@ -486,14 +505,14 @@ mod tests {
     fn keys_survive_reopening() {
         let d = dir("reopen");
         {
-            let r = FileKeyRepository::open(&d, wk()).unwrap();
+            let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
             let mut k = r.create(key("key_1", "alpha")).unwrap();
             k.add_version(version(2)).unwrap();
             k.transition(api::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
             r.update(k).unwrap();
             r.create(key("key_2", "beta")).unwrap();
         }
-        let r = FileKeyRepository::open(&d, wk()).unwrap();
+        let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
         let k = r.get_by_name("alpha").unwrap().unwrap();
         assert_eq!((k.versions().len(), k.state(), k.revision()), (2, api::KeyLifecycleState::Suspended, 2));
         assert_eq!(k.current().material(), version(2).material(), "material round-trips");
@@ -505,18 +524,21 @@ mod tests {
     fn records_are_sealed_and_bound_to_their_key() {
         let d = dir("sealed");
         {
-            let r = FileKeyRepository::open(&d, wk()).unwrap();
+            let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
             r.create(key("key_1", "alpha")).unwrap();
             r.create(key("key_2", "beta")).unwrap();
         }
         let raw = fs::read(d.join("key_1.key")).unwrap();
         assert!(!raw.windows(5).any(|w| w == b"alpha"), "no plaintext on disk");
         // The wrong wrapping key opens nothing.
-        assert_eq!(FileKeyRepository::open(&d, WrappingKey::from_bytes([8; 32])).err().unwrap().code(), Code::Internal);
+        assert_eq!(
+            FileKeyRepository::open(&d, WrappingKey::from_bytes([8; 32]), Locking::BestEffort).err().unwrap().code(),
+            Code::Internal
+        );
         // A record moved over another key's file does not open as that key.
         // read + write rather than fs::copy, which Miri cannot run on macOS (fclonefileat).
         fs::write(d.join("key_2.key"), fs::read(d.join("key_1.key")).unwrap()).unwrap();
-        assert_eq!(FileKeyRepository::open(&d, wk()).err().unwrap().code(), Code::Internal);
+        assert_eq!(FileKeyRepository::open(&d, wk(), Locking::BestEffort).err().unwrap().code(), Code::Internal);
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -525,7 +547,7 @@ mod tests {
     fn the_store_is_private_to_its_owner() {
         use std::os::unix::fs::PermissionsExt;
         let d = dir("private").join("nested");
-        let r = FileKeyRepository::open(&d, wk()).unwrap();
+        let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
         r.create(key("key_1", "one")).unwrap();
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&d), 0o700);
@@ -536,17 +558,20 @@ mod tests {
     #[test]
     fn a_store_is_used_by_one_context_at_a_time() {
         let d = dir("lock");
-        let first = FileKeyRepository::open(&d, wk()).unwrap();
-        assert_eq!(FileKeyRepository::open(&d, wk()).err().unwrap().code(), Code::ConcurrentAccess);
+        let first = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
+        assert_eq!(
+            FileKeyRepository::open(&d, wk(), Locking::BestEffort).err().unwrap().code(),
+            Code::ConcurrentAccess
+        );
         drop(first);
-        assert!(FileKeyRepository::open(&d, wk()).is_ok(), "released when the first closes");
+        assert!(FileKeyRepository::open(&d, wk(), Locking::BestEffort).is_ok(), "released when the first closes");
         let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn update_is_optimistic_and_delete_removes_the_file() {
         let d = dir("cas");
-        let r = FileKeyRepository::open(&d, wk()).unwrap();
+        let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
         let k = r.create(key("key_1", "alpha")).unwrap();
         r.update(k.clone()).unwrap();
         assert_eq!(r.update(k).err().unwrap().code(), Code::ConcurrentAccess, "stale revision");
@@ -567,7 +592,9 @@ mod tests {
                 Zeroizing::new(vec![i as u8; 4]),
                 Provenance { extractable: i % 2 == 0, approved_lineage: true, origin: Origin::Generated },
                 SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 123),
-            );
+                Locking::BestEffort,
+            )
+            .unwrap();
             let mut k = Key::new(KeyId::new(format!("key_{i}")), "n", "pol", first).unwrap();
             let next = Version::new(
                 2,
@@ -581,9 +608,11 @@ mod tests {
                     origin: Origin::Transferred { source_version: 1, source_provider: "p".into() },
                 },
                 SystemTime::UNIX_EPOCH + Duration::new(1_700_000_001, 0),
-            );
+                Locking::BestEffort,
+            )
+            .unwrap();
             k.add_version(next).unwrap();
-            let back = decode(&encode(&k)).unwrap();
+            let back = decode(&encode(&k), Locking::BestEffort).unwrap();
             assert_eq!(encode(&back), encode(&k), "{scope:?}");
         }
     }
@@ -594,7 +623,7 @@ mod tests {
         let mut trailing = good.to_vec();
         trailing.push(0);
         for bad in [&[][..], &[2][..], &good[..good.len() - 1], &trailing] {
-            assert_eq!(decode(bad).err().unwrap().code(), Code::Internal, "{} bytes", bad.len());
+            assert_eq!(decode(bad, Locking::BestEffort).err().unwrap().code(), Code::Internal, "{} bytes", bad.len());
         }
     }
 
@@ -607,12 +636,56 @@ mod tests {
         let p = d.join("wk");
         fs::write(&p, [1u8; 32]).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(WrappingKey::from_file(&p).err().unwrap().code(), Code::InvalidArgument, "world-readable");
+        let code = |p: &Path| WrappingKey::from_file(p, Locking::BestEffort).err().unwrap().code();
+        assert_eq!(code(&p), Code::InvalidArgument, "world-readable");
         fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(WrappingKey::from_file(&p).is_ok());
+        assert!(WrappingKey::from_file(&p, Locking::BestEffort).is_ok());
         fs::write(&p, [1u8; 16]).unwrap();
-        assert_eq!(WrappingKey::from_file(&p).err().unwrap().code(), Code::InvalidArgument, "wrong length");
-        assert_eq!(WrappingKey::from_file(&d.join("none")).err().unwrap().code(), Code::InvalidArgument);
+        assert_eq!(code(&p), Code::InvalidArgument, "wrong length");
+        assert_eq!(code(&d.join("none")), Code::InvalidArgument);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "the leak check uses its own global allocator, not under Miri")]
+    fn writing_and_reading_records_leaves_no_copy_of_the_material_behind() {
+        #[cfg(not(miri))]
+        {
+            use crate::secret::leak_check::{CANARY, leaks_during};
+            let d = dir("leaks");
+            // Long material, so the record's buffer must grow after the first
+            // version's material is in it, whatever the growth steps are.
+            let material = |n: u32| {
+                let mut m = Zeroizing::new(Vec::with_capacity(CANARY.len() + 4096));
+                m.extend_from_slice(&CANARY);
+                m.resize(CANARY.len() + 4096, 0);
+                Version::new(
+                    n,
+                    "aes-256-gcm-128-96".into(),
+                    "fake".into(),
+                    ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Standard)),
+                    m,
+                    Provenance { extractable: true, approved_lineage: false, origin: Origin::Generated },
+                    SystemTime::UNIX_EPOCH,
+                    Locking::BestEffort,
+                )
+                .unwrap()
+            };
+            let leaks = leaks_during(|| {
+                // Two versions: the record outgrew its buffer after the first
+                // version's material was written.
+                let mut k = Key::new(KeyId::new("key_leak"), "leak", "p", material(1)).unwrap();
+                k.add_version(material(2)).unwrap();
+                {
+                    let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
+                    r.create(k).unwrap();
+                }
+                let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
+                let back = r.get_by_name("leak").unwrap().unwrap();
+                assert_eq!(&back.current().material()[..CANARY.len()], &CANARY[..]);
+            });
+            let _ = fs::remove_dir_all(&d);
+            assert_eq!(leaks, 0);
+        }
     }
 }

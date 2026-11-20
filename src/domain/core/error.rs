@@ -47,6 +47,9 @@ pub enum Code {
     PolicyVersionConflict,
     /// A streaming operation that does not exist (any more).
     OperationExpired,
+    /// A resource the operation needs is used up, e.g. locked memory for key
+    /// material when it must be locked (`require_locked_memory`).
+    ResourceExhausted,
     /// An invariant the library itself is responsible for was broken, e.g. a
     /// lock poisoned by an earlier panic.
     Internal,

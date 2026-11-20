@@ -185,7 +185,8 @@ impl KeyOrchestrator {
             material,
             provenance,
             SystemTime::now(),
-        ))?;
+            self.locking,
+        )?)?;
         let result = MigrationResult {
             key: KeyMetadata::of(&key, key.current(), &self.providers),
             strategy: spec.strategy,

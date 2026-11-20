@@ -5,7 +5,8 @@ use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::KeyLifecycleState as State;
-use crate::secret::SecretBytes;
+pub use crate::secret::Locking;
+use crate::secret::{AllocError, SecretBytes};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyId(String);
@@ -64,6 +65,9 @@ pub struct Version {
 }
 
 impl Version {
+    /// `locking` says how the material is held (`require_locked_memory`);
+    /// with `Locking::Required` this fails rather than keep it swappable.
+    #[allow(clippy::too_many_arguments)] // a version's fields, plus `locking`
     pub fn new(
         number: u32,
         template_id: String,
@@ -72,9 +76,19 @@ impl Version {
         material: Zeroizing<Vec<u8>>,
         provenance: Provenance,
         created_at: SystemTime,
-    ) -> Self {
-        let material = SecretBytes::new(&material);
-        Version { number, template_id, provider, scope_spec, material, provenance, created_at }
+        locking: Locking,
+    ) -> Result<Self, Error> {
+        let material = SecretBytes::new_with(&material, locking).map_err(|e| match e {
+            AllocError::NotLocked => Error::new(
+                Code::ResourceExhausted,
+                "Version::new",
+                "the key material cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required",
+            ),
+            AllocError::NoMemory => {
+                Error::new(Code::ResourceExhausted, "Version::new", "no memory is left for the key material")
+            }
+        })?;
+        Ok(Version { number, template_id, provider, scope_spec, material, provenance, created_at })
     }
 
     pub fn number(&self) -> u32 {
@@ -324,7 +338,9 @@ pub(crate) mod testing {
             Zeroizing::new(vec![n as u8; 32]),
             Provenance { extractable: true, approved_lineage: false, origin: Origin::Generated },
             SystemTime::UNIX_EPOCH,
+            Locking::BestEffort,
         )
+        .unwrap()
     }
 
     pub fn key(id: &str, name: &str) -> Key {

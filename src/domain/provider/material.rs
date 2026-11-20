@@ -1,6 +1,7 @@
 use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error};
+use crate::secret::extend_secret;
 
 /// How key bytes are encoded, recorded next to them so that the provider
 /// picks the right parser instead of guessing.
@@ -64,14 +65,16 @@ impl GeneratedKey {
     /// The bytes a key version stores. Self-describing and versioned:
     /// `1 | enc | len u32 BE | private | 0 or enc | [len u32 BE | public]`.
     pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
-        let mut out = Zeroizing::new(Vec::with_capacity(16 + self.private.len()));
-        out.push(FORMAT_V1);
-        out.push(self.private_encoding as u8);
+        // Sized exactly, so the private key is never in a buffer that a
+        // reallocation hands back to the allocator unwiped.
+        let public_len = self.public.as_ref().map_or(0, |(b, _)| 4 + b.len());
+        let mut out = Zeroizing::new(Vec::with_capacity(3 + 4 + self.private.len() + public_len));
+        extend_secret(&mut out, &[FORMAT_V1, self.private_encoding as u8]);
         put(&mut out, &self.private);
         match &self.public {
-            None => out.push(0),
+            None => extend_secret(&mut out, &[0]),
             Some((bytes, enc)) => {
-                out.push(*enc as u8);
+                extend_secret(&mut out, &[*enc as u8]);
                 put(&mut out, bytes);
             }
         }
@@ -97,10 +100,10 @@ impl GeneratedKey {
     }
 }
 
-fn put(out: &mut Vec<u8>, bytes: &[u8]) {
+fn put(out: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
     let len = u32::try_from(bytes.len()).expect("key material is far below 4 GiB");
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
+    extend_secret(out, &len.to_be_bytes());
+    extend_secret(out, bytes);
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -162,5 +165,24 @@ mod tests {
         let k = GeneratedKey { private: Zeroizing::new(vec![0xAB; 4]), private_encoding: Encoding::Raw, public: None };
         let s = format!("{k:?}");
         assert!(!s.contains("171") && !s.contains("ab") && s.contains("4 bytes"), "{s}");
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn encoding_leaves_no_copy_of_the_private_key_behind() {
+        use crate::secret::leak_check::{CANARY, leaks_during};
+        // A public key longer than everything before it: before the fix the
+        // buffer outgrew its capacity after the private key was written.
+        let leaks = leaks_during(|| {
+            let k = GeneratedKey {
+                private: Zeroizing::new(CANARY.to_vec()),
+                private_encoding: Encoding::Pkcs8Der,
+                public: Some((vec![7; 2592], Encoding::Raw)),
+            };
+            let bytes = k.to_bytes();
+            let back = GeneratedKey::from_bytes(&bytes).unwrap();
+            assert_eq!(&*back.private, &CANARY[..]);
+        });
+        assert_eq!(leaks, 0);
     }
 }

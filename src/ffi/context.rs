@@ -5,7 +5,9 @@ use crate::adapters::providers::RustCrypto;
 use crate::adapters::storage::{
     FileKeyRepository, InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry, WrappingKey,
 };
-use crate::domain::key::KeyRepository;
+use crate::domain::core::{Code, Error};
+use crate::domain::key::{KeyRepository, Locking};
+use crate::secret::SecretBytes;
 use crate::app::{CryptoOrchestrator, Discovery, KeyOrchestrator, PolicyAdmin, validate_providers};
 use crate::domain::policy::Enforcer;
 use crate::domain::provider::{Backend, ProviderRegistry};
@@ -42,6 +44,9 @@ pub struct Config {
     pub default_policy: Option<String>,
     /// Where keys live: in memory, or a sealed file store.
     pub key_store: KeyStore,
+    /// `require_locked_memory`: key material (and the store's wrapping key)
+    /// must be locked in RAM, or the operation that needs it fails.
+    pub locking: Locking,
 }
 
 /// `agc_ctx_config.key_store_uri` and its wrapping key.
@@ -63,9 +68,6 @@ impl Config {
         }
         // Key material is not held in locked memory yet; accepting the flag
         // would promise a protection the library does not give.
-        if cfg.require_locked_memory != 0 {
-            return Err(FfiError::NotImplemented("require_locked_memory"));
-        }
         if cfg.fips_mode != 0 {
             return Err(FfiError::NotImplemented("fips_mode (no FIPS-validated provider is available)"));
         }
@@ -79,7 +81,8 @@ impl Config {
         let key_store = unsafe { key_store(cfg) }?;
         // SAFETY: default_policy is NULL or a C string (this function's contract).
         let default_policy = unsafe { optional_str(cfg.default_policy, "cfg.default_policy") }?.map(str::to_owned);
-        Ok(Config { default_policy, key_store })
+        let locking = if cfg.require_locked_memory != 0 { Locking::Required } else { Locking::BestEffort };
+        Ok(Config { default_policy, key_store, locking })
     }
 }
 
@@ -127,6 +130,19 @@ impl Context {
     /// `WireFactorySet` in the Go server, run once per context.
     pub fn open(config: Config) -> Result<Context, FfiError> {
 
+        // agc_core.h: with require_locked_memory, context creation fails if
+        // memory cannot be locked at all. Every later secret is checked as it
+        // is allocated (RLIMIT_MEMLOCK can run out later), and the operation
+        // that cannot lock it fails.
+        if config.locking == Locking::Required {
+            SecretBytes::new_with(&[0], Locking::Required).map_err(|_| {
+                FfiError::Domain(Error::new(
+                    Code::ResourceExhausted,
+                    "agc_ctx_open",
+                    "require_locked_memory: memory cannot be locked in RAM (RLIMIT_MEMLOCK)",
+                ))
+            })?;
+        }
         let templates = Arc::new(InMemoryTemplateRegistry::standard());
         let mut providers = ProviderRegistry::new();
         for p in builtin_providers() {
@@ -137,7 +153,8 @@ impl Context {
         let file_store = match &config.key_store {
             KeyStore::Memory => None,
             KeyStore::File { dir, wrapping_key_path } => {
-                Some(Arc::new(FileKeyRepository::open(dir, WrappingKey::from_file(wrapping_key_path)?)?))
+                let key = WrappingKey::from_file(wrapping_key_path, config.locking)?;
+                Some(Arc::new(FileKeyRepository::open(dir, key, config.locking)?))
             }
         };
         let keys: Arc<dyn KeyRepository> = match &file_store {
@@ -146,12 +163,14 @@ impl Context {
         };
         let policy = Arc::new(Enforcer::new(Arc::new(InMemoryPolicyRepository::new())));
         let providers = Arc::new(providers);
+        let locking = config.locking;
         Ok(Context {
             pid: pid(),
             default_policy: config.default_policy.clone(),
             config,
             file_store,
-            keys: KeyOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
+            keys: KeyOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone())
+                .with_locking(locking),
             crypto: CryptoOrchestrator::new(keys.clone(), templates.clone(), providers.clone(), policy.clone()),
             discovery: Discovery::new(templates, providers),
             policies: PolicyAdmin::new(policy, keys),

@@ -89,7 +89,7 @@ No file-backed key repository exists yet; only the in-memory one does. (An earli
 - `fips_mode`: no FIPS-validated provider exists in EMBEDDED mode.
 - `catalog_path`: the catalog is compiled in.
 - `provider_config_path`: providers are not configurable.
-- `require_locked_memory`: key material is not yet held in locked memory.
+- ~~`require_locked_memory`: key material is not yet held in locked memory.~~ Honoured since 2026-11 (DEVIATIONS C4).
 
 **Status: done.** citius-c-api `main` (PR #2, `6094f00`) states, at `agc_ctx_open`, that a setting the build cannot honour is refused with `AGC_ERR_NOT_IMPLEMENTED`, never ignored.
 

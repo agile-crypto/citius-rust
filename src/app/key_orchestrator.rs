@@ -16,16 +16,26 @@ pub struct KeyOrchestrator {
     pub(super) templates: Arc<dyn TemplateRegistry>,
     pub(super) providers: Arc<ProviderRegistry>,
     pub(super) policy: Arc<dyn Evaluator>,
+    /// Whether new key material must be locked in RAM (`require_locked_memory`).
+    pub(super) locking: Locking,
 }
 
 impl KeyOrchestrator {
+    /// Key material is locked best effort; see `with_locking`.
     pub fn new(
         keys: Arc<dyn KeyRepository>,
         templates: Arc<dyn TemplateRegistry>,
         providers: Arc<ProviderRegistry>,
         policy: Arc<dyn Evaluator>,
     ) -> Self {
-        Self { keys, templates, providers, policy }
+        Self { keys, templates, providers, policy, locking: Locking::BestEffort }
+    }
+
+    /// With `Locking::Required`, an operation that cannot lock the new key
+    /// material in RAM fails (`ResourceExhausted`) and stores nothing.
+    pub fn with_locking(mut self, locking: Locking) -> Self {
+        self.locking = locking;
+        self
     }
 
     /// `create_key_admitting` with nothing to check.
@@ -89,7 +99,8 @@ impl KeyOrchestrator {
             material,
             provenance,
             SystemTime::now(),
-        );
+            self.locking,
+        )?;
         let k = Key::new(KeyId::generate(), &spec.name, &spec.policy, first)?;
         let metadata = KeyMetadata::of(&k, k.current(), &self.providers);
         admit(&metadata)?;
@@ -136,7 +147,8 @@ impl KeyOrchestrator {
             material,
             provenance,
             SystemTime::now(),
-        );
+            self.locking,
+        )?;
         key.add_version(next)?;
         let metadata = KeyMetadata::of(&key, key.current(), &self.providers);
         admit(&metadata)?;

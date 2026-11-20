@@ -38,23 +38,54 @@ fn page_size() -> usize {
     4096
 }
 
-/// `n` bytes of zeroed memory, or NULL if `n` is 0 or no memory is available.
+/// Whether memory for secrets must be locked in RAM (`require_locked_memory`
+/// in agc_core.h) or only should be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Locking {
+    /// Locked if the system allows; otherwise usable but swappable.
+    BestEffort,
+    /// Locked, or the allocation fails.
+    Required,
+}
+
+/// Why an allocation for secrets failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AllocError {
+    /// No memory was available.
+    NoMemory,
+    /// The memory could not be locked in RAM (`RLIMIT_MEMLOCK` used up) and
+    /// `Locking::Required` was asked for.
+    NotLocked,
+}
+
+/// `n` bytes of zeroed memory, locked best effort; NULL if `n` is 0 or no
+/// memory is available (agc_secure_alloc).
 pub fn alloc(n: usize) -> *mut u8 {
+    alloc_with(n, Locking::BestEffort).unwrap_or(ptr::null_mut())
+}
+
+/// `n` bytes of zeroed memory, locked as `locking` asks; NULL for `n` = 0.
+pub fn alloc_with(n: usize, locking: Locking) -> Result<*mut u8, AllocError> {
     if n == 0 {
-        return ptr::null_mut();
+        return Ok(ptr::null_mut());
     }
     let page = page_size();
     let Some(total) = n.checked_add(HEADER).and_then(|t| t.checked_next_multiple_of(page)) else {
-        return ptr::null_mut();
+        return Err(AllocError::NoMemory);
     };
-    let base = map(total, page);
+    let (base, locked) = map(total, page);
     if base.is_null() {
-        return ptr::null_mut();
+        return Err(AllocError::NoMemory);
+    }
+    if locking == Locking::Required && !locked {
+        // SAFETY: base and total are the mapping just created, unused.
+        unsafe { unmap(base, total, page) };
+        return Err(AllocError::NotLocked);
     }
     // SAFETY: the mapping is page-aligned and at least HEADER bytes long.
     unsafe { base.cast::<usize>().write(total) };
     // SAFETY: HEADER < total, so the result is inside the mapping.
-    unsafe { base.add(HEADER) }
+    Ok(unsafe { base.add(HEADER) })
 }
 
 /// Zeroes and releases memory from `alloc`. The whole allocation is zeroed,
@@ -78,10 +109,11 @@ pub unsafe fn free(p: *mut u8, _n: usize) {
     unsafe { unmap(base, total, page_size()) };
 }
 
-/// A fresh, zeroed, page-aligned region of `total` bytes, locked in RAM and
-/// kept out of core dumps where possible; NULL if none is available.
+/// A fresh, zeroed, page-aligned region of `total` bytes, kept out of core
+/// dumps where possible, and whether it could be locked in RAM; NULL if none
+/// is available.
 #[cfg(not(miri))]
-fn map(total: usize, _page: usize) -> *mut u8 {
+fn map(total: usize, _page: usize) -> (*mut u8, bool) {
     // SAFETY: a fresh anonymous private mapping; no existing memory is affected.
     let base = unsafe {
         libc::mmap(
@@ -94,16 +126,17 @@ fn map(total: usize, _page: usize) -> *mut u8 {
         )
     };
     if base == libc::MAP_FAILED {
-        return ptr::null_mut();
+        return (ptr::null_mut(), false);
     }
-    // Best effort, like the header says: without RLIMIT_MEMLOCK headroom the
-    // memory is still usable, just swappable.
+    // Without RLIMIT_MEMLOCK headroom the memory is still usable, just
+    // swappable; the caller decides whether that is acceptable.
     // SAFETY: [base, base + total) is the mapping just created.
-    let _ = unsafe { libc::mlock(base, total) };
+    let locked = unsafe { libc::mlock(base, total) } == 0;
+    // Best effort: a kernel without MADV_DONTDUMP still gets a locked page.
     #[cfg(target_os = "linux")]
     // SAFETY: as above.
     let _ = unsafe { libc::madvise(base, total, libc::MADV_DONTDUMP) };
-    base.cast()
+    (base.cast(), locked)
 }
 
 /// # Safety
@@ -120,10 +153,10 @@ unsafe fn unmap(base: *mut u8, total: usize, _page: usize) {
 // Miri cannot execute mmap/mlock. A page-aligned heap block has the same
 // layout, so everything above it is still checked.
 #[cfg(miri)]
-fn map(total: usize, page: usize) -> *mut u8 {
+fn map(total: usize, page: usize) -> (*mut u8, bool) {
     let layout = std::alloc::Layout::from_size_align(total, page).unwrap();
-    // SAFETY: total > 0.
-    unsafe { std::alloc::alloc_zeroed(layout) }
+    // SAFETY: total > 0. Miri has no swap: count the block as locked.
+    (unsafe { std::alloc::alloc_zeroed(layout) }, true)
 }
 
 #[cfg(miri)]
@@ -147,29 +180,41 @@ struct Region {
 }
 
 // SAFETY: a Region owns its allocation alone and nothing writes to it after
-// SecretBytes::new, so handing it, and shared reads of it, to other threads
+// SecretBytes::new_with, so handing it, and shared reads of it, to other threads
 // is sound.
 unsafe impl Send for Region {}
 // SAFETY: as above: after creation the bytes are only ever read.
 unsafe impl Sync for Region {}
 
 impl SecretBytes {
-    /// A locked copy of `bytes`. Fails only where a `Vec` would: when no
-    /// memory is left, through `handle_alloc_error`.
-    pub fn new(bytes: &[u8]) -> SecretBytes {
+    /// A copy of `bytes`, locked as `locking` asks. With `Required` it fails
+    /// rather than keep the secret in swappable memory.
+    pub fn new_with(bytes: &[u8], locking: Locking) -> Result<SecretBytes, AllocError> {
         if bytes.is_empty() {
-            return SecretBytes(Arc::new(Region { ptr: ptr::null_mut(), len: 0 }));
+            return Ok(SecretBytes(Arc::new(Region { ptr: ptr::null_mut(), len: 0 })));
         }
-        let p = alloc(bytes.len());
-        if p.is_null() {
-            let layout = std::alloc::Layout::from_size_align(bytes.len(), 16).unwrap_or(std::alloc::Layout::new::<u8>());
-            std::alloc::handle_alloc_error(layout);
-        }
+        let p = alloc_with(bytes.len(), locking)?;
         // SAFETY: p is a fresh allocation of bytes.len() writable bytes, so
         // it cannot overlap `bytes`.
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
-        SecretBytes(Arc::new(Region { ptr: p, len: bytes.len() }))
+        Ok(SecretBytes(Arc::new(Region { ptr: p, len: bytes.len() })))
     }
+}
+
+/// Appends `bytes` to a buffer that holds secrets. `Vec::extend_from_slice`
+/// would reallocate when the capacity runs out and hand the old buffer, with
+/// the secret in it, back to the allocator unwiped; only the last buffer is
+/// zeroized when the `Zeroizing` drops. Here the buffer moves to a bigger
+/// one first, and the old one is wiped as it drops.
+pub fn extend_secret(buf: &mut zeroize::Zeroizing<Vec<u8>>, bytes: &[u8]) {
+    let needed = buf.len().checked_add(bytes.len()).expect("a secret buffer fits in memory");
+    if needed > buf.capacity() {
+        let mut bigger = zeroize::Zeroizing::new(Vec::with_capacity(needed.max(buf.capacity().saturating_mul(2))));
+        bigger.extend_from_slice(buf);
+        // The old buffer is zeroized as `bigger` replaces it.
+        *buf = bigger;
+    }
+    buf.extend_from_slice(bytes);
 }
 
 impl Deref for SecretBytes {
@@ -229,6 +274,59 @@ pub unsafe fn ct_equal(a: *const u8, b: *const u8, n: usize) -> bool {
     a.ct_eq(b).into()
 }
 
+/// For tests: detects secrets that reach the allocator unwiped. While a
+/// `leaks_during` closure runs, every freed heap block is searched for
+/// `CANARY`; tests put the canary where a secret goes and count the frees
+/// that still hold it. Not under Miri (whose allocator is its own).
+#[cfg(all(test, not(miri)))]
+pub(crate) mod leak_check {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+
+    pub const CANARY: [u8; 32] = *b"agc-leak-canary:wipe-before-free";
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static FOUND: AtomicUsize = AtomicUsize::new(0);
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    struct Scanning;
+
+    // SAFETY: forwards to System; `realloc` keeps the trait's default
+    // (alloc, copy, dealloc), so an outgrown block passes through `dealloc`.
+    unsafe impl GlobalAlloc for Scanning {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller upholds GlobalAlloc::alloc's contract.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if ARMED.load(SeqCst) && layout.size() >= CANARY.len() {
+                // SAFETY: the block is still allocated and layout.size() long.
+                let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
+                if block.windows(CANARY.len()).any(|w| w == CANARY) {
+                    FOUND.fetch_add(1, SeqCst);
+                }
+            }
+            // SAFETY: ptr came from System.alloc with this layout.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Scanning = Scanning;
+
+    /// How many freed blocks still held `CANARY` while `f` ran.
+    pub fn leaks_during(f: impl FnOnce()) -> usize {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        FOUND.store(0, SeqCst);
+        ARMED.store(true, SeqCst);
+        f();
+        ARMED.store(false, SeqCst);
+        FOUND.load(SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,7 +359,7 @@ mod tests {
 
     #[test]
     fn secret_bytes_share_one_allocation_and_hide_their_content() {
-        let a = SecretBytes::new(b"key material");
+        let a = SecretBytes::new_with(b"key material", Locking::BestEffort).unwrap();
         let b = a.clone();
         assert_eq!(&*b, b"key material");
         assert_eq!(a.as_ptr(), b.as_ptr(), "a clone shares, never copies");
@@ -269,7 +367,7 @@ mod tests {
         assert_eq!(format!("{a:?}"), "<12 secret bytes>");
         drop(a);
         assert_eq!(&*b, b"key material", "the last clone keeps it alive");
-        assert!(SecretBytes::new(&[]).is_empty());
+        assert!(SecretBytes::new_with(&[], Locking::BestEffort).unwrap().is_empty());
     }
 
     #[test]
@@ -292,5 +390,39 @@ mod tests {
             assert!(ct_equal(a.as_ptr(), b.as_ptr(), 0));
             assert!(!ct_equal(ptr::null(), b.as_ptr(), 0));
         }
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn growing_a_secret_buffer_leaves_no_copy_behind() {
+        use super::leak_check::{CANARY, leaks_during};
+        // The detector works: a plain Vec that outgrows its capacity frees
+        // the old buffer, canary and all.
+        let plain = leaks_during(|| {
+            let mut v = zeroize::Zeroizing::new(Vec::with_capacity(32));
+            v.extend_from_slice(&CANARY);
+            v.extend_from_slice(&[0; 4096]);
+        });
+        assert!(plain >= 1, "the plain Vec's outgrown buffer held the canary");
+        let ours = leaks_during(|| {
+            let mut v = zeroize::Zeroizing::new(Vec::new());
+            extend_secret(&mut v, &CANARY);
+            for _ in 0..64 {
+                extend_secret(&mut v, &[0; 1024]);
+            }
+        });
+        assert_eq!(ours, 0);
+    }
+
+    #[test]
+    fn required_locking_is_honoured_or_fails() {
+        // Locking works in the test environment (unlimited RLIMIT_MEMLOCK
+        // on developer machines) or the allocation says it did not.
+        match SecretBytes::new_with(b"secret", Locking::Required) {
+            Ok(s) => assert_eq!(&*s, b"secret"),
+            Err(e) => assert_eq!(e, AllocError::NotLocked),
+        }
+        assert_eq!(&*SecretBytes::new_with(b"secret", Locking::BestEffort).unwrap(), b"secret");
+        assert!(SecretBytes::new_with(b"", Locking::Required).unwrap().is_empty());
     }
 }

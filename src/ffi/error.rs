@@ -93,6 +93,7 @@ fn code_rc(code: Code) -> agc_rc {
         Code::PolicyViolation => AGC_ERR_CRYPTO_POLICY_VIOLATION,
         Code::PolicyVersionConflict => AGC_ERR_CRYPTO_POLICY_VERSION_CONFLICT,
         Code::OperationExpired => AGC_ERR_CRYPTO_OPERATION_EXPIRED,
+        Code::ResourceExhausted => AGC_ERR_OUT_OF_MEMORY,
         Code::Internal => AGC_ERR_INTERNAL,
     }
 }

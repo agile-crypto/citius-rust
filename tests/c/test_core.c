@@ -67,17 +67,17 @@ static void enum_names(void)
     CHECK(st == AGC_KEY_LIFECYCLE_STATE_ACTIVE);
 }
 
-/* Settings this build cannot honour are refused, never ignored (agc_core.h). */
+/* Settings this build cannot honour are refused, never ignored (agc_core.h).
+ * require_locked_memory is honoured: test_locked_memory. */
 static void unhonoured_settings_are_refused(void)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         agc_ctx_config cfg;
         AGC_INIT(&cfg);
         switch (i) {
-        case 0: cfg.require_locked_memory = 1; break;
-        case 1: cfg.fips_mode = 1; break;
-        case 2: cfg.catalog_path = "/etc/agc/catalog.json"; break;
-        case 3: cfg.provider_config_path = "/etc/agc/providers.json"; break;
+        case 0: cfg.fips_mode = 1; break;
+        case 1: cfg.catalog_path = "/etc/agc/catalog.json"; break;
+        case 2: cfg.provider_config_path = "/etc/agc/providers.json"; break;
         }
         agc_ctx *ctx = (agc_ctx *)&cfg; /* deliberately non-NULL */
         CHECK_RC(agc_ctx_open(&cfg, &ctx), AGC_ERR_NOT_IMPLEMENTED);
