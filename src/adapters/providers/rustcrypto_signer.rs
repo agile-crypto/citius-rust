@@ -13,6 +13,7 @@ use ml_dsa::signature::SignatureEncoding;
 use sha2::Digest;
 
 use super::RustCrypto;
+use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
 use crate::domain::core::{Code, Error, hash_output_len};
 use crate::domain::provider::{Encoding, GeneratedKey, SignContext, Signer};
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
@@ -47,6 +48,31 @@ enum Scheme {
         level: MlDsa,
         deterministic: bool,
     },
+}
+
+/// Runs a scheme's operation where it has the stack it needs (F12): ML-DSA
+/// by its measured budget, ECDSA so that a curve's first use gets room for
+/// its table, Ed25519 inline.
+fn on_stack<T: Send>(s: Scheme, op: MlDsaOp, f: impl FnOnce() -> Result<T, Error> + Send) -> Result<T, Error> {
+    match s {
+        Scheme::MlDsa { level, .. } => {
+            let level = match level {
+                MlDsa::L44 => 44,
+                MlDsa::L65 => 65,
+                MlDsa::L87 => 87,
+            };
+            stack_budget::run(ml_dsa_kib(level, op), f)
+        }
+        Scheme::Ecdsa { curve, .. } => stack_budget::ecdsa(
+            match curve {
+                Curve::P256 => EcCurve::P256,
+                Curve::P384 => EcCurve::P384,
+                Curve::P521 => EcCurve::P521,
+            },
+            f,
+        ),
+        Scheme::Ed25519 { .. } => f(),
+    }
 }
 
 fn not_supported(what: impl std::fmt::Display) -> Error {
@@ -425,7 +451,8 @@ impl Signer for RustCrypto {
         let s = scheme(algorithm)?;
         check_entry(s, false)?;
         let ctx = context(s, c)?;
-        Ok((self.sign_message(s, key, message, ctx)?, self.output_shape(algorithm)?))
+        let signature = on_stack(s, MlDsaOp::Sign, || self.sign_message(s, key, message, ctx))?;
+        Ok((signature, self.output_shape(algorithm)?))
     }
 
     fn verify(
@@ -439,7 +466,7 @@ impl Signer for RustCrypto {
         let s = scheme(algorithm)?;
         check_entry(s, false)?;
         let ctx = context(s, c)?;
-        self.verify_message(s, key, message, signature, ctx)
+        on_stack(s, MlDsaOp::Verify, || self.verify_message(s, key, message, signature, ctx))
     }
 
     fn sign_digest(
@@ -454,7 +481,7 @@ impl Signer for RustCrypto {
         let s = scheme(algorithm)?;
         let ctx = context(s, c)?;
         let sig = match s {
-            Scheme::Ecdsa { curve, .. } => ecdsa_sign(curve, key, digest)?,
+            Scheme::Ecdsa { curve, .. } => on_stack(s, MlDsaOp::Sign, || ecdsa_sign(curve, key, digest))?,
             Scheme::Ed25519 { .. } => ed25519_signing(key)?
                 .sign_prehashed(ed25519_digest(digest), ctx)
                 .map_err(|_| Error::new(Code::Internal, OP, "Ed25519ph signing failed"))?
@@ -478,7 +505,7 @@ impl Signer for RustCrypto {
         let s = scheme(algorithm)?;
         let ctx = context(s, c)?;
         match s {
-            Scheme::Ecdsa { curve, .. } => ecdsa_verify(curve, key, digest, signature),
+            Scheme::Ecdsa { curve, .. } => on_stack(s, MlDsaOp::Verify, || ecdsa_verify(curve, key, digest, signature)),
             Scheme::Ed25519 { .. } => {
                 let vk = ed25519_verifying(key)?;
                 Ok(ed25519_dalek::Signature::from_slice(signature)

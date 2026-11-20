@@ -3,6 +3,7 @@
 mod rustcrypto;
 mod rustcrypto_cipher;
 mod rustcrypto_signer;
+mod stack_budget;
 #[cfg(test)]
 mod interop;
 

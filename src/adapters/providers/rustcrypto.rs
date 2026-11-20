@@ -3,6 +3,7 @@ use elliptic_curve::Generate;
 use ml_dsa::signature::Keypair;
 use zeroize::Zeroizing;
 
+use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
 use crate::domain::core::{Code, Error};
 use crate::domain::provider::{Backend, Capability, Channels, Cipher, Encoding, GeneratedKey, Signer, Transfer};
 use crate::proto::api::{self, algorithm_details::Algorithm};
@@ -103,16 +104,23 @@ impl Backend for RustCrypto {
             Some(Algorithm::AesCtr(p)) => symmetric(aes_key_bytes(p.key_size_bits)?),
             Some(Algorithm::Chacha20Poly1305(_)) => symmetric(32),
             Some(Algorithm::Ed25519(_)) => ed25519(),
+            // Stack-hungry: on a big enough stack (stack_budget, F12).
             Some(Algorithm::Ecdsa(p)) => match api::EllipticCurve::try_from(p.curve) {
-                Ok(api::EllipticCurve::P256) => ecdsa::<p256::NistP256>(),
-                Ok(api::EllipticCurve::P384) => ecdsa::<p384::NistP384>(),
-                Ok(api::EllipticCurve::P521) => ecdsa::<p521::NistP521>(),
+                Ok(api::EllipticCurve::P256) => stack_budget::ecdsa(EcCurve::P256, ecdsa::<p256::NistP256>),
+                Ok(api::EllipticCurve::P384) => stack_budget::ecdsa(EcCurve::P384, ecdsa::<p384::NistP384>),
+                Ok(api::EllipticCurve::P521) => stack_budget::ecdsa(EcCurve::P521, ecdsa::<p521::NistP521>),
                 _ => Err(Error::new(Code::NotImplemented, OP, format!("ECDSA curve {} is not supported", p.curve))),
             },
             Some(Algorithm::MlDsa(p)) => match api::MlDsaParameterSet::try_from(p.parameter_set) {
-                Ok(api::MlDsaParameterSet::MlDsa44) => ml_dsa::<ml_dsa::MlDsa44>(),
-                Ok(api::MlDsaParameterSet::MlDsa65) => ml_dsa::<ml_dsa::MlDsa65>(),
-                Ok(api::MlDsaParameterSet::MlDsa87) => ml_dsa::<ml_dsa::MlDsa87>(),
+                Ok(api::MlDsaParameterSet::MlDsa44) => {
+                    stack_budget::run(ml_dsa_kib(44, MlDsaOp::Keygen), ml_dsa::<ml_dsa::MlDsa44>)
+                }
+                Ok(api::MlDsaParameterSet::MlDsa65) => {
+                    stack_budget::run(ml_dsa_kib(65, MlDsaOp::Keygen), ml_dsa::<ml_dsa::MlDsa65>)
+                }
+                Ok(api::MlDsaParameterSet::MlDsa87) => {
+                    stack_budget::run(ml_dsa_kib(87, MlDsaOp::Keygen), ml_dsa::<ml_dsa::MlDsa87>)
+                }
                 _ => Err(Error::new(
                     Code::NotImplemented,
                     OP,

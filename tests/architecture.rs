@@ -130,6 +130,7 @@ fn adapters_depend_on_domains_only() {
             || is_below(path, "crate::adapters")
             || is_below(path, "crate::proto")
             || is_below(path, "crate::secret")
+            || is_below(path, "crate::stack")
     });
 }
 
