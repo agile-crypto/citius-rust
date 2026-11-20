@@ -1,0 +1,14 @@
+# Alpine (musl, aarch64) in the Colima VM; the library built with RUSTFLAGS=-C target-feature=-crt-static.
+# benches/c/default_stack.c: each operation on a thread with the platform default stack. musl default secondary-thread stack: 128 KiB.
+# exit=139 = SIGSEGV (stack overflow).
+create ed25519 on a default thread: exit=0  AGC_OK
+create ecdsa-p256-sha256-der on a default thread: exit=0  AGC_OK
+create ecdsa-p521-sha512-der on a default thread: exit=139  
+create ml-dsa-44 on a default thread: exit=139  
+create ml-dsa-65 on a default thread: exit=139  
+create ml-dsa-87 on a default thread: exit=139  
+sign ecdsa-p256-sha256-der on a default thread (key created on main): exit=0  AGC_OK
+sign ecdsa-p521-sha512-der on a default thread (key created on main): exit=0  AGC_OK
+sign ml-dsa-44 on a default thread (key created on main): exit=139  
+sign ml-dsa-65 on a default thread (key created on main): exit=139  
+sign ml-dsa-87 on a default thread (key created on main): exit=139  

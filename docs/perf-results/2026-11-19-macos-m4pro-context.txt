@@ -1,0 +1,39 @@
+# cargo xtask bench --only context
+
+== memory per context, step by step (KiB; deltas) ==
+step                                       resident  footprint       heap   faults
+(absolute at start)                          1552.0     1072.3       14.1
+first trivial agc_* call                      +96.0      +48.0       +0.2        3
+agc_ctx_open #1                             +1600.0     +560.0     +228.1      100
+12 policies                                  +128.0      +16.0      +10.0        8
+first key (AES-256-GCM)                      +144.0      +64.0      +18.0        9
+first encrypt (+ harness buffers)            +192.0      +48.0       +0.3       12
+agc_ctx_open #2 (while #1 is open)           +304.0     +320.0     +228.0       19
+agc_ctx_open #3..#10                        +1648.0    +1648.0    +1823.6      103
+close #2..#10                                  +0.0       +0.0    -2051.6        0
+close #1                                       +0.0      -16.0     -239.5        1
+
+# vmmap --summary region deltas around agc_ctx_open #1 (resident / dirty KiB)
+first trivial agc_* call                      +96.0      +48.0       +0.2        3
+MALLOC metadata                    800K     288K     288K       0K       0K       0K       0K        4 
+MALLOC_SMALL                      4096K      48K      48K       0K       0K       0K       0K        1         see MALLOC ZONE table below
+MALLOC_TINY                       4096K      32K      32K       0K       0K       0K       0K        1         see MALLOC ZONE table below
+__DATA                             430K     269K     154K       0K       0K       0K       0K       37 
+__TEXT                            8436K    5908K       0K       0K       0K       0K       0K       49 
+agc_ctx_open #1                             +1584.0     +544.0     +228.1      125
+MALLOC metadata                    800K     320K     320K       0K       0K       0K       0K        4 
+MALLOC_SMALL                      12.0M     512K     512K       0K       0K       0K       0K        3         see MALLOC ZONE table below
+MALLOC_TINY                       4096K      80K      80K       0K       0K       0K       0K        1         see MALLOC ZONE table below
+__DATA                             430K     269K     154K       0K       0K       0K       0K       37 
+__TEXT                            8436K    6932K       0K       0K       0K       0K       0K       49 
+12 policies                                  +128.0      +16.0      +10.0       41
+MALLOC metadata                    800K     320K     320K       0K       0K       0K       0K        4 
+MALLOC_SMALL                      12.0M     528K     528K       0K       0K       0K       0K        3         see MALLOC ZONE table below
+
+# cargo bench --features bench --bench allocs (context parts)
+context part (held)                               allocs   retained       peak
+                                                              bytes      bytes  µs build
+template registry (72 templates from JSON)          2404     217229     358517     309.4
+provider registry (RustCrypto)                         3        104        104       0.1
+policy engine + key repository (empty)                 2        184        184       0.2
+whole context (as Context::open, memory store)      2411     217749     358517     305.1

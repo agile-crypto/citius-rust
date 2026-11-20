@@ -1,0 +1,112 @@
+# cargo bench --features bench --bench interleave -- 10 100   (default build)
+
+== ecdsa-p256-sha256-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                  15193       64.2       62.8       69.2       +0.0
+L0p (parse per call)                   5586      175.1      171.1      190.5     +111.0
+L1 provider                            5429      186.8      175.3      190.5     +122.6
+L2 orchestrator                        5283      192.3      177.0      192.5     +128.1
+L2ffi (as agc_sign)                    5149      194.4      194.2      194.5     +130.3
+
+== ecdsa-p384-sha384-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   5742      172.5      172.4      173.0       +0.0
+L0p (parse per call)                   2036      486.7      485.9      499.0     +314.2
+L1 provider                            2040      485.4      484.7      502.5     +312.8
+L2 orchestrator                        2031      487.0      486.7      541.7     +314.5
+L2ffi (as agc_sign)                    2025      489.0      488.2      504.7     +316.5
+
+== ecdsa-p521-sha512-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   7700      129.2      129.1      129.2       +0.0
+L0p (parse per call)                   2941      338.6      338.5      338.9     +209.5
+L1 provider                            2592      384.4      384.2      385.0     +255.2
+L2 orchestrator                        2717      365.6      365.4      369.6     +236.5
+L2ffi (as agc_sign)                    2723      366.0      365.8      367.0     +236.8
+
+== ecdsa-p256-sha256-der L0p: key or placement?: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+key 0                                  5688      174.1      171.2      190.5       +0.0
+key 1                                  5676      173.5      171.1      190.7       -0.6
+key 2                                  5617      175.1      171.1      191.2       +1.0
+key 3                                  5631      173.4      171.1      191.4       -0.7
+calibration (integer loop)             2165      458.7      458.7      468.7     +284.6
+key 0 at offset 1                      5647      171.5      171.2      190.8       -2.6
+key 0 at offset 8                      5699      171.3      171.1      190.4       -2.8
+key 0 at offset 64                     5572      173.6      171.2      190.6       -0.5
+
+== ecdsa-p521-sha512-der L0p: key or placement?: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+key 0                                  2933      339.2      339.1      339.4       +0.0
+key 1                                  2940      339.2      339.1      339.3       +0.0
+key 2                                  2938      339.2      339.1      339.5       +0.0
+key 3                                  2938      339.2      339.1      339.2       -0.0
+calibration (integer loop)             2173      458.7      458.7      458.7     +119.5
+key 0 at offset 1                      2935      339.2      339.1      339.6       +0.0
+key 0 at offset 8                      2933      339.2      339.1      340.2       +0.0
+key 0 at offset 64                     2936      339.2      339.1      339.4       +0.0
+
+# the same, built with RUSTFLAGS='-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=6'
+
+== ecdsa-p256-sha256-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                  14574       67.4       67.2       69.4       +0.0
+L0p (parse per call)                   5339      184.3      184.1      190.9     +116.9
+L1 provider                            5255      190.5      190.2      190.7     +123.0
+L2 orchestrator                        5176      192.5      192.5      192.7     +125.1
+L2ffi (as agc_sign)                    5124      194.6      194.4      194.9     +127.2
+
+== ecdsa-p384-sha384-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   5761      172.7      172.7      172.8       +0.0
+L0p (parse per call)                   2048      487.4      487.2      489.2     +314.7
+L1 provider                            2054      485.0      484.8      487.4     +312.3
+L2 orchestrator                        2044      487.0      486.8      490.8     +314.3
+L2ffi (as agc_sign)                    2038      489.0      488.7      491.3     +316.3
+
+== ecdsa-p521-sha512-der: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   7712      129.0      129.0      129.1       +0.0
+L0p (parse per call)                   2937      338.6      338.5      338.9     +209.6
+L1 provider                            2721      366.2      366.0      366.5     +237.2
+L2 orchestrator                        2731      364.5      364.2      364.7     +235.4
+L2ffi (as agc_sign)                    2726      365.2      365.1      366.1     +236.2
+
+== ecdsa-p256-sha256-der L0p: key or placement?: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+key 0                                  5465      184.1      171.4      190.8       +0.0
+key 1                                  5483      183.7      171.0      190.8       -0.4
+key 2                                  5472      184.0      171.0      190.7       -0.0
+key 3                                  5477      183.9      171.0      190.8       -0.2
+calibration (integer loop)             2172      458.7      458.7      461.1     +274.6
+key 0 at offset 1                      5498      181.7      171.0      190.6       -2.4
+key 0 at offset 8                      5444      184.2      171.0      192.0       +0.1
+key 0 at offset 64                     5471      184.1      171.0      190.8       +0.0
+
+== ecdsa-p521-sha512-der L0p: key or placement?: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+key 0                                  2938      338.5      338.4      338.5       +0.0
+key 1                                  2942      338.5      338.4      338.6       +0.0
+key 2                                  2943      338.5      338.2      338.8       +0.0
+key 3                                  2941      338.5      338.4      338.5       +0.0
+calibration (integer loop)             2176      458.7      458.7      458.7     +120.2
+key 0 at offset 1                      2940      338.5      338.4      338.9       +0.0
+key 0 at offset 8                      2944      338.5      338.4      338.5       +0.0
+key 0 at offset 64                     2942      338.5      338.4      338.8       +0.0
+
+# cargo xtask bench --only interleave (C, 3 processes)
+variant                                             n median µs  round min  round max
+sign/ecdsa-p256-sha256-der/1024/L3a             10242      193.8      193.7      194.6
+sign/ecdsa-p256-sha256-der/1024/L3b             10188      195.5      195.4      195.8
+sign/ecdsa-p521-sha512-der/1024/L3a              5422      367.0      366.8      369.3
+sign/ecdsa-p521-sha512-der/1024/L3b              5410      367.6      367.3      369.4
+variant                                             n median µs  round min  round max
+sign/ecdsa-p256-sha256-der/1024/L3a             10238      194.4      194.2      194.7
+sign/ecdsa-p256-sha256-der/1024/L3b             10147      196.0      195.9      196.5
+sign/ecdsa-p521-sha512-der/1024/L3a              5425      367.2      367.0      367.6
+sign/ecdsa-p521-sha512-der/1024/L3b              5421      367.9      367.6      368.3
+variant                                             n median µs  round min  round max
+sign/ecdsa-p256-sha256-der/1024/L3a             10269      193.8      193.6      194.2
+sign/ecdsa-p256-sha256-der/1024/L3b             10227      195.4      195.2      195.7
+sign/ecdsa-p521-sha512-der/1024/L3a              5431      366.7      366.3      368.6
+sign/ecdsa-p521-sha512-der/1024/L3b              5415      367.3      367.0      370.5

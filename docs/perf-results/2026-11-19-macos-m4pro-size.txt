@@ -1,0 +1,61 @@
+default libagilecrypto.dylib       file   3403544  stripped   2650520  __text   1749264
+default static min_aead            file   2972416  stripped   2310008  __text   1479160
+default static bench               file   3058096  stripped   2378824  __text   1536068
+lto libagilecrypto.dylib           file   2885176  stripped   2483400  __text   1713224
+lto static min_aead                file   2600656  stripped   2243448  __text   1489012
+lto static bench                   file   2678872  stripped   2312240  __text   1544716
+lto-s libagilecrypto.dylib         file   3423672  stripped   2288952  __text   1350920
+lto-s static min_aead              file   3498800  stripped   2472168  __text   1159108
+lto-s static bench                 file   3589576  stripped   2545080  __text   1212084
+RustCrypto only, aes               file    443800  stripped    324560  __text    205616
+RustCrypto only, all               file   1225032  stripped    983120  __text    582716
+
+== __text: 1708 KiB
+     564.5 KiB  33.0%  agilecrypto
+     231.3 KiB  13.5%  core
+     118.0 KiB   6.9%  hybrid_array
+      91.9 KiB   5.4%  serde_json
+      90.7 KiB   5.3%  alloc
+      60.5 KiB   3.5%  primeorder
+      56.6 KiB   3.3%  std
+      52.6 KiB   3.1%  ml_dsa
+      49.3 KiB   2.9%  crypto_bigint
+      36.9 KiB   2.2%  der
+      35.5 KiB   2.1%  module_lattice
+      33.0 KiB   1.9%  ecdsa
+      28.3 KiB   1.7%  gimli
+      27.9 KiB   1.6%  curve25519_dalek
+      19.3 KiB   1.1%  rustc_demangle
+      16.2 KiB   1.0%  C/runtime
+      15.6 KiB   0.9%  prost
+      11.5 KiB   0.7%  p521
+      10.7 KiB   0.6%  addr2line
+       9.5 KiB   0.6%  ed25519_dalek
+       8.6 KiB   0.5%  hashbrown
+       8.6 KiB   0.5%  aes_gcm
+  largest symbols:
+      16.2 KiB  <<agilecrypto::proto::caas::crypto::v1::AlgorithmDetails as serde_core::de::Deserialize>::deserialize::Generat
+      13.4 KiB  <module_lattice::algebra::NttPolynomial<ml_dsa::algebra::BaseField> as ml_dsa::ntt::NttInverse>::ntt_inverse
+      13.0 KiB  <module_lattice::algebra::Polynomial<ml_dsa::algebra::BaseField> as ml_dsa::ntt::Ntt>::ntt
+      12.2 KiB  <&mut serde_json::de::Deserializer<serde_json::read::StrRead> as serde_core::de::Deserializer>::deserialize_st
+      10.9 KiB  <hybrid_array::Array<hybrid_array::Array<u8, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typen
+       9.3 KiB  std::backtrace_rs::symbolize::gimli::resolve
+       7.8 KiB  <std::backtrace_rs::symbolize::gimli::Context>::new
+       7.5 KiB  <hybrid_array::Array<hybrid_array::Array<u8, typenum::uint::UInt<typenum::uint::UInt<typenum::uint::UInt<typen
+== __data: 195 KiB
+     113.1 KiB  57.9%  p521
+      55.1 KiB  28.2%  p384
+      24.8 KiB  12.7%  p256
+       2.4 KiB   1.2%  std
+       0.0 KiB   0.0%  agilecrypto
+       0.0 KiB   0.0%  core
+       0.0 KiB   0.0%  C/runtime
+  largest symbols:
+     113.1 KiB  p521::arithmetic::tables::BASEPOINT_TABLE
+      55.1 KiB  p384::arithmetic::tables::BASEPOINT_TABLE
+      24.8 KiB  p256::arithmetic::tables::BASEPOINT_TABLE
+       2.3 KiB  <std::backtrace_rs::symbolize::gimli::Cache>::with_global::MAPPINGS_CACHE
+       0.0 KiB  agilecrypto::ffi::exports::core::VERSION
+       0.0 KiB  agilecrypto::ffi::exports::core::BUILD_INFO
+       0.0 KiB  std::panicking::default_hook::{closure#0}::FIRST_PANIC
+       0.0 KiB  core::io::error::os_functions::OS_FUNCTIONS

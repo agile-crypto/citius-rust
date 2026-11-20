@@ -1,0 +1,96 @@
+# C path (cargo xtask bench --only stack)
+== stack high-water mark (bytes, net of an empty thread) ==
+empty thread start-up: 272 bytes (subtracted below)
+operation                                         bytes      KiB
+agc_ctx_open + 12 policies                        16224     15.8
+create_key/ed25519 (first use)                    10784     10.5
+create_key/ed25519 (again)                        10784     10.5
+sign/ed25519/1024/L3a                             12080     11.8
+verify/ed25519/1024                               12400     12.1
+create_key/ecdsa-p256-sha256-der (first use)      36096     35.2
+create_key/ecdsa-p256-sha256-der (again)           8772      8.6
+sign/ecdsa-p256-sha256-der/1024/L3a               12116     11.8
+verify/ecdsa-p256-sha256-der/1024                 14320     14.0
+create_key/ecdsa-p384-sha384-der (first use)      69712     68.1
+create_key/ecdsa-p384-sha384-der (again)           9088      8.9
+sign/ecdsa-p384-sha384-der/1024/L3a               12080     11.8
+verify/ecdsa-p384-sha384-der/1024                 18496     18.1
+create_key/ecdsa-p521-sha512-der (first use)     130664    127.6
+create_key/ecdsa-p521-sha512-der (again)          10440     10.2
+sign/ecdsa-p521-sha512-der/1024/L3a               12080     11.8
+verify/ecdsa-p521-sha512-der/1024                 24456     23.9
+create_key/ml-dsa-44 (first use)                 274656    268.2
+create_key/ml-dsa-44 (again)                     274656    268.2
+sign/ml-dsa-44/1024/L3a                          226416    221.1
+verify/ml-dsa-44/1024                             88096     86.0
+create_key/ml-dsa-65 (first use)                 335920    328.0
+create_key/ml-dsa-65 (again)                     335920    328.0
+sign/ml-dsa-65/1024/L3a                          294080    287.2
+verify/ml-dsa-65/1024                            131296    128.2
+create_key/ml-dsa-87 (first use)                 646464    631.3
+create_key/ml-dsa-87 (again)                     646464    631.3
+sign/ml-dsa-87/1024/L3a                          518672    506.5
+verify/ml-dsa-87/1024                            205088    200.3
+create_key/aes-128-gcm-128-96                      8488      8.3
+enc/aes-128-gcm-128-96/32/L3a                      9824      9.6
+dec/aes-128-gcm-128-96/32/L3a                     11936     11.7
+enc/aes-128-gcm-128-96/1048576/L3a                 9824      9.6
+dec/aes-128-gcm-128-96/1048576/L3a                11936     11.7
+create_key/aes-256-gcm-128-96                      8488      8.3
+enc/aes-256-gcm-128-96/32/L3a                      9824      9.6
+dec/aes-256-gcm-128-96/32/L3a                     11936     11.7
+enc/aes-256-gcm-128-96/1048576/L3a                 9824      9.6
+dec/aes-256-gcm-128-96/1048576/L3a                11936     11.7
+create_key/chacha20-poly1305                       8488      8.3
+enc/chacha20-poly1305/32/L3a                       9824      9.6
+dec/chacha20-poly1305/32/L3a                      11936     11.7
+enc/chacha20-poly1305/1048576/L3a                  9824      9.6
+dec/chacha20-poly1305/1048576/L3a                 11936     11.7
+create_key/aes-256-cbc-pkcs7-128                   8488      8.3
+enc/aes-256-cbc-pkcs7-128/32/L3a                   9776      9.5
+dec/aes-256-cbc-pkcs7-128/32/L3a                  11888     11.6
+enc/aes-256-cbc-pkcs7-128/1048576/L3a              9776      9.5
+dec/aes-256-cbc-pkcs7-128/1048576/L3a             11888     11.6
+create_key/aes-256-ctr                             8488      8.3
+enc/aes-256-ctr/32/L3a                             9776      9.5
+dec/aes-256-ctr/32/L3a                            11888     11.6
+enc/aes-256-ctr/1048576/L3a                        9776      9.5
+dec/aes-256-ctr/1048576/L3a                       11888     11.6
+
+# Rust layers (cargo bench --features bench --bench stack)
+empty job: 272 bytes (subtracted)
+job                                               bytes      KiB
+ml-dsa-44/L0 key from seed (keygen core)         215616    210.6
+ml-dsa-44/L0 parse PKCS#8                        216080    211.0
+ml-dsa-44/L0 sign, key parsed once                67952     66.4
+ml-dsa-44/L1 generate_key                        269424    263.1
+ml-dsa-44/L1 sign                                223232    218.0
+ml-dsa-44/L2ffi sign                             225824    220.5
+ml-dsa-65/L0 key from seed (keygen core)         280864    274.3
+ml-dsa-65/L0 parse PKCS#8                        281328    274.7
+ml-dsa-65/L0 sign, key parsed once                93712     91.5
+ml-dsa-65/L1 generate_key                        330672    322.9
+ml-dsa-65/L1 sign                                290896    284.1
+ml-dsa-65/L2ffi sign                             293488    286.6
+ml-dsa-87/L0 key from seed (keygen core)         502352    490.6
+ml-dsa-87/L0 parse PKCS#8                        502816    491.0
+ml-dsa-87/L0 sign, key parsed once               122720    119.8
+ml-dsa-87/L1 generate_key                        641200    626.2
+ml-dsa-87/L1 sign                                515488    503.4
+ml-dsa-87/L2ffi sign                             518080    505.9
+ed25519/L1 generate_key                           15024     14.7
+ed25519/L1 sign                                    7312      7.1
+ed25519/L2ffi sign                                10704     10.5
+ecdsa-p256-sha256-der/L1 generate_key             15024     14.7
+ecdsa-p256-sha256-der/L1 sign                      5504      5.4
+ecdsa-p256-sha256-der/L2ffi sign                  10928     10.7
+ecdsa-p521-sha512-der/L1 generate_key             15024     14.7
+ecdsa-p521-sha512-der/L1 sign                      8544      8.3
+ecdsa-p521-sha512-der/L2ffi sign                  11104     10.8
+ecdsa-p521/L0 SecretKey::generate                   152      0.1
+
+# Default-stack check: ML-DSA keygen / sign on a thread with the platform default stack
+default secondary-thread stack: 512 KiB
+create ml-dsa-65 on a default thread: AGC_OK
+exit=0 (ml-dsa-65 keygen)
+exit=138 (ml-dsa-87 keygen)

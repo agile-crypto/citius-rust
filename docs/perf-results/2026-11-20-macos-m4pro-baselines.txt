@@ -1,0 +1,135 @@
+
+== aes-256-cbc-pkcs7 32 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0                               613414        1.6        1.5        1.6       +0.0
+enc L1                               605425        1.6        1.5        1.6       +0.0
+enc L2ffi                            184045        5.3        5.3        5.4       +3.8
+dec L0                              3487390        0.2        0.2        0.2       -1.3
+dec L0z (zeroized buffer)           3271905        0.2        0.2        0.3       -1.3
+dec L1                              3051598        0.2        0.2        0.3       -1.3
+dec L2                               464367        2.1        2.0        2.1       +0.5
+
+== aes-256-ctr 32 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0 (incl. fresh IV)              652150        1.5        1.4        1.5       +0.0
+enc L1                               635369        1.5        1.5        1.5       +0.0
+enc L2ffi                            197244        5.0        4.9        5.1       +3.5
+dec L0                              4120595        0.2        0.2        0.2       -1.3
+dec L0z (zeroized buffer)           3773672        0.2        0.2        0.2       -1.2
+dec L1                              3577764        0.2        0.2        0.2       -1.2
+dec L2                               506648        1.9        1.9        1.9       +0.5
+
+== aes-256-cbc-pkcs7 16384 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0                                33964       29.1       29.1       29.2       +0.0
+enc L1                                33464       29.2       29.1       31.2       +0.0
+enc L2ffi                             29809       33.0       32.9       33.2       +3.9
+dec L0                               163097        6.0        6.0        6.1      -23.1
+dec L0z (zeroized buffer)             80455       12.3       12.3       12.3      -16.8
+dec L1                                80162       12.4       12.3       12.4      -16.8
+dec L2                                69408       14.2       14.2       14.3      -14.9
+
+== aes-256-ctr 16384 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0 (incl. fresh IV)              147945        6.7        6.7        6.7       +0.0
+enc L1                               153958        6.4        6.4        6.4       -0.3
+enc L2ffi                             99151       10.0        9.9       10.0       +3.3
+dec L0                               181233        5.4        5.4        5.4       -1.2
+dec L0z (zeroized buffer)             84488       11.7       11.7       11.7       +5.0
+dec L1                                86664       11.4       11.4       11.4       +4.8
+dec L2                                75684       13.1       13.0       13.1       +6.4
+
+== aes-256-cbc-pkcs7 1048576 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0                                  570     1769.4     1767.1     1771.6       +0.0
+enc L1                                  570     1771.1     1767.8     1776.1       +1.7
+enc L2ffi                               570     1773.8     1771.8     1778.0       +4.4
+dec L0                                 2620      381.4      379.1      382.6    -1388.0
+dec L0z (zeroized buffer)              1280      782.6      781.7      783.0     -986.8
+dec L1                                 1277      784.5      784.1      785.1     -984.9
+dec L2                                 1268      787.5      786.9      788.0     -982.0
+
+== aes-256-ctr 1048576 B: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+enc L0 (incl. fresh IV)                2930      339.8      339.4      342.1       +0.0
+enc L1                                 3064      324.9      323.8      327.8      -14.9
+enc L2ffi                              3037      327.6      326.9      329.6      -12.3
+dec L0                                 2937      338.7      338.2      339.9       -1.1
+dec L0z (zeroized buffer)              1349      740.5      740.0      742.1     +400.7
+dec L1                                 1377      726.3      725.3      728.5     +386.5
+dec L2                                 1368      730.5      729.0      732.8     +390.7
+
+== ecdsa-p256-prehashed-der digest sign: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                  14692       68.7       63.6       68.8       +0.0
+L0p (parse per call)                   5329      190.0      175.0      190.2     +121.3
+L1 provider                            5369      190.0      174.8      190.3     +121.3
+L2ffi (as agc_digest_sign)             5141      194.4      194.2      194.6     +125.7
+
+== ecdsa-p384-prehashed-der digest sign: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   5806      171.0      170.9      171.1       +0.0
+L0p (parse per call)                   2060      484.4      484.2      486.3     +313.5
+L1 provider                            2084      478.5      478.3      480.3     +307.6
+L2ffi (as agc_digest_sign)             2067      482.7      482.5      483.1     +311.7
+
+== ecdsa-p521-prehashed-der digest sign: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (key parsed once)                   7769      128.1      128.0      128.2       +0.0
+L0p (parse per call)                   2946      337.8      337.7      338.9     +209.7
+L1 provider                            2749      360.9      360.5      363.6     +232.8
+L2ffi (as agc_digest_sign)             2702      367.5      367.2      369.7     +239.4
+
+== ed25519ph digest sign: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L1 provider                           15274       65.1       65.1       65.1       +0.0
+L2ffi (as agc_digest_sign)            14041       70.8       70.8       70.9       +5.8
+
+== ed25519 verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)           28073       35.4       35.3       35.4       +0.0
+L0p (parse per call)                  25548       38.9       38.8       38.9       +3.5
+L1 provider                           25449       39.0       39.0       39.0       +3.6
+L2ffi (as agc_verify)                 24604       40.3       40.3       40.3       +5.0
+
+== ecdsa-p256-sha256-der verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)            4306      231.9      231.7      232.0       +0.0
+L0p (parse per call)                   4293      232.4      232.3      232.6       +0.5
+L1 provider                            4301      232.1      231.8      232.3       +0.2
+L2ffi (as agc_verify)                  4254      234.2      234.0      234.8       +2.3
+
+== ecdsa-p384-sha384-der verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)            1579      632.3      631.5      634.0       +0.0
+L0p (parse per call)                   1573      633.7      632.2      638.7       +1.4
+L1 provider                            1592      627.2      625.7      634.2       -5.1
+L2ffi (as agc_verify)                  1588      628.8      627.8      630.1       -3.5
+
+== ecdsa-p521-sha512-der verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)            2629      379.1      378.9      379.7       +0.0
+L0p (parse per call)                   2567      388.9      388.6      389.2       +9.8
+L1 provider                            2414      412.7      412.5      413.0      +33.6
+L2ffi (as agc_verify)                  2456      406.0      405.9      407.0      +27.0
+
+== ml-dsa-44 verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)           35824       27.5       27.5       27.7       +0.0
+L0p (parse per call)                  15796       62.7       62.6       62.9      +35.1
+L1 provider                           15830       62.5       62.5       62.8      +35.0
+L2ffi (as agc_verify)                 15159       65.2       65.1       65.5      +37.7
+
+== ml-dsa-65 verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)           25870       38.3       38.3       38.4       +0.0
+L0p (parse per call)                   9568      103.5      103.4      103.6      +65.2
+L1 provider                            9668      102.8      102.5      102.8      +64.4
+L2ffi (as agc_verify)                  9470      104.9      104.8      105.0      +66.6
+
+== ml-dsa-87 verify 1 KiB: 10 rounds × 100 ms per variant ==
+variant                                   n  median µs  round min  round max   Δ vs 1st
+L0 (public key parsed once)           17942       55.4       55.4       55.5       +0.0
+L0p (parse per call)                   5843      170.5      170.2      170.8     +115.1
+L1 provider                            5848      170.0      169.9      170.2     +114.6
+L2ffi (as agc_verify)                  5790      171.9      171.6      172.1     +116.5
