@@ -405,7 +405,7 @@ pub(super) mod tests {
 
     fn world() -> World {
         let repo = Arc::new(InMemoryKeyRepository::new());
-        let templates = Arc::new(InMemoryTemplateRegistry::standard());
+        let templates = InMemoryTemplateRegistry::standard();
         let mut registry = ProviderRegistry::new();
         registry.register(Arc::new(RustCrypto)).unwrap();
         let providers = Arc::new(registry);
@@ -590,7 +590,7 @@ pub(super) mod tests {
         registry.register(Arc::new(RustCrypto)).unwrap();
         let crypto = CryptoOrchestrator::new(
             counting.clone(),
-            Arc::new(InMemoryTemplateRegistry::standard()),
+            InMemoryTemplateRegistry::standard(),
             Arc::new(registry),
             w.policy.clone(),
         );

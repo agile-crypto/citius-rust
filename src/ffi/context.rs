@@ -143,7 +143,7 @@ impl Context {
                 ))
             })?;
         }
-        let templates = Arc::new(InMemoryTemplateRegistry::standard());
+        let templates = InMemoryTemplateRegistry::standard();
         let mut providers = ProviderRegistry::new();
         for p in builtin_providers() {
             providers.register(p)?;

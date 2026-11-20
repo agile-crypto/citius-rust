@@ -45,13 +45,13 @@ mod tests {
 
     #[test]
     fn the_shipped_providers_match_the_catalog() {
-        validate_providers(&registry(Arc::new(RustCrypto)), &InMemoryTemplateRegistry::standard()).unwrap();
+        validate_providers(&registry(Arc::new(RustCrypto)), &*InMemoryTemplateRegistry::standard()).unwrap();
     }
 
     #[test]
     fn an_unknown_template_is_a_configuration_error() {
         let r = registry(Arc::new(FakeProvider::new("f", &["no-such-template"])));
-        let e = validate_providers(&r, &InMemoryTemplateRegistry::standard()).unwrap_err();
+        let e = validate_providers(&r, &*InMemoryTemplateRegistry::standard()).unwrap_err();
         assert!(e.message().contains("no-such-template"), "{e}");
     }
 }

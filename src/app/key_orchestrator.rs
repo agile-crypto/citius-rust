@@ -402,7 +402,7 @@ mod tests {
         }
         KeyOrchestrator::new(
             Arc::new(InMemoryKeyRepository::new()),
-            Arc::new(InMemoryTemplateRegistry::standard()),
+            InMemoryTemplateRegistry::standard(),
             Arc::new(registry),
             enforcer,
         )

@@ -244,7 +244,7 @@ mod tests {
         for p in extra {
             providers.register(Arc::new(p)).unwrap();
         }
-        Discovery::new(Arc::new(InMemoryTemplateRegistry::standard()), Arc::new(providers))
+        Discovery::new(InMemoryTemplateRegistry::standard(), Arc::new(providers))
     }
 
     #[test]

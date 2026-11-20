@@ -1,3 +1,5 @@
+use std::sync::{Arc, OnceLock};
+
 use crate::domain::core::{Code, Error};
 use crate::domain::template::*;
 
@@ -23,9 +25,14 @@ impl InMemoryTemplateRegistry {
         Ok(r)
     }
 
-    /// The registry filled from the compiled-in standard catalog.
-    pub fn standard() -> Self {
-        Self::from_catalog(STANDARD_CATALOG).expect("the compiled-in catalog is valid (tested)")
+    /// The registry of the compiled-in standard catalog, parsed once per
+    /// process and shared, so opening a context parses no catalog (docs/
+    /// performance.md F8). A shared registry cannot change; a context that
+    /// needs another catalog (`catalog_path`) builds its own.
+    pub fn standard() -> Arc<Self> {
+        static STANDARD: OnceLock<Arc<InMemoryTemplateRegistry>> = OnceLock::new();
+        let parse = || Self::from_catalog(STANDARD_CATALOG).expect("the compiled-in catalog is valid (tested)");
+        STANDARD.get_or_init(|| Arc::new(parse())).clone()
     }
 }
 
@@ -148,6 +155,12 @@ mod tests {
     #[test]
     fn standard_catalog_loads_every_template() {
         assert_eq!(InMemoryTemplateRegistry::standard().list().len(), 72);
+    }
+
+    #[test]
+    fn the_standard_catalog_is_parsed_once_and_shared() {
+        let (a, b) = (InMemoryTemplateRegistry::standard(), InMemoryTemplateRegistry::standard());
+        assert!(Arc::ptr_eq(&a, &b), "every context shares one parse");
     }
 
     #[test]
