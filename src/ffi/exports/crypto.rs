@@ -9,6 +9,7 @@ use crate::ffi::exports::core::context;
 use crate::ffi::guard::guard;
 use crate::ffi::translation::{encoding, kv_list, required_str, slice};
 use crate::ffi::versioned;
+use crate::secret::SecretVec;
 
 /// The caller's encryption parameters. The oneof is required; the arms no
 /// provider implements yet are not offered.
@@ -52,6 +53,31 @@ pub(super) fn put(region: agc_buf, bytes: &[u8]) -> Result<(), FfiError> {
     Ok(())
 }
 
+/// Whether `input` shares a byte with the caller's output region.
+fn overlaps(input: &[u8], region: agc_buf) -> bool {
+    let (a, b) = (input.as_ptr() as usize, region.data as usize);
+    !input.is_empty() && !region.data.is_null() && a < b.saturating_add(region.cap) && b < a.saturating_add(input.len())
+}
+
+/// An input the operation reads while it writes `region`: borrowed, or
+/// copied first when the caller passed overlapping buffers (in-place use),
+/// so that the output slice never aliases a live input slice.
+fn apart_from<'a>(input: &'a [u8], region: agc_buf, copy: &'a mut Option<SecretVec>) -> &'a [u8] {
+    if overlaps(input, region) { copy.insert(SecretVec::from(input.to_vec())) } else { input }
+}
+
+/// The first `len` bytes of the caller's region, for the operation to write.
+///
+/// # Safety
+/// `short(region, len)` is false; the region is the caller's writable
+/// memory for the call; no input slice the operation reads overlaps it
+/// (`apart_from`).
+unsafe fn region_mut<'b>(region: agc_buf, len: usize) -> &'b mut [u8] {
+    // SAFETY: non-null with at least `len` writable bytes (not `short`),
+    // and unaliased while the operation runs (this function's contract).
+    unsafe { std::slice::from_raw_parts_mut(region.data, len) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_request, resp: *mut agc_encrypt_response) -> agc_rc {
     guard(|| {
@@ -62,12 +88,14 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
         // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
         let mut out = unsafe { versioned::read(resp, "resp") }?;
         let enc = encoding(r.metadata_encoding, "metadata_encoding")?;
+        // SAFETY: the pointers and slices in req are NULL or valid for the
+        // call (agc_crypto.h contract).
+        let plaintext = unsafe { slice(r.plaintext, "plaintext") }?;
+        let mut copy = None;
         let request = EncryptRequest {
-            // SAFETY: the pointers and slices in req
-            // are NULL or valid for the call (agc_crypto.h contract).
-            key_name: unsafe { required_str(r.key_name, "key_name") }?,
             // SAFETY: as above.
-            plaintext: unsafe { slice(r.plaintext, "plaintext") }?,
+            key_name: unsafe { required_str(r.key_name, "key_name") }?,
+            plaintext: apart_from(plaintext, out.ciphertext, &mut copy),
             // SAFETY: as above.
             params: unsafe { encrypt_params(r.params) }?,
             // SAFETY: as above.
@@ -76,7 +104,8 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
 
         // SIZE QUERIES: every length is set, and a NULL or short region stops
         // the call before any provider work or randomness. The sizes and the
-        // ciphertext come from one lookup of the key.
+        // ciphertext come from one lookup of the key; the provider encrypts
+        // straight into the caller's region.
         let result = ctx
             .crypto
             .encrypt_admitting(request, enc, |sizes| {
@@ -85,15 +114,17 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
                 if short(out.ciphertext, sizes.artifact) || short(out.metadata, sizes.metadata) {
                     return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
                 }
-                Ok(())
+                // SAFETY: not short (just checked); the plaintext is apart
+                // from it (apart_from), and the request borrows no other input
+                // the encryption reads.
+                Ok(unsafe { region_mut(out.ciphertext, sizes.artifact) })
             })
-            .and_then(|e| {
-                let md = metadata::encode(&e.metadata, enc)?;
-                out.ciphertext_len = e.ciphertext.len();
+            .and_then(|w| {
+                let md = metadata::encode(&w.metadata, enc)?;
+                out.ciphertext_len = w.len;
                 out.metadata_len = md.len();
-                put(out.ciphertext, &e.ciphertext)?;
                 put(out.metadata, &md)?;
-                out.key_version = e.metadata.key_version;
+                out.key_version = w.metadata.key_version;
                 Ok(())
             });
         // SAFETY: resp passed versioned::read above.
@@ -117,11 +148,13 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
             .first()
             .and_then(|&b| MetadataEncoding::from_byte(b))
             .ok_or_else(|| FfiError::invalid("metadata must begin with its encoding byte"))?;
+        // SAFETY: as in agc_encrypt, the pointers in req are NULL or valid.
+        let ciphertext = unsafe { slice(r.ciphertext, "ciphertext") }?;
+        let mut copy = None;
         let request = DecryptRequest {
-            // SAFETY: as in agc_encrypt, the pointers in req are NULL or valid.
-            key_name: unsafe { required_str(r.key_name, "key_name") }?,
             // SAFETY: as above.
-            ciphertext: unsafe { slice(r.ciphertext, "ciphertext") }?,
+            key_name: unsafe { required_str(r.key_name, "key_name") }?,
+            ciphertext: apart_from(ciphertext, out.plaintext, &mut copy),
             metadata: metadata::decode(enc, md_in)?,
             // SAFETY: as above.
             params: unsafe { encrypt_params(r.params) }?,
@@ -140,18 +173,26 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
                 if short(out.plaintext, sizes.artifact) || (wants_md && short(out.metadata, sizes.metadata)) {
                     return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
                 }
-                Ok(())
+                // SAFETY: not short (just checked); the ciphertext is apart
+                // from it (apart_from), and the request borrows no other input
+                // the decryption reads.
+                Ok(unsafe { region_mut(out.plaintext, sizes.artifact) })
             })
-            .and_then(|d| {
-                // Metadata first: if it cannot be written, no plaintext is.
+            .and_then(|w| {
+                // The provider wrote the plaintext only once it had decided
+                // every failure. The metadata was sized from the same inputs;
+                // should it still not fit, the plaintext is taken back.
                 if wants_md {
-                    let md = metadata::encode(&d.metadata, enc)?;
+                    let md = metadata::encode(&w.metadata, enc)?;
                     out.metadata_len = md.len();
-                    put(out.metadata, &md)?;
+                    if let Err(e) = put(out.metadata, &md) {
+                        // SAFETY: the provider just wrote w.len bytes there.
+                        unsafe { std::ptr::write_bytes(out.plaintext.data, 0, w.len) };
+                        return Err(e);
+                    }
                 }
-                out.plaintext_len = d.plaintext.len();
-                put(out.plaintext, &d.plaintext)?;
-                out.key_version = d.metadata.key_version;
+                out.plaintext_len = w.len;
+                out.key_version = w.metadata.key_version;
                 Ok(())
             });
         // Authentication failed (or any failure after sizing): nothing is
@@ -184,6 +225,22 @@ mod tests {
         assert_eq!(buf, [1, 1, 1, 1, 0xA5, 0xA5, 0xA5, 0xA5]);
         let null = super::agc_buf { data: std::ptr::null_mut(), cap: 0 };
         assert!(super::put(null, &[]).is_err(), "a NULL region is never written");
+    }
+
+    #[test]
+    fn overlap_is_any_shared_byte() {
+        // Only addresses are compared: nothing is written through `region`.
+        let buf = [0u8; 32];
+        let base = buf.as_ptr().cast_mut();
+        let region = |at: usize, cap: usize| super::agc_buf { data: base.wrapping_add(at), cap };
+        let input = &buf[8..16];
+        assert!(super::overlaps(input, region(0, 9)), "last byte of the region");
+        assert!(super::overlaps(input, region(15, 4)), "first byte of the region");
+        assert!(super::overlaps(input, region(10, 2)), "inside");
+        assert!(!super::overlaps(input, region(0, 8)), "just before");
+        assert!(!super::overlaps(input, region(16, 8)), "just after");
+        assert!(!super::overlaps(input, super::agc_buf { data: std::ptr::null_mut(), cap: 64 }));
+        assert!(!super::overlaps(&[], region(0, 32)));
     }
 
     #[test]

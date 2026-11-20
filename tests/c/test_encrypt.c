@@ -233,6 +233,44 @@ static void old_ciphertext_after_transform(agc_ctx *ctx)
     CHECK(v == 2);
 }
 
+/* In place: the ciphertext region over the plaintext, then the plaintext
+ * region over the ciphertext. The library copies an input that overlaps
+ * its output first, so the result is the same as with separate buffers. */
+static void in_place(agc_ctx *ctx)
+{
+    const char *keys[] = {"gcm", "chacha", "cbc", "ctr"};
+    for (size_t k = 0; k < sizeof keys / sizeof *keys; k++) {
+        agc_encrypt_params ep;
+        if (k < 2) {
+            ep = aead_params("in-place");
+        } else {
+            AGC_INIT(&ep);
+            ep.kind = AGC_ENCRYPT_PARAMS_NO_PARAMS;
+        }
+        uint8_t buf[256], md[128];
+        size_t n = strlen(msg);
+        memcpy(buf, msg, n);
+
+        agc_encrypt_request er;
+        AGC_INIT(&er);
+        er.key_name = keys[k];
+        er.plaintext = (agc_slice){buf, n};
+        er.params = &ep;
+        er.metadata_encoding = AGC_ENCODING_WIRE_V1;
+        agc_encrypt_response enc;
+        AGC_INIT(&enc);
+        enc.ciphertext = (agc_buf){buf, sizeof buf};
+        enc.metadata = (agc_buf){md, sizeof md};
+        CHECK_RC(agc_encrypt(ctx, &er, &enc), AGC_OK);
+        CHECK(enc.ciphertext_len >= n && memcmp(buf, msg, n) != 0);
+
+        size_t pt_len;
+        CHECK_RC(decrypt(ctx, keys[k], &ep, buf, enc.ciphertext_len, md, enc.metadata_len, buf, sizeof buf, &pt_len),
+                 AGC_OK);
+        CHECK(pt_len == n && memcmp(buf, msg, n) == 0);
+    }
+}
+
 int main(void)
 {
     agc_ctx *ctx = open_embedded();
@@ -247,6 +285,7 @@ int main(void)
     block_and_stream_ciphers(ctx);
     bad_requests(ctx);
     old_ciphertext_after_transform(ctx);
+    in_place(ctx);
     agc_ctx_close(ctx);
     return 0;
 }

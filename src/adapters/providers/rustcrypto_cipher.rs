@@ -8,9 +8,10 @@
 //!   `random nonce ‖ zero counter`, counting as a 128-bit big-endian integer
 //!   (Go's `cipher.NewCTR`).
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, StreamCipher};
-use crate::secret::SecretVec;
+use aes_gcm::aead::{AeadInOut, KeyInit};
+use cipher::block_padding::{Padding, Pkcs7};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, InOutBuf, KeyIvInit, StreamCipher};
+use zeroize::Zeroizing;
 
 use super::RustCrypto;
 use crate::domain::core::{Code, Error};
@@ -93,19 +94,50 @@ fn aad(params: &EncryptParams, aead: bool) -> Result<&[u8], Error> {
     }
 }
 
-fn aead_seal<C: KeyInit + Aead>(key: &[u8], nonce: &[u8], pt: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
-    let c = C::new_from_slice(key).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
-    let nonce = nonce.try_into().map_err(|_| err(Code::InvalidArgument, "wrong nonce length"))?;
-    c.encrypt(nonce, Payload { msg: pt, aad }).map_err(|_| err(Code::Internal, "AEAD encryption failed"))
+/// The caller's buffer is shorter than the sizing promised: a bug in the
+/// caller, refused before anything is written.
+fn short_output() -> Error {
+    err(Code::Internal, "the output buffer is shorter than its size query said")
 }
 
-fn aead_open<C: KeyInit + Aead>(key: &[u8], nonce: &[u8], ct: &[u8], aad: &[u8]) -> Result<SecretVec, Error> {
+/// Seals `pt` into `out` as `ciphertext ‖ tag`, reading `pt` and writing
+/// `out` directly (no copy of the plaintext).
+fn aead_seal<C: KeyInit + AeadInOut>(
+    key: &[u8],
+    nonce: &[u8],
+    pt: &[u8],
+    aad: &[u8],
+    out: &mut [u8],
+) -> Result<usize, Error> {
+    let c = C::new_from_slice(key).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
+    let nonce = nonce.try_into().map_err(|_| err(Code::InvalidArgument, "wrong nonce length"))?;
+    let (body, rest) = out.split_at_mut_checked(pt.len()).ok_or_else(short_output)?;
+    let tag_out = rest.get_mut(..TAG_LEN).ok_or_else(short_output)?;
+    let buf = InOutBuf::new(pt, body).expect("equal lengths");
+    let tag = c.encrypt_inout_detached(nonce, aad, buf).map_err(|_| err(Code::Internal, "AEAD encryption failed"))?;
+    tag_out.copy_from_slice(&tag);
+    Ok(pt.len() + TAG_LEN)
+}
+
+/// Opens `ciphertext ‖ tag` into `out`. The crates check the tag over the
+/// ciphertext before they decrypt (aes-gcm 0.11, chacha20poly1305 0.11:
+/// `decrypt_inout_detached`), so a failure leaves `out` untouched.
+fn aead_open<C: KeyInit + AeadInOut>(
+    key: &[u8],
+    nonce: &[u8],
+    ct: &[u8],
+    aad: &[u8],
+    out: &mut [u8],
+) -> Result<usize, Error> {
     let c = C::new_from_slice(key).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
     let nonce = nonce.try_into().map_err(|_| err(Code::InvalidArgument, "the metadata's nonce has the wrong length"))?;
-    // One error for every failure: tampered data, wrong tag, wrong AAD.
-    c.decrypt(nonce, Payload { msg: ct, aad })
-        .map(SecretVec::from)
-        .map_err(|_| err(Code::AuthenticationFailed, "authentication failed"))
+    // One error for every failure: tampered data, wrong tag, wrong AAD, too short.
+    let failed = || err(Code::AuthenticationFailed, "authentication failed");
+    let (body, tag) = ct.split_at_checked(ct.len().checked_sub(TAG_LEN).ok_or_else(failed)?).ok_or_else(failed)?;
+    let out = out.get_mut(..body.len()).ok_or_else(short_output)?;
+    let buf = InOutBuf::new(body, out).expect("equal lengths");
+    c.decrypt_inout_detached(nonce, aad, buf, tag.try_into().expect("TAG_LEN bytes")).map_err(|_| failed())?;
+    Ok(body.len())
 }
 
 impl Cipher for RustCrypto {
@@ -134,86 +166,90 @@ impl Cipher for RustCrypto {
         })
     }
 
-    fn encrypt(
+    fn encrypt_into(
         &self,
         key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         pt: &[u8],
         params: &EncryptParams,
-    ) -> Result<(Vec<u8>, api::ProviderOutput), Error> {
+        out: &mut [u8],
+    ) -> Result<(usize, api::ProviderOutput), Error> {
         match mode(algorithm)? {
             Mode::Gcm { key_bytes } => {
                 let (k, aad) = (raw_key(key, key_bytes)?, aad(params, true)?);
                 let mut nonce = vec![0u8; 12];
                 fill_random(&mut nonce)?;
-                let ct = match key_bytes {
-                    16 => aead_seal::<aes_gcm::Aes128Gcm>(k, &nonce, pt, aad)?,
-                    24 => aead_seal::<aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>>(k, &nonce, pt, aad)?,
-                    _ => aead_seal::<aes_gcm::Aes256Gcm>(k, &nonce, pt, aad)?,
+                let n = match key_bytes {
+                    16 => aead_seal::<aes_gcm::Aes128Gcm>(k, &nonce, pt, aad, out)?,
+                    24 => {
+                        type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
+                        aead_seal::<Aes192Gcm>(k, &nonce, pt, aad, out)?
+                    }
+                    _ => aead_seal::<aes_gcm::Aes256Gcm>(k, &nonce, pt, aad, out)?,
                 };
-                Ok((ct, aead_output(nonce)))
+                Ok((n, aead_output(nonce)))
             }
             Mode::ChaCha { extended } => {
                 let (k, aad) = (raw_key(key, 32)?, aad(params, true)?);
                 let mut nonce = vec![0u8; if extended { 24 } else { 12 }];
                 fill_random(&mut nonce)?;
-                let ct = if extended {
-                    aead_seal::<chacha20poly1305::XChaCha20Poly1305>(k, &nonce, pt, aad)?
+                let n = if extended {
+                    aead_seal::<chacha20poly1305::XChaCha20Poly1305>(k, &nonce, pt, aad, out)?
                 } else {
-                    aead_seal::<chacha20poly1305::ChaCha20Poly1305>(k, &nonce, pt, aad)?
+                    aead_seal::<chacha20poly1305::ChaCha20Poly1305>(k, &nonce, pt, aad, out)?
                 };
-                Ok((ct, aead_output(nonce)))
+                Ok((n, aead_output(nonce)))
             }
             Mode::Cbc { key_bytes } => {
                 let k = raw_key(key, key_bytes)?;
                 aad(params, false)?;
                 let mut iv = [0u8; BLOCK];
                 fill_random(&mut iv)?;
-                let ct = match key_bytes {
-                    16 => cbc_encrypt::<aes::Aes128>(k, &iv, pt),
-                    24 => cbc_encrypt::<aes::Aes192>(k, &iv, pt),
-                    _ => cbc_encrypt::<aes::Aes256>(k, &iv, pt),
+                let n = match key_bytes {
+                    16 => cbc_encrypt::<aes::Aes128>(k, &iv, pt, out),
+                    24 => cbc_encrypt::<aes::Aes192>(k, &iv, pt, out),
+                    _ => cbc_encrypt::<aes::Aes256>(k, &iv, pt, out),
                 }?;
-                Ok((ct, block_output(iv.to_vec())))
+                Ok((n, block_output(iv.to_vec())))
             }
             Mode::Ctr { key_bytes, nonce_bytes } => {
                 let k = raw_key(key, key_bytes)?;
                 aad(params, false)?;
                 let mut iv = [0u8; BLOCK];
                 fill_random(&mut iv[..nonce_bytes])?;
-                let mut buf = pt.to_vec();
-                ctr_apply(k, &iv, &mut buf)?;
-                Ok((buf, block_output(iv.to_vec())))
+                ctr_apply(k, &iv, pt, out)?;
+                Ok((pt.len(), block_output(iv.to_vec())))
             }
         }
     }
 
-    fn decrypt(
+    fn decrypt_into(
         &self,
         key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         ct: &[u8],
         output: &api::ProviderOutput,
         params: &EncryptParams,
-    ) -> Result<SecretVec, Error> {
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
         let arm = output.algorithm_output.as_ref();
         match mode(algorithm)? {
             Mode::Gcm { key_bytes } => {
                 let (k, aad) = (raw_key(key, key_bytes)?, aad(params, true)?);
                 let nonce = aead_nonce(arm)?;
                 match key_bytes {
-                    16 => aead_open::<aes_gcm::Aes128Gcm>(k, nonce, ct, aad),
-                    24 => aead_open::<aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>>(k, nonce, ct, aad),
-                    _ => aead_open::<aes_gcm::Aes256Gcm>(k, nonce, ct, aad),
+                    16 => aead_open::<aes_gcm::Aes128Gcm>(k, nonce, ct, aad, out),
+                    24 => aead_open::<aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>>(k, nonce, ct, aad, out),
+                    _ => aead_open::<aes_gcm::Aes256Gcm>(k, nonce, ct, aad, out),
                 }
             }
             Mode::ChaCha { extended } => {
                 let (k, aad) = (raw_key(key, 32)?, aad(params, true)?);
                 let nonce = aead_nonce(arm)?;
                 if extended {
-                    aead_open::<chacha20poly1305::XChaCha20Poly1305>(k, nonce, ct, aad)
+                    aead_open::<chacha20poly1305::XChaCha20Poly1305>(k, nonce, ct, aad, out)
                 } else {
-                    aead_open::<chacha20poly1305::ChaCha20Poly1305>(k, nonce, ct, aad)
+                    aead_open::<chacha20poly1305::ChaCha20Poly1305>(k, nonce, ct, aad, out)
                 }
             }
             Mode::Cbc { key_bytes } => {
@@ -221,18 +257,18 @@ impl Cipher for RustCrypto {
                 aad(params, false)?;
                 let iv = block_iv(arm)?;
                 match key_bytes {
-                    16 => cbc_decrypt::<aes::Aes128>(k, iv, ct),
-                    24 => cbc_decrypt::<aes::Aes192>(k, iv, ct),
-                    _ => cbc_decrypt::<aes::Aes256>(k, iv, ct),
+                    16 => cbc_decrypt::<aes::Aes128>(k, iv, ct, out),
+                    24 => cbc_decrypt::<aes::Aes192>(k, iv, ct, out),
+                    _ => cbc_decrypt::<aes::Aes256>(k, iv, ct, out),
                 }
             }
             Mode::Ctr { key_bytes, .. } => {
                 let k = raw_key(key, key_bytes)?;
                 aad(params, false)?;
                 let iv: &[u8; BLOCK] = block_iv(arm)?.try_into().expect("checked by block_iv");
-                let mut buf = SecretVec::from(ct.to_vec());
-                ctr_apply(k, iv, &mut buf)?;
-                Ok(buf)
+                // Unauthenticated: nothing can fail after the parameter checks.
+                ctr_apply(k, iv, ct, out)?;
+                Ok(ct.len())
             }
         }
     }
@@ -253,50 +289,62 @@ fn block_iv(arm: Option<&AlgorithmOutput>) -> Result<&[u8], Error> {
     }
 }
 
-fn cbc_encrypt<C>(key: &[u8], iv: &[u8; BLOCK], pt: &[u8]) -> Result<Vec<u8>, Error>
+fn cbc_encrypt<C>(key: &[u8], iv: &[u8; BLOCK], pt: &[u8], out: &mut [u8]) -> Result<usize, Error>
 where
     C: cipher::BlockCipherEncrypt + cipher::KeyInit + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
 {
     let e = cbc::Encryptor::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
-    let mut buf = vec![0u8; (pt.len() / BLOCK + 1) * BLOCK];
-    buf[..pt.len()].copy_from_slice(pt);
-    let n = e
-        .encrypt_padded::<cipher::block_padding::Pkcs7>(&mut buf, pt.len())
-        .map_err(|_| err(Code::Internal, "padding failed"))?
-        .len();
-    buf.truncate(n);
-    Ok(buf)
+    let n = e.encrypt_padded_b2b::<Pkcs7>(pt, out).map_err(|_| short_output())?.len();
+    Ok(n)
 }
 
 /// CBC is not authenticated: a padding error says nothing reliable about the
 /// key or the data, and is reported like any other malformed ciphertext.
-fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<SecretVec, Error>
+///
+/// The padding is checked first: the last block is decrypted on the stack
+/// (its IV is the block before it), and only a valid padding lets anything
+/// reach `out`. The timing difference reveals nothing the error does not.
+fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ct: &[u8], out: &mut [u8]) -> Result<usize, Error>
 where
     C: cipher::BlockCipherDecrypt + cipher::KeyInit + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
 {
-    let d = cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
-    let mut buf = SecretVec::from(ct.to_vec());
-    let n = d
-        .decrypt_padded::<cipher::block_padding::Pkcs7>(&mut buf)
-        .map_err(|_| err(Code::InvalidArgument, "the ciphertext does not decrypt"))?
-        .len();
-    buf.truncate(n);
-    Ok(buf)
+    let malformed = || err(Code::InvalidArgument, "the ciphertext does not decrypt");
+    let decryptor = |iv: &[u8]| {
+        cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))
+    };
+    if ct.is_empty() || !ct.len().is_multiple_of(BLOCK) {
+        return Err(malformed());
+    }
+    let (body, last) = ct.split_at(ct.len() - BLOCK);
+    let last_iv = body.last_chunk::<BLOCK>().map_or(iv, |b| b.as_slice());
+    let mut block = Zeroizing::new(cipher::Block::<C>::default());
+    decryptor(last_iv)?.decrypt_block_b2b(last.try_into().expect("one block"), &mut block);
+    let tail = Pkcs7::unpad(&block).map_err(|_| malformed())?;
+
+    let out = out.get_mut(..body.len() + tail.len()).ok_or_else(short_output)?;
+    let (out_body, out_tail) = out.split_at_mut(body.len());
+    let (blocks, rest) = InOutBuf::new(body, out_body).expect("equal lengths").into_chunks();
+    debug_assert!(rest.is_empty(), "whole blocks");
+    decryptor(iv)?.decrypt_blocks_inout(blocks);
+    out_tail.copy_from_slice(tail);
+    Ok(out.len())
 }
 
-fn ctr_apply(key: &[u8], iv: &[u8; BLOCK], buf: &mut [u8]) -> Result<(), Error> {
-    fn run<C>(key: &[u8], iv: &[u8; BLOCK], buf: &mut [u8]) -> Result<(), Error>
+/// AES-CTR from `input` into `output`, which holds at least as many bytes.
+fn ctr_apply(key: &[u8], iv: &[u8; BLOCK], input: &[u8], output: &mut [u8]) -> Result<(), Error> {
+    fn run<C>(key: &[u8], iv: &[u8; BLOCK], input: &[u8], output: &mut [u8]) -> Result<(), Error>
     where
         C: cipher::BlockCipherEncrypt + cipher::KeyInit + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
     {
         let mut c = ctr::Ctr128BE::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
-        c.apply_keystream(buf);
+        c.apply_keystream_b2b(input, output);
         Ok(())
     }
+    let output = output.get_mut(..input.len()).ok_or_else(short_output)?;
     match key.len() {
-        16 => run::<aes::Aes128>(key, iv, buf),
-        24 => run::<aes::Aes192>(key, iv, buf),
-        _ => run::<aes::Aes256>(key, iv, buf),
+        16 => run::<aes::Aes128>(key, iv, input, output),
+        24 => run::<aes::Aes192>(key, iv, input, output),
+        _ => run::<aes::Aes256>(key, iv, input, output),
     }
 }
 
@@ -401,6 +449,98 @@ mod tests {
             assert_eq!(e.code(), Code::AuthenticationFailed);
             let e = RustCrypto.decrypt(key(id).as_stored(), &alg, &ct, &out, &p).unwrap_err();
             assert_eq!(e.code(), Code::AuthenticationFailed);
+        }
+    }
+
+    const UNTOUCHED: u8 = 0xA5;
+
+    /// Decrypts into a sentinel-filled buffer one byte longer than the bound.
+    fn decrypt_into(
+        id: &str,
+        k: &GeneratedKey,
+        ct: &[u8],
+        out: &api::ProviderOutput,
+        p: &EncryptParams,
+    ) -> (Result<usize, Error>, Vec<u8>) {
+        let alg = algorithm(id);
+        let mut buf = vec![UNTOUCHED; RustCrypto.plaintext_len_bound(&alg, ct.len()).unwrap() + 1];
+        (RustCrypto.decrypt_into(k.as_stored(), &alg, ct, out, p, &mut buf), buf)
+    }
+
+    /// A failed decryption writes nothing; a successful one writes exactly
+    /// the plaintext.
+    #[test]
+    fn decrypt_into_writes_the_plaintext_or_nothing() {
+        for id in AEADS.iter().chain(&PLAIN) {
+            let (alg, k, p) = (algorithm(id), key(id), params(id));
+            for n in [1usize, 16, 33] {
+                let pt = vec![7u8; n];
+                let (ct, out) = RustCrypto.encrypt(k.as_stored(), &alg, &pt, &p).unwrap();
+                let (r, buf) = decrypt_into(id, &k, &ct, &out, &p);
+                assert_eq!(r.unwrap(), n, "{id} {n}");
+                assert_eq!(&buf[..n], &pt[..], "{id} {n}");
+                assert!(buf[n..].iter().all(|&b| b == UNTOUCHED), "{id} {n}: nothing past the plaintext");
+                if AEADS.contains(id) {
+                    let mut bad = ct.clone();
+                    bad[0] ^= 1;
+                    let (r, buf) = decrypt_into(id, &k, &bad, &out, &p);
+                    assert_eq!(r.unwrap_err().code(), Code::AuthenticationFailed, "{id}");
+                    assert!(buf.iter().all(|&b| b == UNTOUCHED), "{id}: a forgery writes nothing");
+                }
+            }
+        }
+    }
+
+    /// CBC checks the padding before the first byte is written; every
+    /// malformed padding and length is refused alike.
+    #[test]
+    fn cbc_refuses_bad_padding_before_writing() {
+        use aes::cipher::{BlockModeEncrypt as _, block_padding::NoPadding};
+        let id = "aes-128-cbc-pkcs7-128";
+        let k = key(id);
+        let iv = [3u8; BLOCK];
+        // Raw CBC of chosen last blocks: the padding is whatever we put there.
+        let raw = |blocks: &[[u8; BLOCK]]| {
+            let e = cbc::Encryptor::<aes::Aes128>::new_from_slices(&k.private, &iv).unwrap();
+            let mut buf = blocks.as_flattened().to_vec();
+            let n = buf.len();
+            e.encrypt_padded::<NoPadding>(&mut buf, n).unwrap();
+            buf
+        };
+        let out = block_output(iv.to_vec());
+        let mut last = [9u8; BLOCK];
+        for pad in [0u8, 17, 255] {
+            last[15] = pad;
+            let (r, buf) = decrypt_into(id, &k, &raw(&[[1; BLOCK], last]), &out, &EncryptParams::None);
+            assert_eq!(r.unwrap_err().code(), Code::InvalidArgument, "pad {pad}");
+            assert!(buf.iter().all(|&b| b == UNTOUCHED), "pad {pad}: nothing written");
+        }
+        // Inconsistent padding bytes: 3 3 2.
+        last[13..].copy_from_slice(&[3, 2, 3]);
+        let (r, buf) = decrypt_into(id, &k, &raw(&[last]), &out, &EncryptParams::None);
+        assert!(r.is_err() && buf.iter().all(|&b| b == UNTOUCHED));
+        // A full block of padding decrypts to the blocks before it.
+        let (r, buf) = decrypt_into(id, &k, &raw(&[[1; BLOCK], [16; BLOCK]]), &out, &EncryptParams::None);
+        assert_eq!((r.unwrap(), &buf[..BLOCK]), (BLOCK, &[1; BLOCK][..]));
+        for len in [0, 15, 17] {
+            let (r, buf) = decrypt_into(id, &k, &vec![0; len], &out, &EncryptParams::None);
+            assert_eq!(r.unwrap_err().code(), Code::InvalidArgument, "{len} bytes");
+            assert!(buf.iter().all(|&b| b == UNTOUCHED));
+        }
+    }
+
+    /// A buffer shorter than the sizing promised is refused, not overrun.
+    #[test]
+    fn a_short_output_buffer_is_refused() {
+        for id in AEADS.iter().chain(&PLAIN) {
+            let (alg, k, p) = (algorithm(id), key(id), params(id));
+            let mut small = [UNTOUCHED; 8];
+            let e = RustCrypto.encrypt_into(k.as_stored(), &alg, &[1; 20], &p, &mut small).unwrap_err();
+            assert_eq!(e.code(), Code::Internal, "{id}");
+            let (ct, out) = RustCrypto.encrypt(k.as_stored(), &alg, &[1; 20], &p).unwrap();
+            let e = RustCrypto.decrypt_into(k.as_stored(), &alg, &ct, &out, &p, &mut small).unwrap_err();
+            assert_eq!(e.code(), Code::Internal, "{id}");
+            assert_eq!(small, [UNTOUCHED; 8], "{id}");
         }
     }
 

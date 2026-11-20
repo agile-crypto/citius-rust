@@ -29,19 +29,53 @@ pub trait Cipher: Send + Sync {
     /// shape (kind and lengths) of the metadata, for sizing it.
     fn output_shape(&self, algorithm: &api::AlgorithmDetails) -> Result<api::ProviderOutput, Error>;
 
-    /// Encrypts, generating the system parameters (nonce, IV) it returns in
-    /// the output. Every successful encryption sets an output kind.
+    /// Encrypts into `ciphertext`, which holds at least `ciphertext_len`
+    /// bytes, generating the system parameters (nonce, IV) it returns in the
+    /// output. Returns the bytes written. Every successful encryption sets
+    /// an output kind.
+    fn encrypt_into(
+        &self,
+        key: StoredKey<'_>,
+        algorithm: &api::AlgorithmDetails,
+        plaintext: &[u8],
+        params: &EncryptParams,
+        ciphertext: &mut [u8],
+    ) -> Result<(usize, api::ProviderOutput), Error>;
+
+    /// Decrypts into `plaintext`, which holds at least `plaintext_len_bound`
+    /// bytes, with the system parameters the encryption returned. Returns
+    /// the bytes written.
+    ///
+    /// Every failure is decided before the first byte is written: on any
+    /// error, `plaintext` is untouched. An authentication failure is
+    /// `AuthenticationFailed`.
+    fn decrypt_into(
+        &self,
+        key: StoredKey<'_>,
+        algorithm: &api::AlgorithmDetails,
+        ciphertext: &[u8],
+        output: &api::ProviderOutput,
+        params: &EncryptParams,
+        plaintext: &mut [u8],
+    ) -> Result<usize, Error>;
+
+    /// `encrypt_into` a buffer of its own.
+    #[cfg_attr(not(test), allow(dead_code, reason = "for tests and benches; the library writes into regions"))]
     fn encrypt(
         &self,
         key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         plaintext: &[u8],
         params: &EncryptParams,
-    ) -> Result<(Vec<u8>, api::ProviderOutput), Error>;
+    ) -> Result<(Vec<u8>, api::ProviderOutput), Error> {
+        let mut ciphertext = vec![0; self.ciphertext_len(algorithm, plaintext.len())?];
+        let (n, output) = self.encrypt_into(key, algorithm, plaintext, params, &mut ciphertext)?;
+        ciphertext.truncate(n);
+        Ok((ciphertext, output))
+    }
 
-    /// Decrypts with the system parameters the encryption returned. An
-    /// authentication failure is `AuthenticationFailed`, and no plaintext
-    /// is released.
+    /// `decrypt_into` a buffer of its own, wiped when dropped.
+    #[cfg_attr(not(test), allow(dead_code, reason = "for tests and benches; the library writes into regions"))]
     fn decrypt(
         &self,
         key: StoredKey<'_>,
@@ -49,5 +83,10 @@ pub trait Cipher: Send + Sync {
         ciphertext: &[u8],
         output: &api::ProviderOutput,
         params: &EncryptParams,
-    ) -> Result<SecretVec, Error>;
+    ) -> Result<SecretVec, Error> {
+        let mut plaintext = SecretVec::from(vec![0; self.plaintext_len_bound(algorithm, ciphertext.len())?]);
+        let n = self.decrypt_into(key, algorithm, ciphertext, output, params, &mut plaintext)?;
+        plaintext.truncate(n);
+        Ok(plaintext)
+    }
 }

@@ -37,6 +37,7 @@ pub struct EncryptRequest<'a> {
 
 /// What an operation produces besides its artifact: the metadata to store
 /// with it and hand back to the consuming operation.
+#[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API writes into its regions (*_admitting)"))]
 pub struct Encrypted {
     pub ciphertext: Vec<u8>,
     pub metadata: api::OperationMetadata,
@@ -52,8 +53,16 @@ pub struct DecryptRequest<'a> {
     pub user_context: BTreeMap<String, String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API writes into its regions (*_admitting)"))]
 pub struct Decrypted {
     pub plaintext: SecretVec,
+    pub metadata: api::OperationMetadata,
+}
+
+/// What an operation wrote into the caller's region (`*_admitting`): its
+/// length, and the metadata to return with it.
+pub struct Written {
+    pub len: usize,
     pub metadata: api::OperationMetadata,
 }
 
@@ -207,28 +216,33 @@ impl CryptoOrchestrator {
     #[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API sizes first (*_admitting)"))]
     pub fn encrypt(&self, req: EncryptRequest) -> Result<Encrypted, Error> {
         let r = self.resolve_encrypt(&req)?;
-        Self::encrypt_resolved(&r, req)
+        let mut ciphertext = vec![0; r.cipher()?.ciphertext_len(r.algorithm(), req.plaintext.len())?];
+        let w = Self::encrypt_resolved(&r, req, &mut ciphertext)?;
+        ciphertext.truncate(w.len);
+        Ok(Encrypted { ciphertext, metadata: w.metadata })
     }
 
-    /// `encrypt` for a caller that must see the sizes first (the C API's
-    /// size query). `admit` gets them after every check, before the key is
-    /// touched or randomness drawn, and its error ends the call. Sizes and
-    /// ciphertext come from one lookup of the key, so a concurrent change
-    /// to it cannot make the result larger than what was admitted.
-    pub fn encrypt_admitting<E: From<Error>>(
+    /// `encrypt` into the caller's memory, for a caller that must see the
+    /// sizes first (the C API's size query). `admit` gets them after every
+    /// check, before the key is touched or randomness drawn, and returns the
+    /// region the ciphertext goes to (at least `sizes.artifact` bytes); its
+    /// error ends the call. Sizes and ciphertext come from one lookup of the
+    /// key, so a concurrent change to it cannot make the result larger than
+    /// what was admitted.
+    pub fn encrypt_admitting<'b, E: From<Error>>(
         &self,
         req: EncryptRequest,
         enc: MetadataEncoding,
-        admit: impl FnOnce(Sizes) -> Result<(), E>,
-    ) -> Result<Encrypted, E> {
+        admit: impl FnOnce(Sizes) -> Result<&'b mut [u8], E>,
+    ) -> Result<Written, E> {
         let r = self.resolve_encrypt(&req)?;
         let cipher = r.cipher()?;
         let shape = Self::metadata(r.version().number(), cipher.output_shape(r.algorithm())?, req.user_context.clone());
-        admit(Sizes {
+        let out = admit(Sizes {
             artifact: cipher.ciphertext_len(r.algorithm(), req.plaintext.len())?,
             metadata: metadata::encode(&shape, enc)?.len(),
         })?;
-        Ok(Self::encrypt_resolved(&r, req)?)
+        Ok(Self::encrypt_resolved(&r, req, out)?)
     }
 
     /// The encoded length of metadata that carries no provider output
@@ -249,10 +263,10 @@ impl CryptoOrchestrator {
         Ok(r)
     }
 
-    fn encrypt_resolved(r: &Resolved<'_>, req: EncryptRequest) -> Result<Encrypted, Error> {
-        let (ciphertext, output) = r.cipher()?.encrypt(r.material()?, r.algorithm(), req.plaintext, &req.params)?;
+    fn encrypt_resolved(r: &Resolved<'_>, req: EncryptRequest, out: &mut [u8]) -> Result<Written, Error> {
+        let (len, output) = r.cipher()?.encrypt_into(r.material()?, r.algorithm(), req.plaintext, &req.params, out)?;
         require_output(&output)?;
-        Ok(Encrypted { ciphertext, metadata: Self::metadata(r.version().number(), output, req.user_context) })
+        Ok(Written { len, metadata: Self::metadata(r.version().number(), output, req.user_context) })
     }
 
     fn resolve_decrypt(&self, req: &DecryptRequest) -> Result<Resolved<'_>, Error> {
@@ -310,35 +324,42 @@ impl CryptoOrchestrator {
     #[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API sizes first (*_admitting)"))]
     pub fn decrypt(&self, req: DecryptRequest) -> Result<Decrypted, Error> {
         let r = self.resolve_decrypt(&req)?;
-        Self::decrypt_resolved(&r, req)
+        let bound = r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?;
+        let mut plaintext = SecretVec::from(vec![0; bound]);
+        let w = Self::decrypt_resolved(&r, req, &mut plaintext)?;
+        plaintext.truncate(w.len);
+        Ok(Decrypted { plaintext, metadata: w.metadata })
     }
 
-    /// `decrypt` for a caller that must see the sizes first, as
-    /// `encrypt_admitting`. The plaintext size is a bound; the metadata's is
-    /// measured in `enc`, or 0 when the caller does not want it back.
-    pub fn decrypt_admitting<E: From<Error>>(
+    /// `decrypt` into the caller's memory, for a caller that must see the
+    /// sizes first, as `encrypt_admitting`. The plaintext size is a bound;
+    /// the metadata's is measured in `enc`, or 0 when the caller does not
+    /// want it back. On any failure the region `admit` returned is
+    /// untouched: the provider decides every failure before it writes.
+    pub fn decrypt_admitting<'b, E: From<Error>>(
         &self,
         req: DecryptRequest,
         enc: Option<MetadataEncoding>,
-        admit: impl FnOnce(Sizes) -> Result<(), E>,
-    ) -> Result<Decrypted, E> {
+        admit: impl FnOnce(Sizes) -> Result<&'b mut [u8], E>,
+    ) -> Result<Written, E> {
         let r = self.resolve_decrypt(&req)?;
         let metadata = match enc {
             Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
             None => 0,
         };
-        admit(Sizes { artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?, metadata })?;
-        Ok(Self::decrypt_resolved(&r, req)?)
+        let out =
+            admit(Sizes { artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?, metadata })?;
+        Ok(Self::decrypt_resolved(&r, req, out)?)
     }
 
-    fn decrypt_resolved(r: &Resolved, req: DecryptRequest) -> Result<Decrypted, Error> {
+    fn decrypt_resolved(r: &Resolved, req: DecryptRequest, out: &mut [u8]) -> Result<Written, Error> {
         let output = req
             .metadata
             .provider_output
             .as_ref()
             .ok_or_else(|| Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata has no provider output"))?;
-        let plaintext = r.cipher()?.decrypt(r.material()?, r.algorithm(), req.ciphertext, output, &req.params)?;
-        Ok(Decrypted { plaintext, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
+        let len = r.cipher()?.decrypt_into(r.material()?, r.algorithm(), req.ciphertext, output, &req.params, out)?;
+        Ok(Written { len, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
     }
 }
 
@@ -437,14 +458,15 @@ pub(super) mod tests {
         create(&w, "k", AEAD);
         let mut req = encrypt("k", b"hello", aead());
         req.user_context.insert("tenant".into(), "acme".into());
-        let mut sizes = None;
-        let e = w
+        let (mut sizes, mut buf) = (None, [0u8; 64]);
+        let written = w
             .crypto
             .encrypt_admitting(req, MetadataEncoding::WireV1, |z| {
                 sizes = Some(z);
-                Ok::<(), Error>(())
+                Ok::<_, Error>(&mut buf[..])
             })
             .unwrap();
+        let e = Encrypted { ciphertext: buf[..written.len].to_vec(), metadata: written.metadata };
         let sizes = sizes.expect("admit saw the sizes");
         assert_eq!(sizes.artifact, e.ciphertext.len());
         assert_eq!(sizes.metadata, metadata::encode(&e.metadata, MetadataEncoding::WireV1).unwrap().len(), "exact");
@@ -573,10 +595,14 @@ pub(super) mod tests {
             w.policy.clone(),
         );
         let lookups = || counting.lookups.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let admit = |_| Ok::<(), Error>(());
-        let e = crypto.encrypt_admitting(encrypt("k", b"x", aead()), MetadataEncoding::Protobuf, admit).unwrap();
+        let mut buf = [0u8; 64];
+        let w = crypto
+            .encrypt_admitting(encrypt("k", b"x", aead()), MetadataEncoding::Protobuf, |_| Ok::<_, Error>(&mut buf[..]))
+            .unwrap();
         assert_eq!(lookups(), 1, "encrypt");
-        crypto.decrypt_admitting(decrypt("k", &e, aead()), Some(MetadataEncoding::Protobuf), admit).unwrap();
+        let e = Encrypted { ciphertext: buf[..w.len].to_vec(), metadata: w.metadata };
+        let (mut out, md) = ([0u8; 64], Some(MetadataEncoding::Protobuf));
+        crypto.decrypt_admitting(decrypt("k", &e, aead()), md, |_| Ok::<_, Error>(&mut out[..])).unwrap();
         assert_eq!(lookups(), 1, "decrypt");
     }
 }
