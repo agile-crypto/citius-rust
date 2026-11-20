@@ -9,13 +9,16 @@
 //! - ML-DSA-44/65/87 (FIPS 204): hedged unless the template asks for the
 //!   deterministic variant (as Go), with an optional context.
 
+use ed25519_dalek::hazmat::{ExpandedSecretKey, raw_sign, raw_sign_prehashed};
+use elliptic_curve::{CurveArithmetic, NonZeroScalar, pkcs8::AssociatedOid};
 use ml_dsa::signature::SignatureEncoding;
 use sha2::Digest;
+use zeroize::Zeroizing;
 
 use super::RustCrypto;
 use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
 use crate::domain::core::{Code, Error, hash_output_len};
-use crate::domain::provider::{Encoding, SignContext, Signer, StoredKey};
+use crate::domain::provider::{Cached, Encoding, SignContext, Signer, StoredKey};
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
 
 const OP: &str = "RustCrypto::sign";
@@ -218,26 +221,48 @@ fn randomness_failed() -> Error {
     Error::new(Code::InsufficientEntropy, OP, "signing failed: the OS random generator failed")
 }
 
-/// Hedged ECDSA over a digest, DER-encoded.
+/// The private scalar of a SEC1 `ECPrivateKey`. Unlike
+/// `SecretKey::from_sec1_der` it does not check the embedded public key
+/// against the scalar: that is a scalar multiplication per call, and signing
+/// never reads the public key. Wiped when dropped.
+fn ec_scalar<C>(key: StoredKey<'_>) -> Result<Zeroizing<NonZeroScalar<C>>, Error>
+where
+    C: CurveArithmetic + AssociatedOid,
+{
+    key.check_encoding(Encoding::Sec1Der)?;
+    let sec1 = sec1::EcPrivateKey::try_from(key.private).map_err(|_| bad_key("ECDSA private key"))?;
+    if sec1.parameters.is_some_and(|p| p.named_curve() != Some(C::OID)) {
+        return Err(bad_key("ECDSA private key (another curve)"));
+    }
+    let secret =
+        elliptic_curve::SecretKey::<C>::from_slice(sec1.private_key).map_err(|_| bad_key("ECDSA private key"))?;
+    Ok(Zeroizing::new(secret.to_nonzero_scalar()))
+}
+
+/// Hedged ECDSA over a digest, DER-encoded: RFC 6979 nonces mixed with the
+/// randomness `fill` gives. This is what `SigningKey::sign_prehash_with_rng`
+/// does, minus deriving the public key it never uses for signing.
 macro_rules! ecdsa_sign {
-    ($curve:ident, $key:expr, $prehash:expr) => {{
-        use $curve::ecdsa::signature::hazmat::RandomizedPrehashSigner;
-        $key.check_encoding(Encoding::Sec1Der)?;
-        let secret = $curve::SecretKey::from_sec1_der($key.private).map_err(|_| bad_key("ECDSA private key"))?;
-        let signing = $curve::ecdsa::SigningKey::from(&secret);
-        // The digest length is checked before; what remains is the RNG.
-        let sig: $curve::ecdsa::DerSignature =
-            signing.sign_prehash_with_rng(&mut getrandom::SysRng, $prehash).map_err(|_| randomness_failed())?;
-        sig.to_vec()
+    ($curve:ident :: $c:ident, $key:expr, $prehash:expr, $fill:expr) => {{
+        type C = $curve::$c;
+        let d = ec_scalar::<C>($key)?;
+        let mut ad = elliptic_curve::FieldBytes::<C>::default();
+        $fill(&mut ad)?;
+        let (sig, _) =
+            ecdsa::hazmat::sign_prehashed_rfc6979::<C, <C as ecdsa::DigestAlgorithm>::Digest>(&d, $prehash, &ad);
+        $curve::ecdsa::DerSignature::from(sig).to_vec()
     }};
 }
 
+/// The public key, decoded once per version.
 macro_rules! ecdsa_verify {
     ($curve:ident, $key:expr, $prehash:expr, $sig:expr) => {{
         use $curve::ecdsa::signature::hazmat::PrehashVerifier;
         use $curve::pkcs8::DecodePublicKey;
-        let vk = $curve::ecdsa::VerifyingKey::from_public_key_der(public($key, Encoding::SpkiDer)?)
-            .map_err(|_| bad_key("ECDSA public key"))?;
+        let vk = $key.public_value(|| {
+            $curve::ecdsa::VerifyingKey::from_public_key_der(public($key, Encoding::SpkiDer)?)
+                .map_err(|_| bad_key("ECDSA public key"))
+        })?;
         match $curve::ecdsa::DerSignature::from_bytes($sig) {
             Ok(sig) => vk.verify_prehash($prehash, &sig).is_ok(),
             Err(_) => false,
@@ -246,10 +271,19 @@ macro_rules! ecdsa_verify {
 }
 
 fn ecdsa_sign(curve: Curve, key: StoredKey<'_>, prehash: &[u8]) -> Result<Vec<u8>, Error> {
+    ecdsa_sign_with(curve, key, prehash, |ad| getrandom::fill(ad).map_err(|_| randomness_failed()))
+}
+
+fn ecdsa_sign_with(
+    curve: Curve,
+    key: StoredKey<'_>,
+    prehash: &[u8],
+    fill: impl FnOnce(&mut [u8]) -> Result<(), Error>,
+) -> Result<Vec<u8>, Error> {
     Ok(match curve {
-        Curve::P256 => ecdsa_sign!(p256, key, prehash),
-        Curve::P384 => ecdsa_sign!(p384, key, prehash),
-        Curve::P521 => ecdsa_sign!(p521, key, prehash),
+        Curve::P256 => ecdsa_sign!(p256::NistP256, key, prehash, fill),
+        Curve::P384 => ecdsa_sign!(p384::NistP384, key, prehash, fill),
+        Curve::P521 => ecdsa_sign!(p521::NistP521, key, prehash, fill),
     })
 }
 
@@ -292,16 +326,36 @@ impl sha2::digest::FixedOutput for Sha512Digest {
     }
 }
 
-fn ed25519_signing(key: StoredKey<'_>) -> Result<ed25519_dalek::SigningKey, Error> {
+/// The expanded secret (scalar and nonce prefix), from the PKCS#8 seed: one
+/// SHA-512, no curve arithmetic. Wiped when dropped.
+fn ed25519_secret(key: StoredKey<'_>) -> Result<ExpandedSecretKey, Error> {
     use ed25519_dalek::pkcs8::DecodePrivateKey;
     key.check_encoding(Encoding::Pkcs8Der)?;
-    ed25519_dalek::SigningKey::from_pkcs8_der(key.private).map_err(|_| bad_key("Ed25519 private key"))
+    let pair =
+        ed25519_dalek::pkcs8::KeypairBytes::from_pkcs8_der(key.private).map_err(|_| bad_key("Ed25519 private key"))?;
+    Ok(ExpandedSecretKey::from(&pair.secret_key))
 }
 
-fn ed25519_verifying(key: StoredKey<'_>) -> Result<ed25519_dalek::VerifyingKey, Error> {
+/// The public key, derived from the secret once per version. Signing must
+/// use the key that belongs to the secret: a signature made with another
+/// public key leaks the secret (the double-public-key oracle), so it is
+/// never taken from the stored copy. The stored copy, which verification
+/// would otherwise use, must match it.
+fn ed25519_public<'a>(key: StoredKey<'a>) -> Result<Cached<'a, ed25519_dalek::VerifyingKey>, Error> {
     use ed25519_dalek::pkcs8::DecodePublicKey;
-    ed25519_dalek::VerifyingKey::from_public_key_der(public(key, Encoding::SpkiDer)?)
-        .map_err(|_| bad_key("Ed25519 public key"))
+    key.public_value(|| {
+        let vk = ed25519_dalek::VerifyingKey::from(&ed25519_secret(key)?);
+        if let Some((spki, Encoding::SpkiDer)) = key.public
+            && ed25519_dalek::VerifyingKey::from_public_key_der(spki).ok() != Some(vk)
+        {
+            return Err(Error::new(
+                Code::InvalidKeyMaterial,
+                OP,
+                "the stored Ed25519 public key is not the private key's",
+            ));
+        }
+        Ok(vk)
+    })
 }
 
 fn ed25519_digest(digest: &[u8]) -> Sha512Digest {
@@ -373,8 +427,8 @@ impl RustCrypto {
         match s {
             Scheme::Ecdsa { curve, hash: Some(h) } => ecdsa_sign(curve, key, &sha(h, message)),
             Scheme::Ed25519 { prehashed: false } => {
-                use ed25519_dalek::Signer as _;
-                Ok(ed25519_signing(key)?.sign(message).to_bytes().to_vec())
+                let vk = ed25519_public(key)?;
+                Ok(raw_sign::<sha2::Sha512>(&ed25519_secret(key)?, message, &vk).to_bytes().to_vec())
             }
             Scheme::MlDsa { level, deterministic: d } => {
                 let ctx = ctx.unwrap_or_default();
@@ -399,7 +453,7 @@ impl RustCrypto {
         match s {
             Scheme::Ecdsa { curve, hash: Some(h) } => ecdsa_verify(curve, key, &sha(h, message), sig),
             Scheme::Ed25519 { prehashed: false } => {
-                let vk = ed25519_verifying(key)?;
+                let vk = ed25519_public(key)?;
                 Ok(ed25519_dalek::Signature::from_slice(sig).is_ok_and(|sig| vk.verify_strict(message, &sig).is_ok()))
             }
             Scheme::MlDsa { level, .. } => {
@@ -482,11 +536,13 @@ impl Signer for RustCrypto {
         let ctx = context(s, c)?;
         let sig = match s {
             Scheme::Ecdsa { curve, .. } => on_stack(s, MlDsaOp::Sign, || ecdsa_sign(curve, key, digest))?,
-            Scheme::Ed25519 { .. } => ed25519_signing(key)?
-                .sign_prehashed(ed25519_digest(digest), ctx)
-                .map_err(|_| Error::new(Code::Internal, OP, "Ed25519ph signing failed"))?
-                .to_bytes()
-                .to_vec(),
+            Scheme::Ed25519 { .. } => {
+                let vk = ed25519_public(key)?;
+                raw_sign_prehashed::<sha2::Sha512, _>(&ed25519_secret(key)?, ed25519_digest(digest), &vk, ctx)
+                    .map_err(|_| Error::new(Code::Internal, OP, "Ed25519ph signing failed"))?
+                    .to_bytes()
+                    .to_vec()
+            }
             Scheme::MlDsa { .. } => unreachable!("check_digest refuses ML-DSA"),
         };
         Ok((sig, self.output_shape(algorithm)?))
@@ -507,7 +563,7 @@ impl Signer for RustCrypto {
         match s {
             Scheme::Ecdsa { curve, .. } => on_stack(s, MlDsaOp::Verify, || ecdsa_verify(curve, key, digest, signature)),
             Scheme::Ed25519 { .. } => {
-                let vk = ed25519_verifying(key)?;
+                let vk = ed25519_public(key)?;
                 Ok(ed25519_dalek::Signature::from_slice(signature)
                     .is_ok_and(|sig| vk.verify_prehashed_strict(ed25519_digest(digest), ctx, &sig).is_ok()))
             }
@@ -701,6 +757,128 @@ mod tests {
         assert_eq!(check_entry(pre, false).unwrap_err().code(), Code::KeyOperationNotAllowed);
         let ml = scheme(&algorithm("ml-dsa-44")).unwrap();
         assert_eq!(check_entry(ml, true).unwrap_err().code(), Code::KeyOperationNotAllowed);
+    }
+
+    /// The randomness `ecdsa_sign` mixes in, fixed for a test.
+    struct Fixed(Vec<u8>);
+
+    impl p256::ecdsa::signature::rand_core::TryRng for Fixed {
+        type Error = std::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            unreachable!("ECDSA draws bytes")
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            unreachable!("ECDSA draws bytes")
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            dst.copy_from_slice(&self.0[..dst.len()]);
+            Ok(())
+        }
+    }
+
+    impl p256::ecdsa::signature::rand_core::TryCryptoRng for Fixed {}
+
+    /// Signing from the scalar gives the very signature the full signing
+    /// key gave (the same RFC 6979 nonce from the same randomness), and it
+    /// verifies under the stored public key.
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn ecdsa_from_the_scalar_is_byte_identical() {
+        use p256::ecdsa::signature::hazmat::RandomizedPrehashSigner;
+        macro_rules! old {
+            ($curve:ident, $k:expr, $z:expr, $ad:expr) => {{
+                let secret = $curve::SecretKey::from_sec1_der(&$k.private).unwrap();
+                let sig: $curve::ecdsa::DerSignature =
+                    $curve::ecdsa::SigningKey::from(&secret).sign_prehash_with_rng(&mut Fixed($ad), $z).unwrap();
+                sig.to_vec()
+            }};
+        }
+        let ad = (0..66u8).collect::<Vec<_>>();
+        for (id, curve) in [
+            ("ecdsa-p256-prehashed-der", Curve::P256),
+            ("ecdsa-p384-prehashed-der", Curve::P384),
+            ("ecdsa-p521-prehashed-der", Curve::P521),
+        ] {
+            let (k, a) = key(id);
+            let z = sha(HashAlgorithm::Sha512, b"message");
+            let new = ecdsa_sign_with(curve, k.as_stored(), &z, |out| {
+                out.copy_from_slice(&ad[..out.len()]);
+                Ok(())
+            })
+            .unwrap();
+            let want = match curve {
+                Curve::P256 => old!(p256, k, &z, ad.clone()),
+                Curve::P384 => old!(p384, k, &z, ad.clone()),
+                Curve::P521 => old!(p521, k, &z, ad.clone()),
+            };
+            assert_eq!(new, want, "{id}");
+            let ok = RustCrypto.verify_digest(k.as_stored(), &a, &z, HashAlgorithm::Sha512, &new, &SignContext::None);
+            assert!(ok.unwrap(), "{id}");
+        }
+    }
+
+    /// The hazmat path gives the signatures the full signing key gave, pure
+    /// and prehashed (Ed25519 is deterministic).
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn ed25519_from_the_expanded_secret_is_byte_identical() {
+        use ed25519_dalek::Signer as _;
+        use ed25519_dalek::pkcs8::DecodePrivateKey;
+        for id in ["ed25519", "ed25519ph"] {
+            let (k, a) = key(id);
+            let full = ed25519_dalek::SigningKey::from_pkcs8_der(&k.private).unwrap();
+            let (sig, want) = if id == "ed25519" {
+                (RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap().0, full.sign(b"m"))
+            } else {
+                let digest = sha(HashAlgorithm::Sha512, b"m");
+                let ctx = SignContext::Domain(b"c".to_vec());
+                let sig = RustCrypto.sign_digest(k.as_stored(), &a, &digest, HashAlgorithm::Sha512, &ctx).unwrap().0;
+                (sig, full.sign_prehashed(ed25519_digest(&digest), Some(b"c")).unwrap())
+            };
+            assert_eq!(sig, want.to_bytes(), "{id}");
+        }
+    }
+
+    /// A stored public key that is not the private key's is refused for
+    /// signing and verifying: signing with a wrong public key would leak the
+    /// secret.
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn ed25519_refuses_a_public_key_that_is_not_the_secrets() {
+        let (mut k, a) = key("ed25519");
+        let (other, _) = key("ed25519");
+        k.public = other.public;
+        let sign = RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap_err();
+        assert_eq!(sign.code(), Code::InvalidKeyMaterial);
+        let verify = RustCrypto.verify(k.as_stored(), &a, b"m", &[0; 64], &SignContext::None).unwrap_err();
+        assert_eq!(verify.code(), Code::InvalidKeyMaterial);
+    }
+
+    /// With a key version, the public key is derived once and kept on the
+    /// version; signing and verifying keep working from it.
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn a_versions_public_key_is_derived_once() {
+        use crate::domain::core::{Scope, ScopeSpecification};
+        use crate::domain::key::{Locking, Origin, Provenance, Version};
+        for id in ["ed25519", "ecdsa-p256-sha256-der"] {
+            let (k, a) = key(id);
+            let v = Version::new(
+                1,
+                id.into(),
+                "rustcrypto".into(),
+                ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
+                k.to_bytes(),
+                Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
+                std::time::SystemTime::UNIX_EPOCH,
+                Locking::BestEffort,
+            )
+            .unwrap();
+            let stored = StoredKey::parse(v.material()).unwrap().with_cache(v.cache());
+            let (sig, _) = RustCrypto.sign(stored, &a, b"m", &SignContext::None).unwrap();
+            assert!(RustCrypto.verify(stored, &a, b"m", &sig, &SignContext::None).unwrap(), "{id}");
+            assert!(format!("{:?}", v.cache()).contains("filled: true"), "{id}");
+        }
     }
 
     fn hex(s: &str) -> Vec<u8> {

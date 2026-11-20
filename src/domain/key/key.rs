@@ -1,9 +1,10 @@
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Code, Error, ScopeKind, ScopeSpecification, new_id};
+use crate::domain::core::{Code, Error, PublicCache, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::KeyLifecycleState as State;
 pub use crate::secret::Locking;
 use crate::secret::{AllocError, SecretBytes};
@@ -60,6 +61,8 @@ pub struct Version {
     scope_spec: ScopeSpecification,
     /// Locked, and shared by every clone of the version (and so of the key).
     material: SecretBytes,
+    /// What the provider derived from the material, once (public values only).
+    cache: Arc<PublicCache>,
     provenance: Provenance,
     created_at: SystemTime,
 }
@@ -95,7 +98,8 @@ impl Version {
     ) -> Result<Self, Error> {
         let material =
             SecretBytes::new_with(&material, locking).map_err(|e| secret_error("Version::new", "the key material", e))?;
-        Ok(Version { number, template_id, provider, scope_spec, material, provenance, created_at })
+        let cache = Arc::default();
+        Ok(Version { number, template_id, provider, scope_spec, material, cache, provenance, created_at })
     }
 
     pub fn number(&self) -> u32 {
@@ -116,6 +120,10 @@ impl Version {
 
     pub fn material(&self) -> &[u8] {
         &self.material
+    }
+
+    pub fn cache(&self) -> &PublicCache {
+        &self.cache
     }
 
     pub fn provenance(&self) -> &Provenance {

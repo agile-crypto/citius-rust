@@ -5,6 +5,7 @@ mod hash;
 mod id;
 mod operation;
 mod provider_requirements;
+mod public_cache;
 mod scope;
 mod spec;
 
@@ -13,5 +14,6 @@ pub use hash::*;
 pub use id::*;
 pub use operation::*;
 pub use provider_requirements::*;
+pub use public_cache::PublicCache;
 pub use scope::*;
 pub use spec::*;
