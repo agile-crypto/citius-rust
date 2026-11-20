@@ -10,6 +10,17 @@ Goal: tell clients who care about performance, or who have real-time constraints
 `agc_*` (citius-c-api) through citius-rust costs them, compared with calling RustCrypto directly.
 The costs covered are time, memory, allocations and predictability.
 
+Figures for presenting these results are in `docs/perf-figures/`, made by
+`benches/plots/make_figures.py` (matplotlib) from this document's tables:
+1. signing time breakdown (F1);
+2. AES-GCM time added over RustCrypto by size (F2/F3);
+3. stack needed against default thread stacks (F12);
+4. thread scaling (F7);
+5. the ML-DSA-65 latency tail (F10);
+6. where a 32-byte encrypt spends its time (F3/F7);
+7. verification relative to RustCrypto (§2.5);
+8. binary size (F11).
+
 ## 1. Setup
 
 - Machine: Apple M4 Pro, 12 cores, macOS (Darwin 25.5), rustc 1.98.1, release profile.
@@ -603,8 +614,9 @@ discussion.
 - Status: **confirmed inherent**.
   - RustCrypto alone has the same spread. FIPS 204 signing is a rejection-sampling loop whose
     number of iterations is random, and a single iteration costs ~60–120 µs (the min column).
-  - Our layers add a roughly constant ~150 µs to every percentile (the key parse, F1). They do not
-    widen the tail; p99/p50 looks smaller only because the median grows.
+  - Our layers add ~160 µs at p50 and p90 (the key parse, F1), less further out (+73 µs at p99,
+    +15 µs at p99.9, within the noise of the slowest calls). They do not widen the tail; p99/p50
+    looks smaller only because the median grows.
 - Deterministic signing does **not** remove the tail. The iteration count is a function of
   (key, message):
   - one fixed message on one key always takes the same time, which is the tight 1.06 row;
@@ -615,7 +627,7 @@ discussion.
   - budget ML-DSA signing by its p99.9: about 2 ms for ML-DSA-65 and -87, and 1.1–1.3 ms for -44,
     on this machine;
   - the mean is 1.3× and the p99.9 6–8× the median;
-  - fixing F1 lowers every percentile by the constant (~90/150/240 µs for -44/-65/-87), not the
+  - fixing F1 lowers the median by ~90/150/240 µs (-44/-65/-87) and the far tail by less, not the
     shape;
   - there is no fix on our side. Only a different algorithm (e.g. Ed25519, or SLH-DSA, which has
     no rejection loop but is far slower) changes the shape.
