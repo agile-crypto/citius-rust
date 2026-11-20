@@ -64,13 +64,7 @@ impl WrappingKey {
         if bytes.len() != 32 {
             return Err(invalid(format!("the wrapping key must be 32 bytes, not {}", bytes.len())));
         }
-        let key = SecretBytes::new_with(&bytes, locking).map_err(|_| {
-            Error::new(
-                Code::ResourceExhausted,
-                OP,
-                "the wrapping key cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required",
-            )
-        })?;
+        let key = SecretBytes::new_with(&bytes, locking).map_err(|e| secret_error(OP, "the wrapping key", e))?;
         Ok(WrappingKey(key))
     }
 

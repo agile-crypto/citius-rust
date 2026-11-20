@@ -64,6 +64,21 @@ pub struct Version {
     created_at: SystemTime,
 }
 
+/// The error for a secret (`what`) that could not be held as asked.
+pub fn secret_error(op: &'static str, what: &str, e: AllocError) -> Error {
+    let message = match e {
+        AllocError::NoMemory => format!("no memory is left for {what}"),
+        AllocError::NotLocked => {
+            format!("{what} cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required")
+        }
+        AllocError::InheritedByChildren => format!(
+            "{what} cannot be kept out of forked children (MADV_WIPEONFORK needs Linux 4.14), \
+             and locked memory is required"
+        ),
+    };
+    Error::new(Code::ResourceExhausted, op, message)
+}
+
 impl Version {
     /// `locking` says how the material is held (`require_locked_memory`);
     /// with `Locking::Required` this fails rather than keep it swappable.
@@ -78,16 +93,8 @@ impl Version {
         created_at: SystemTime,
         locking: Locking,
     ) -> Result<Self, Error> {
-        let material = SecretBytes::new_with(&material, locking).map_err(|e| match e {
-            AllocError::NotLocked => Error::new(
-                Code::ResourceExhausted,
-                "Version::new",
-                "the key material cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required",
-            ),
-            AllocError::NoMemory => {
-                Error::new(Code::ResourceExhausted, "Version::new", "no memory is left for the key material")
-            }
-        })?;
+        let material =
+            SecretBytes::new_with(&material, locking).map_err(|e| secret_error("Version::new", "the key material", e))?;
         Ok(Version { number, template_id, provider, scope_spec, material, provenance, created_at })
     }
 

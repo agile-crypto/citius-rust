@@ -56,6 +56,67 @@ pub enum AllocError {
     /// The memory could not be locked in RAM (`RLIMIT_MEMLOCK` used up) and
     /// `Locking::Required` was asked for.
     NotLocked,
+    /// The memory could not be kept out of forked children (a Linux kernel
+    /// before 4.14, without MADV_WIPEONFORK) and `Locking::Required` was
+    /// asked for: a child would hold an unlocked copy of the secret.
+    InheritedByChildren,
+}
+
+/// What a forked child gets of a `SecretBytes` allocation. Locks are not
+/// inherited across fork(2), so a copied page would hold the secret
+/// unlocked, and a forked child never needs the library's secrets: an
+/// inherited context is poisoned, and `agc_ctx_reinit_after_fork` opens a
+/// fresh one from the configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inheritance {
+    /// The child sees the pages zeroed (Linux MADV_WIPEONFORK).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Wiped,
+    /// The child has no mapping there at all (macOS VM_INHERIT_NONE).
+    Absent,
+    /// The child gets an ordinary copy (the system offers neither).
+    Copied,
+}
+
+/// The mapping's total size for an allocation of `n` bytes.
+fn total_for(n: usize) -> Option<usize> {
+    n.checked_add(HEADER).and_then(|t| t.checked_next_multiple_of(page_size()))
+}
+
+/// Keeps `[base, base + total)`, a mapping from `map`, out of forked children.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn keep_out_of_children(base: *mut u8, total: usize) -> Inheritance {
+    // SAFETY: the range is a whole mapping from `map`.
+    match unsafe { libc::madvise(base.cast(), total, libc::MADV_WIPEONFORK) } {
+        0 => Inheritance::Wiped,
+        _ => Inheritance::Copied,
+    }
+}
+
+#[cfg(all(target_os = "macos", not(miri)))]
+fn keep_out_of_children(base: *mut u8, total: usize) -> Inheritance {
+    // <sys/mman.h>; the libc crate does not bind it. VM_INHERIT_NONE is 2
+    // (<mach/vm_inherit.h>).
+    unsafe extern "C" {
+        fn minherit(addr: *mut libc::c_void, len: libc::size_t, inherit: libc::c_int) -> libc::c_int;
+    }
+    const VM_INHERIT_NONE: libc::c_int = 2;
+    // SAFETY: the range is a whole mapping from `map`.
+    match unsafe { minherit(base.cast(), total, VM_INHERIT_NONE) } {
+        0 => Inheritance::Absent,
+        _ => Inheritance::Copied,
+    }
+}
+
+#[cfg(all(not(miri), not(any(target_os = "linux", target_os = "macos"))))]
+fn keep_out_of_children(_base: *mut u8, _total: usize) -> Inheritance {
+    Inheritance::Copied
+}
+
+/// Miri cannot fork: no child will ever see the allocation.
+#[cfg(miri)]
+fn keep_out_of_children(_base: *mut u8, _total: usize) -> Inheritance {
+    Inheritance::Absent
 }
 
 /// `n` bytes of zeroed memory, locked best effort; NULL if `n` is 0 or no
@@ -70,7 +131,7 @@ pub fn alloc_with(n: usize, locking: Locking) -> Result<*mut u8, AllocError> {
         return Ok(ptr::null_mut());
     }
     let page = page_size();
-    let Some(total) = n.checked_add(HEADER).and_then(|t| t.checked_next_multiple_of(page)) else {
+    let Some(total) = total_for(n) else {
         return Err(AllocError::NoMemory);
     };
     let (base, locked) = map(total, page);
@@ -167,9 +228,10 @@ unsafe fn unmap(base: *mut u8, total: usize, page: usize) {
 }
 
 /// Bytes that must stay secret, such as a key version's material: one
-/// allocation from `alloc` (its own pages, locked in RAM and kept out of core
-/// dumps where the platform allows), zeroed and released when the last clone
-/// is dropped. Cloning shares the allocation; it never copies the secret.
+/// allocation from `alloc` (its own pages, locked in RAM, kept out of core
+/// dumps and out of forked children where the platform allows), zeroed and
+/// released when the last clone is dropped. Cloning shares the allocation;
+/// it never copies the secret.
 #[derive(Clone)]
 pub struct SecretBytes(Arc<Region>);
 
@@ -177,6 +239,10 @@ pub struct SecretBytes(Arc<Region>);
 struct Region {
     ptr: *mut u8,
     len: usize,
+    /// The process that allocated it; another pid is a forked child.
+    pid: u32,
+    /// What a forked child holds of it.
+    inherited: Inheritance,
 }
 
 // SAFETY: a Region owns its allocation alone and nothing writes to it after
@@ -190,14 +256,24 @@ impl SecretBytes {
     /// A copy of `bytes`, locked as `locking` asks. With `Required` it fails
     /// rather than keep the secret in swappable memory.
     pub fn new_with(bytes: &[u8], locking: Locking) -> Result<SecretBytes, AllocError> {
+        let pid = std::process::id();
         if bytes.is_empty() {
-            return Ok(SecretBytes(Arc::new(Region { ptr: ptr::null_mut(), len: 0 })));
+            let empty = Region { ptr: ptr::null_mut(), len: 0, pid, inherited: Inheritance::Absent };
+            return Ok(SecretBytes(Arc::new(empty)));
         }
         let p = alloc_with(bytes.len(), locking)?;
+        let total = total_for(bytes.len()).expect("alloc_with computed it");
+        // SAFETY: p came from alloc_with, so p - HEADER is the mapping's base.
+        let inherited = keep_out_of_children(unsafe { p.sub(HEADER) }, total);
+        if locking == Locking::Required && inherited == Inheritance::Copied {
+            // SAFETY: p came from alloc_with and holds nothing yet.
+            unsafe { free(p, bytes.len()) };
+            return Err(AllocError::InheritedByChildren);
+        }
         // SAFETY: p is a fresh allocation of bytes.len() writable bytes, so
         // it cannot overlap `bytes`.
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
-        Ok(SecretBytes(Arc::new(Region { ptr: p, len: bytes.len() })))
+        Ok(SecretBytes(Arc::new(Region { ptr: p, len: bytes.len(), pid, inherited })))
     }
 }
 
@@ -233,8 +309,30 @@ impl Deref for SecretBytes {
 
 impl Drop for Region {
     fn drop(&mut self) {
-        // SAFETY: ptr is NULL or came from `alloc` and is freed only here.
-        unsafe { free(self.ptr, self.len) };
+        if self.ptr.is_null() {
+            return;
+        }
+        if std::process::id() == self.pid {
+            // SAFETY: ptr came from `alloc_with` and is freed only here.
+            unsafe { free(self.ptr, self.len) };
+            return;
+        }
+        // A forked child (dropping a poisoned context). Its view of the
+        // mapping is not the parent's, so `free`'s header cannot be trusted.
+        match self.inherited {
+            // Zero pages, header included: unmap by the size we know.
+            Inheritance::Wiped => {
+                let total = total_for(self.len).expect("computed at allocation");
+                // SAFETY: the child's own copy of the mapping, which only
+                // this Region uses; ptr - HEADER is its base.
+                unsafe { unmap(self.ptr.sub(HEADER), total, page_size()) };
+            }
+            // Nothing is mapped there in the child.
+            Inheritance::Absent => {}
+            // An ordinary copy: wipe and release it like the parent would.
+            // SAFETY: as in the parent; the copy has the header intact.
+            Inheritance::Copied => unsafe { free(self.ptr, self.len) },
+        }
     }
 }
 
@@ -424,5 +522,64 @@ mod tests {
         }
         assert_eq!(&*SecretBytes::new_with(b"secret", Locking::BestEffort).unwrap(), b"secret");
         assert!(SecretBytes::new_with(b"", Locking::Required).unwrap().is_empty());
+    }
+
+    /// Waits for a forked child; true if it exited 0, false if a signal
+    /// ended it.
+    #[cfg(not(miri))]
+    fn child_ok(pid: libc::pid_t) -> bool {
+        let mut status = 0;
+        // SAFETY: pid is our child; status is a plain out-parameter.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        if libc::WIFSIGNALED(status) {
+            return false;
+        }
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "child status {status}");
+        true
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot fork")]
+    fn a_forked_child_gets_no_copy_of_a_secret() {
+        #[cfg(not(miri))]
+        {
+            let s = SecretBytes::new_with(&[0x5a; 64], Locking::BestEffort).unwrap();
+            let inherited = s.0.inherited;
+            let p = s.as_ptr();
+            // SAFETY: the child only reads one byte and exits, without
+            // allocating or unwinding.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                // SAFETY: Wiped: a zero page; Absent: faults, as intended.
+                let b = unsafe { std::ptr::read_volatile(p) };
+                // SAFETY: ends the child without running the test harness.
+                unsafe { libc::_exit(i32::from(b != 0)) };
+            }
+            let read_back = child_ok(pid);
+            match inherited {
+                Inheritance::Wiped => assert!(read_back, "the child read zeros"),
+                Inheritance::Absent => assert!(!read_back, "the child has no mapping to read"),
+                Inheritance::Copied => {} // a platform with neither mechanism
+            }
+            #[cfg(target_os = "linux")]
+            assert_eq!(inherited, Inheritance::Wiped);
+            #[cfg(target_os = "macos")]
+            assert_eq!(inherited, Inheritance::Absent);
+
+            // Dropping it in the child, as agc_ctx_reinit_after_fork does
+            // with the inherited context, must not touch the parent's view.
+            // SAFETY: as above; the drop only unmaps (or does nothing).
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                drop(s.clone());
+                drop(s);
+                // SAFETY: ends the child without running the test harness.
+                unsafe { libc::_exit(0) };
+            }
+            assert!(child_ok(pid), "the child dropped its view cleanly");
+            assert_eq!(&*s, &[0x5a; 64][..], "the parent's secret is untouched");
+        }
     }
 }

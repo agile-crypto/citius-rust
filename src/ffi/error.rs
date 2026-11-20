@@ -143,8 +143,42 @@ mod tests {
             Code::PolicyViolation,
             Code::PolicyVersionConflict,
             Code::OperationExpired,
+            Code::ResourceExhausted,
             Code::Internal,
         ];
+        // Does not compile when a Code is added but not listed above: the
+        // match must name every variant, and each arm is checked against
+        // the list.
+        let in_list = |c: Code| match c {
+            Code::InvalidArgument
+            | Code::AlreadyExists
+            | Code::KeyNotFound
+            | Code::TemplateNotFound
+            | Code::TemplateDeprecated
+            | Code::TemplateForbidden
+            | Code::NoMatchingTemplate
+            | Code::PolicyNotFound
+            | Code::ProviderNotFound
+            | Code::ProviderIncompatible
+            | Code::NoMatchingProvider
+            | Code::InsufficientEntropy
+            | Code::KeyOperationNotAllowed
+            | Code::ConcurrentAccess
+            | Code::IncompatibleParameters
+            | Code::MigrationNotFeasible
+            | Code::KeyNotExtractable
+            | Code::AuthenticationFailed
+            | Code::ProviderContractViolation
+            | Code::InvalidKeyMaterial
+            | Code::NotImplemented
+            | Code::PolicyViolation
+            | Code::PolicyVersionConflict
+            | Code::OperationExpired
+            | Code::ResourceExhausted
+            | Code::Internal => codes.contains(&c),
+        };
+        assert!(codes.iter().all(|&c| in_list(c)));
+        assert_eq!(codes.len(), 26, "every Code once");
         let mut rcs: Vec<_> = codes.iter().map(|&c| code_rc(c)).collect();
         rcs.sort();
         rcs.dedup();

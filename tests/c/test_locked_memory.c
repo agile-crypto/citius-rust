@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "agc_test.h"
@@ -87,6 +88,26 @@ int main(void)
     CHECK_RC(open_ctx(1, NULL, NULL, &ctx), AGC_OK);
     CHECK_RC(create_policy(ctx, "default", DEFAULT_POLICY), AGC_OK);
     CHECK_RC(create_key(ctx, "locked"), AGC_OK);
+
+    /* A forked child gets no (unlocked) copy of the secrets: the poisoned
+     * context is replaced, dropping it must work, and the child's fresh
+     * context locks its own keys again. */
+    fflush(NULL);
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        agc_ctx *fresh = NULL;
+        if (agc_ctx_reinit_after_fork(ctx, &fresh) != AGC_OK)
+            _exit(2);
+        if (create_policy(fresh, "default", DEFAULT_POLICY) != AGC_OK || create_key(fresh, "child") != AGC_OK)
+            _exit(3);
+        agc_ctx_close(fresh);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(key_exists(ctx, "locked")); /* the parent is unaffected */
     agc_ctx_close(ctx);
 
     set_memlock(0);

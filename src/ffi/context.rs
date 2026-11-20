@@ -66,8 +66,8 @@ impl Config {
         if cfg.mode != agc_mode_AGC_MODE_EMBEDDED {
             return Err(FfiError::NotImplemented("AGC_MODE_LOCAL/AGC_MODE_REMOTE"));
         }
-        // Key material is not held in locked memory yet; accepting the flag
-        // would promise a protection the library does not give.
+        // Without a FIPS-validated provider, accepting the flag would promise
+        // a protection the library does not give.
         if cfg.fips_mode != 0 {
             return Err(FfiError::NotImplemented("fips_mode (no FIPS-validated provider is available)"));
         }

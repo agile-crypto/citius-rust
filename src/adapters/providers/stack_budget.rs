@@ -51,9 +51,11 @@ pub(super) const fn ml_dsa_kib(level: u16, op: MlDsaOp) -> usize {
 /// Runs `f` with the stack an operation measured at `release_kib` needs.
 pub(super) fn run<T: Send>(release_kib: usize, f: impl FnOnce() -> Result<T, Error> + Send) -> Result<T, Error> {
     let need = if cfg!(debug_assertions) { release_kib * 1024 * 4 } else { release_kib * 1024 * 3 / 2 };
+    // Starting a thread fails for want of resources (EAGAIN: thread limit,
+    // ENOMEM), not because of a library bug.
     crate::stack::with_stack(need, f).map_err(|e| {
         Error::new(
-            Code::Internal,
+            Code::ResourceExhausted,
             "rustcrypto",
             format!("cannot start a thread with enough stack for this operation: {}", e.0),
         )
