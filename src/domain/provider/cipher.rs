@@ -1,4 +1,4 @@
-use zeroize::Zeroizing;
+use crate::secret::SecretVec;
 
 use super::GeneratedKey;
 use crate::domain::core::Error;
@@ -49,5 +49,5 @@ pub trait Cipher: Send + Sync {
         ciphertext: &[u8],
         output: &api::ProviderOutput,
         params: &EncryptParams,
-    ) -> Result<Zeroizing<Vec<u8>>, Error>;
+    ) -> Result<SecretVec, Error>;
 }

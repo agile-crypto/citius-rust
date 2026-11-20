@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use zeroize::Zeroizing;
+use crate::secret::SecretVec;
 
 use super::key_orchestrator::not_found;
 use crate::domain::core::{Code, Error, Operation, Scope};
@@ -53,7 +53,7 @@ pub struct DecryptRequest<'a> {
 }
 
 pub struct Decrypted {
-    pub plaintext: Zeroizing<Vec<u8>>,
+    pub plaintext: SecretVec,
     pub metadata: api::OperationMetadata,
 }
 
@@ -451,7 +451,7 @@ pub(super) mod tests {
         assert_eq!(e.metadata.user_context.get("tenant").map(String::as_str), Some("acme"));
 
         let d = w.crypto.decrypt(decrypt("k", &e, aead())).unwrap();
-        assert_eq!(*d.plaintext, b"hello");
+        assert_eq!(&*d.plaintext, b"hello");
         assert_eq!(d.metadata.key_version, 1);
     }
 
@@ -470,8 +470,8 @@ pub(super) mod tests {
             .unwrap();
         let new = w.crypto.encrypt(encrypt("k", b"after", aead())).unwrap();
         assert_eq!((old.metadata.key_version, new.metadata.key_version), (1, 2));
-        assert_eq!(*w.crypto.decrypt(decrypt("k", &old, aead())).unwrap().plaintext, b"before");
-        assert_eq!(*w.crypto.decrypt(decrypt("k", &new, aead())).unwrap().plaintext, b"after");
+        assert_eq!(&*w.crypto.decrypt(decrypt("k", &old, aead())).unwrap().plaintext, b"before");
+        assert_eq!(&*w.crypto.decrypt(decrypt("k", &new, aead())).unwrap().plaintext, b"after");
         // Version 1's metadata on version 2's ciphertext: authentication fails.
         let mut mixed = decrypt("k", &new, aead());
         mixed.metadata.key_version = 1;
@@ -487,7 +487,7 @@ pub(super) mod tests {
         assert_eq!(code(w.crypto.encrypt(encrypt("aead", b"x", EncryptParams::None))), Code::InvalidArgument);
         assert_eq!(code(w.crypto.encrypt(encrypt("cbc", b"x", aead()))), Code::InvalidArgument);
         let e = w.crypto.encrypt(encrypt("cbc", b"block cipher", EncryptParams::None)).unwrap();
-        assert_eq!(*w.crypto.decrypt(decrypt("cbc", &e, EncryptParams::None)).unwrap().plaintext, b"block cipher");
+        assert_eq!(&*w.crypto.decrypt(decrypt("cbc", &e, EncryptParams::None)).unwrap().plaintext, b"block cipher");
     }
 
     #[test]

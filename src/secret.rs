@@ -343,8 +343,61 @@ impl fmt::Debug for SecretBytes {
     }
 }
 
+/// Secret bytes on the ordinary heap, wiped when dropped: the bytes and the
+/// spare capacity behind them. For data as large as the caller's input,
+/// such as a decrypted plaintext, which is not worth its own locked pages
+/// and must not cost a byte-by-byte wipe either (`Zeroizing<Vec<u8>>` wipes
+/// element by element, ~0.4 ms per MiB; this wipes at memset speed).
+///
+/// It cannot grow: growing reallocates and would leave an unwiped copy
+/// behind. Build it from the finished `Vec`, then only shorten it.
+pub struct SecretVec(Vec<u8>);
+
+impl SecretVec {
+    /// Shortens to `len` bytes; the bytes cut off are wiped now, not at drop.
+    pub fn truncate(&mut self, len: usize) {
+        if len < self.0.len() {
+            self.0[len..].zeroize();
+            self.0.truncate(len);
+        }
+    }
+}
+
+impl From<Vec<u8>> for SecretVec {
+    fn from(v: Vec<u8>) -> Self {
+        SecretVec(v)
+    }
+}
+
+impl std::ops::Deref for SecretVec {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SecretVec {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl Drop for SecretVec {
+    fn drop(&mut self) {
+        self.0.as_mut_slice().zeroize();
+        self.0.spare_capacity_mut().zeroize();
+    }
+}
+
+impl fmt::Debug for SecretVec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the secret.
+        write!(f, "<{} secret bytes>", self.0.len())
+    }
+}
+
 /// Overwrites `n` bytes at `p` with zeros in a way the optimiser may not
-/// remove (zeroize: volatile writes plus a compiler fence).
+/// remove (zeroize: `fill` behind an optimisation barrier).
 ///
 /// # Safety
 /// `p` is NULL or valid for writing `n` bytes.
@@ -547,6 +600,37 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot fork")]
+    #[cfg(not(miri))]
+    fn secret_vecs_wipe_their_bytes_and_spare_capacity() {
+        use super::leak_check::{CANARY, leaks_during};
+        // The bytes, and a canary already in the spare capacity when the
+        // Vec is handed over (a provider truncated it): drop wipes both.
+        let leaks = leaks_during(|| {
+            let mut v = Vec::with_capacity(4 * CANARY.len());
+            v.extend_from_slice(&CANARY);
+            v.extend_from_slice(&CANARY);
+            v.truncate(1);
+            let s = SecretVec::from(v);
+            assert_eq!(s.len(), 1);
+        });
+        assert_eq!(leaks, 0, "drop wipes the spare capacity");
+        let leaks = leaks_during(|| drop(SecretVec::from(CANARY.to_vec())));
+        assert_eq!(leaks, 0, "drop wipes the bytes");
+        assert_eq!(format!("{:?}", SecretVec::from(vec![1, 2])), "<2 secret bytes>");
+    }
+
+    #[test]
+    fn truncating_a_secret_vec_wipes_what_it_cuts_off_at_once() {
+        let mut s = SecretVec::from([[7u8; 8], [9; 8]].concat());
+        s.truncate(8);
+        assert_eq!(&s[..], &[7; 8]);
+        // SAFETY: these 8 spare bytes were initialised before the truncation.
+        assert!(s.0.spare_capacity_mut()[..8].iter().all(|b| unsafe { b.assume_init() } == 0));
+        s.truncate(9);
+        assert_eq!(s.len(), 8, "truncate never lengthens");
+    }
+
+    #[test]
     fn a_forked_child_gets_no_copy_of_a_secret() {
         #[cfg(not(miri))]
         {

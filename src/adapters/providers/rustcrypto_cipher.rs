@@ -10,7 +10,7 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, StreamCipher};
-use zeroize::Zeroizing;
+use crate::secret::SecretVec;
 
 use super::RustCrypto;
 use crate::domain::core::{Code, Error};
@@ -99,12 +99,12 @@ fn aead_seal<C: KeyInit + Aead>(key: &[u8], nonce: &[u8], pt: &[u8], aad: &[u8])
     c.encrypt(nonce, Payload { msg: pt, aad }).map_err(|_| err(Code::Internal, "AEAD encryption failed"))
 }
 
-fn aead_open<C: KeyInit + Aead>(key: &[u8], nonce: &[u8], ct: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
+fn aead_open<C: KeyInit + Aead>(key: &[u8], nonce: &[u8], ct: &[u8], aad: &[u8]) -> Result<SecretVec, Error> {
     let c = C::new_from_slice(key).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
     let nonce = nonce.try_into().map_err(|_| err(Code::InvalidArgument, "the metadata's nonce has the wrong length"))?;
     // One error for every failure: tampered data, wrong tag, wrong AAD.
     c.decrypt(nonce, Payload { msg: ct, aad })
-        .map(Zeroizing::new)
+        .map(SecretVec::from)
         .map_err(|_| err(Code::AuthenticationFailed, "authentication failed"))
 }
 
@@ -195,7 +195,7 @@ impl Cipher for RustCrypto {
         ct: &[u8],
         output: &api::ProviderOutput,
         params: &EncryptParams,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    ) -> Result<SecretVec, Error> {
         let arm = output.algorithm_output.as_ref();
         match mode(algorithm)? {
             Mode::Gcm { key_bytes } => {
@@ -230,7 +230,7 @@ impl Cipher for RustCrypto {
                 let k = raw_key(key, key_bytes)?;
                 aad(params, false)?;
                 let iv: &[u8; BLOCK] = block_iv(arm)?.try_into().expect("checked by block_iv");
-                let mut buf = Zeroizing::new(ct.to_vec());
+                let mut buf = SecretVec::from(ct.to_vec());
                 ctr_apply(k, iv, &mut buf)?;
                 Ok(buf)
             }
@@ -270,12 +270,12 @@ where
 
 /// CBC is not authenticated: a padding error says nothing reliable about the
 /// key or the data, and is reported like any other malformed ciphertext.
-fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error>
+fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<SecretVec, Error>
 where
     C: cipher::BlockCipherDecrypt + cipher::KeyInit + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
 {
     let d = cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
-    let mut buf = Zeroizing::new(ct.to_vec());
+    let mut buf = SecretVec::from(ct.to_vec());
     let n = d
         .decrypt_padded::<cipher::block_padding::Pkcs7>(&mut buf)
         .map_err(|_| err(Code::InvalidArgument, "the ciphertext does not decrypt"))?
@@ -401,7 +401,7 @@ mod tests {
         let cbc_meta = block_output(vec![0; 16]);
         let e = RustCrypto.decrypt(&k, &alg, &ct, &cbc_meta, &params("aes-256-gcm-128-96")).unwrap_err();
         assert_eq!(e.code(), Code::InvalidArgument);
-        let short_key = GeneratedKey { private: Zeroizing::new(vec![0; 16]), ..k };
+        let short_key = GeneratedKey { private: zeroize::Zeroizing::new(vec![0; 16]), ..k };
         let e = RustCrypto.encrypt(&short_key, &alg, b"x", &params("aes-256-gcm-128-96")).unwrap_err();
         assert_eq!(e.code(), Code::InvalidKeyMaterial);
     }
