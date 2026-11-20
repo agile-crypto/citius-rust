@@ -5,7 +5,7 @@ use super::KeyMetadata;
 use crate::domain::core::{Code, Error, KeyCreationSpec, Operation, ScopeSpecification};
 use crate::domain::key::*;
 use crate::domain::policy::{Evaluator, TemplateSecurityInfo};
-use crate::domain::provider::{GeneratedKey, ProviderRegistry, Requirements, transfer_of};
+use crate::domain::provider::{ProviderRegistry, Requirements, StoredKey, transfer_of};
 use crate::domain::template::*;
 
 /// Runs the key lifecycle use cases. Holds no state of its own: everything
@@ -222,7 +222,7 @@ impl KeyOrchestrator {
             }
             // The provider must take the stored material for the new template
             // (Go: retainFeasibility).
-            let encoding = GeneratedKey::from_bytes(current.material())?.private_encoding;
+            let encoding = StoredKey::parse(current.material())?.private_encoding;
             if !transfer_of(provider.as_ref(), algorithm).accept.stored_payload.contains(&encoding) {
                 return Err(Error::new(
                     Code::IncompatibleParameters,

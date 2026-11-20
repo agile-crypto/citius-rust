@@ -128,10 +128,10 @@ fn export_case(template: &str, algorithm: &api::AlgorithmDetails, context: Optio
     let cipher = RustCrypto.as_cipher().unwrap();
     let mut aad = None;
     let (input, (artifact, output)) = match kind {
-        "sign" => (MESSAGE.to_vec(), signer.sign(&key, algorithm, MESSAGE, &sign_context).unwrap()),
+        "sign" => (MESSAGE.to_vec(), signer.sign(key.as_stored(), algorithm, MESSAGE, &sign_context).unwrap()),
         "digest_sign" => {
             let d = digest(hash, MESSAGE);
-            let signed = signer.sign_digest(&key, algorithm, &d, hash, &sign_context).unwrap();
+            let signed = signer.sign_digest(key.as_stored(), algorithm, &d, hash, &sign_context).unwrap();
             (d, signed)
         }
         _ => {
@@ -141,7 +141,7 @@ fn export_case(template: &str, algorithm: &api::AlgorithmDetails, context: Optio
             } else {
                 EncryptParams::None
             };
-            (MESSAGE.to_vec(), cipher.encrypt(&key, algorithm, MESSAGE, &params).unwrap())
+            (MESSAGE.to_vec(), cipher.encrypt(key.as_stored(), algorithm, MESSAGE, &params).unwrap())
         }
     };
     let md = api::OperationMetadata {
@@ -219,8 +219,8 @@ fn check_go_case(c: &Case) -> Result<(), String> {
     match c.kind.as_str() {
         "sign" | "digest_sign" => {
             let verify = |sig: &[u8]| match c.kind.as_str() {
-                "sign" => signer.verify(&key, &algorithm, &input, sig, &context),
-                _ => signer.verify_digest(&key, &algorithm, &input, hash, sig, &context),
+                "sign" => signer.verify(key.as_stored(), &algorithm, &input, sig, &context),
+                _ => signer.verify_digest(key.as_stored(), &algorithm, &input, hash, sig, &context),
             };
             if !verify(&artifact).map_err(|e| format!("verify: {e:?}"))? {
                 return Err("Go's signature does not verify".into());
@@ -235,7 +235,7 @@ fn check_go_case(c: &Case) -> Result<(), String> {
             let plain = RustCrypto
                 .as_cipher()
                 .unwrap()
-                .decrypt(&key, &algorithm, &artifact, &output, &params)
+                .decrypt(key.as_stored(), &algorithm, &artifact, &output, &params)
                 .map_err(|e| format!("decrypt: {e:?}"))?;
             if *plain != input {
                 return Err("Go's ciphertext decrypts to something else".into());

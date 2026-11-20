@@ -1,4 +1,4 @@
-use super::GeneratedKey;
+use super::StoredKey;
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -36,7 +36,7 @@ pub trait Signer: Send + Sync {
 
     fn sign(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         message: &[u8],
         context: &SignContext,
@@ -44,7 +44,7 @@ pub trait Signer: Send + Sync {
 
     fn verify(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         message: &[u8],
         signature: &[u8],
@@ -54,7 +54,7 @@ pub trait Signer: Send + Sync {
     /// Signs a digest the caller computed with `hash`.
     fn sign_digest(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         digest: &[u8],
         hash: api::HashAlgorithm,
@@ -63,7 +63,7 @@ pub trait Signer: Send + Sync {
 
     fn verify_digest(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         digest: &[u8],
         hash: api::HashAlgorithm,

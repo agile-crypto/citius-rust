@@ -198,9 +198,9 @@ impl CryptoOrchestrator {
         let signer = r.signer()?;
         let key = r.material()?;
         let (signature, output) = match req.input {
-            SignInput::Message(m) => signer.sign(&key, r.algorithm(), m, &req.context)?,
+            SignInput::Message(m) => signer.sign(key, r.algorithm(), m, &req.context)?,
             SignInput::Digest { digest, hash } => {
-                signer.sign_digest(&key, r.algorithm(), digest, hash, &req.context)?
+                signer.sign_digest(key, r.algorithm(), digest, hash, &req.context)?
             }
         };
         require_output(&output)?;
@@ -237,9 +237,9 @@ impl CryptoOrchestrator {
         let signer = r.signer()?;
         let key = r.material()?;
         let valid = match req.input {
-            SignInput::Message(m) => signer.verify(&key, r.algorithm(), m, req.signature, &req.context)?,
+            SignInput::Message(m) => signer.verify(key, r.algorithm(), m, req.signature, &req.context)?,
             SignInput::Digest { digest, hash } => {
-                signer.verify_digest(&key, r.algorithm(), digest, hash, req.signature, &req.context)?
+                signer.verify_digest(key, r.algorithm(), digest, hash, req.signature, &req.context)?
             }
         };
         Ok(Verified { valid, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })

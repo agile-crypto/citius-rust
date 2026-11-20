@@ -49,19 +49,6 @@ impl std::fmt::Debug for GeneratedKey {
 const FORMAT_V1: u8 = 1;
 
 impl GeneratedKey {
-    /// Fails unless the private half is encoded as `want`: a provider parses
-    /// stored material by its recorded encoding, never by guessing.
-    pub fn check_encoding(&self, want: Encoding) -> Result<(), Error> {
-        if self.private_encoding != want {
-            return Err(Error::new(
-                Code::InvalidKeyMaterial,
-                "GeneratedKey::check_encoding",
-                format!("key material is {:?}, expected {want:?}", self.private_encoding),
-            ));
-        }
-        Ok(())
-    }
-
     /// The bytes a key version stores. Self-describing and versioned:
     /// `1 | enc | len u32 BE | private | 0 or enc | [len u32 BE | public]`.
     pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
@@ -81,22 +68,81 @@ impl GeneratedKey {
         out
     }
 
+    /// An owned copy of stored material, for tests. The library reads
+    /// stored material with `StoredKey::parse`, which copies nothing.
+    #[cfg(test)]
     pub fn from_bytes(b: &[u8]) -> Result<GeneratedKey, Error> {
-        let bad = || Error::new(Code::Internal, "GeneratedKey::from_bytes", "stored key material is malformed");
+        let k = StoredKey::parse(b)?;
+        Ok(GeneratedKey {
+            private: Zeroizing::new(k.private.to_vec()),
+            private_encoding: k.private_encoding,
+            public: k.public.map(|(b, e)| (b.to_vec(), e)),
+        })
+    }
+
+    /// This key as a provider operates with it (tests drive providers
+    /// with freshly generated keys).
+    #[cfg(test)]
+    pub fn as_stored(&self) -> StoredKey<'_> {
+        StoredKey {
+            private: &self.private,
+            private_encoding: self.private_encoding,
+            public: self.public.as_ref().map(|(b, e)| (b.as_slice(), *e)),
+        }
+    }
+}
+
+/// A key version's material as a provider operates with it: both halves
+/// read in place from the stored bytes (`GeneratedKey::to_bytes`), which
+/// for a key version are its locked, never-dumped pages. Borrowing, it
+/// copies no byte of the private key into ordinary memory (D3).
+#[derive(Clone, Copy)]
+pub struct StoredKey<'a> {
+    pub private: &'a [u8],
+    pub private_encoding: Encoding,
+    pub public: Option<(&'a [u8], Encoding)>,
+}
+
+impl<'a> StoredKey<'a> {
+    pub fn parse(b: &'a [u8]) -> Result<StoredKey<'a>, Error> {
         let mut r = Reader(b);
         if r.byte()? != FORMAT_V1 {
-            return Err(bad());
+            return Err(Reader::err());
         }
-        let private_encoding = Encoding::from_byte(r.byte()?).ok_or_else(bad)?;
-        let private = Zeroizing::new(r.chunk()?.to_vec());
+        let private_encoding = Encoding::from_byte(r.byte()?).ok_or_else(Reader::err)?;
+        let private = r.chunk()?;
         let public = match r.byte()? {
             0 => None,
-            e => Some((r.chunk()?.to_vec(), Encoding::from_byte(e).ok_or_else(bad)?)),
+            e => Some((r.chunk()?, Encoding::from_byte(e).ok_or_else(Reader::err)?)),
         };
         if !r.0.is_empty() {
-            return Err(bad());
+            return Err(Reader::err());
         }
-        Ok(GeneratedKey { private, private_encoding, public })
+        Ok(StoredKey { private, private_encoding, public })
+    }
+
+    /// Fails unless the private half is encoded as `want`: a provider parses
+    /// stored material by its recorded encoding, never by guessing.
+    pub fn check_encoding(&self, want: Encoding) -> Result<(), Error> {
+        if self.private_encoding != want {
+            return Err(Error::new(
+                Code::InvalidKeyMaterial,
+                "StoredKey::check_encoding",
+                format!("key material is {:?}, expected {want:?}", self.private_encoding),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for StoredKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print key material.
+        f.debug_struct("StoredKey")
+            .field("private", &format_args!("<{} bytes>", self.private.len()))
+            .field("private_encoding", &self.private_encoding)
+            .field("public", &self.public.map(|(b, e)| (b.len(), e)))
+            .finish()
     }
 }
 
@@ -110,7 +156,7 @@ struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
     fn err() -> Error {
-        Error::new(Code::Internal, "GeneratedKey::from_bytes", "stored key material is malformed")
+        Error::new(Code::Internal, "StoredKey::parse", "stored key material is malformed")
     }
 
     fn byte(&mut self) -> Result<u8, Error> {
@@ -158,6 +204,23 @@ mod tests {
         for bad in [&[][..], &[2, 1, 0, 0, 0, 0, 0], &good[..good.len() - 1], &trailing, &[1, 99, 0, 0, 0, 0, 0]] {
             assert_eq!(GeneratedKey::from_bytes(bad).unwrap_err().code(), Code::Internal, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_stored_key_reads_both_halves_in_place() {
+        let k = GeneratedKey {
+            private: Zeroizing::new(vec![7; 32]),
+            private_encoding: Encoding::Pkcs8Der,
+            public: Some((vec![9; 4], Encoding::SpkiDer)),
+        };
+        let stored = k.to_bytes();
+        let view = StoredKey::parse(&stored).unwrap();
+        let within = |b: &[u8]| stored.as_ptr_range().contains(&b.as_ptr()) && b.len() <= stored.len();
+        assert!(within(view.private) && view.private == [7; 32], "the private half is borrowed, not copied");
+        assert!(view.public.is_some_and(|(b, e)| within(b) && b == [9; 4] && e == Encoding::SpkiDer));
+        assert_eq!(view.private_encoding, Encoding::Pkcs8Der);
+        assert!(view.check_encoding(Encoding::Raw).is_err());
+        assert!(!format!("{view:?}").contains('7'), "never printed");
     }
 
     #[test]

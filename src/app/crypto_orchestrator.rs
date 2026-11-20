@@ -8,7 +8,7 @@ use crate::domain::core::{Code, Error, Operation, Scope};
 use crate::domain::crypto::metadata::{self, MetadataEncoding};
 use crate::domain::key::{Key, KeyRepository, Version};
 use crate::domain::policy::Evaluator;
-use crate::domain::provider::{Backend, Cipher, EncryptParams, GeneratedKey, ProviderRegistry, Signer};
+use crate::domain::provider::{Backend, Cipher, EncryptParams, ProviderRegistry, Signer, StoredKey};
 use crate::domain::template::{Template, TemplateRegistry};
 use crate::proto::api::{self, provider_output::AlgorithmOutput};
 
@@ -86,8 +86,9 @@ impl Resolved<'_> {
         self.template.info().algorithm.as_ref().expect("templates always have an algorithm")
     }
 
-    pub(super) fn material(&self) -> Result<GeneratedKey, Error> {
-        GeneratedKey::from_bytes(self.version().material())
+    /// The version's material, read in place from its locked pages.
+    pub(super) fn material(&self) -> Result<StoredKey<'_>, Error> {
+        StoredKey::parse(self.version().material())
     }
 
     fn cipher(&self) -> Result<&dyn Cipher, Error> {
@@ -249,7 +250,7 @@ impl CryptoOrchestrator {
     }
 
     fn encrypt_resolved(r: &Resolved<'_>, req: EncryptRequest) -> Result<Encrypted, Error> {
-        let (ciphertext, output) = r.cipher()?.encrypt(&r.material()?, r.algorithm(), req.plaintext, &req.params)?;
+        let (ciphertext, output) = r.cipher()?.encrypt(r.material()?, r.algorithm(), req.plaintext, &req.params)?;
         require_output(&output)?;
         Ok(Encrypted { ciphertext, metadata: Self::metadata(r.version().number(), output, req.user_context) })
     }
@@ -336,7 +337,7 @@ impl CryptoOrchestrator {
             .provider_output
             .as_ref()
             .ok_or_else(|| Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata has no provider output"))?;
-        let plaintext = r.cipher()?.decrypt(&r.material()?, r.algorithm(), req.ciphertext, output, &req.params)?;
+        let plaintext = r.cipher()?.decrypt(r.material()?, r.algorithm(), req.ciphertext, output, &req.params)?;
         Ok(Decrypted { plaintext, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
     }
 }

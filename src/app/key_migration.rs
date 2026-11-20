@@ -5,7 +5,7 @@ use super::key_orchestrator::{approved, not_found, security_info};
 use super::{KeyMetadata, KeyOrchestrator, TransformSpec};
 use crate::domain::core::{Code, Error, Operation};
 use crate::domain::key::{Key, Origin, Provenance, Version};
-use crate::domain::provider::{Backend, GeneratedKey, Requirements, transfer_of};
+use crate::domain::provider::{Backend, Requirements, StoredKey, transfer_of};
 use crate::domain::template::Template;
 use crate::proto::api::{self, MigrationStrategy as Strategy};
 
@@ -468,7 +468,7 @@ fn source_feasibility(
         }
         return Ok(());
     }
-    let encoding = GeneratedKey::from_bytes(version.material())?.private_encoding;
+    let encoding = StoredKey::parse(version.material())?.private_encoding;
     if !emit.stored_payload.contains(&encoding) {
         return Err(not_feasible(format!("provider {} does not release {encoding:?} material", source.name())));
     }
@@ -494,7 +494,7 @@ fn target_feasibility(
             refused("no common plaintext key encoding".into())
         }
         Strategy::ProviderSwitch => {
-            let encoding = GeneratedKey::from_bytes(version.material())?.private_encoding;
+            let encoding = StoredKey::parse(version.material())?.private_encoding;
             if accept.stored_payload.contains(&encoding) {
                 Ok(())
             } else {

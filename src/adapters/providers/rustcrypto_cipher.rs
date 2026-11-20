@@ -14,7 +14,7 @@ use crate::secret::SecretVec;
 
 use super::RustCrypto;
 use crate::domain::core::{Code, Error};
-use crate::domain::provider::{Cipher, EncryptParams, GeneratedKey};
+use crate::domain::provider::{Cipher, EncryptParams, StoredKey};
 use crate::proto::api::{self, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
 
 const OP: &str = "rustcrypto cipher";
@@ -62,12 +62,12 @@ fn mode(algorithm: &api::AlgorithmDetails) -> Result<Mode, Error> {
 }
 
 /// The raw symmetric key, checked against the template's size.
-fn raw_key(key: &GeneratedKey, len: usize) -> Result<&[u8], Error> {
+fn raw_key<'a>(key: StoredKey<'a>, len: usize) -> Result<&'a [u8], Error> {
     key.check_encoding(crate::domain::provider::Encoding::Raw)?;
     if key.private.len() != len {
         return Err(err(Code::InvalidKeyMaterial, format!("key is {} bytes, the template needs {len}", key.private.len())));
     }
-    Ok(&key.private)
+    Ok(key.private)
 }
 
 fn aead_output(nonce: Vec<u8>) -> api::ProviderOutput {
@@ -136,7 +136,7 @@ impl Cipher for RustCrypto {
 
     fn encrypt(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         pt: &[u8],
         params: &EncryptParams,
@@ -190,7 +190,7 @@ impl Cipher for RustCrypto {
 
     fn decrypt(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         ct: &[u8],
         output: &api::ProviderOutput,
@@ -302,6 +302,7 @@ fn ctr_apply(key: &[u8], iv: &[u8; BLOCK], buf: &mut [u8]) -> Result<(), Error> 
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::provider::GeneratedKey;
     /// D2: every cipher state this provider builds from a key wipes itself
     /// when dropped. Compiles only while the crates' "zeroize" features are
     /// on (Cargo.toml); without them, round keys and GHASH/Poly1305 keys
@@ -358,7 +359,7 @@ mod tests {
             let (alg, k, p) = (algorithm(id), key(id), params(id));
             for n in [0usize, 1, 15, 16, 17, 1000] {
                 let pt: Vec<u8> = (0..n).map(|i| i as u8).collect();
-                let (ct, out) = RustCrypto.encrypt(&k, &alg, &pt, &p).unwrap();
+                let (ct, out) = RustCrypto.encrypt(k.as_stored(), &alg, &pt, &p).unwrap();
                 assert_eq!(ct.len(), RustCrypto.ciphertext_len(&alg, n).unwrap(), "{id} {n}");
                 assert!(RustCrypto.plaintext_len_bound(&alg, ct.len()).unwrap() >= n, "{id} {n}");
                 let shape = RustCrypto.output_shape(&alg).unwrap();
@@ -367,7 +368,7 @@ mod tests {
                     std::mem::discriminant(shape.algorithm_output.as_ref().unwrap()),
                     "{id}: the shape has the real output's kind"
                 );
-                assert_eq!(*RustCrypto.decrypt(&k, &alg, &ct, &out, &p).unwrap(), pt, "{id} {n}");
+                assert_eq!(*RustCrypto.decrypt(k.as_stored(), &alg, &ct, &out, &p).unwrap(), pt, "{id} {n}");
             }
         }
     }
@@ -376,8 +377,8 @@ mod tests {
     fn encryptions_differ_and_carry_their_parameters() {
         for id in AEADS.iter().chain(&PLAIN) {
             let (alg, k, p) = (algorithm(id), key(id), params(id));
-            let (a, oa) = RustCrypto.encrypt(&k, &alg, b"same plaintext", &p).unwrap();
-            let (b, ob) = RustCrypto.encrypt(&k, &alg, b"same plaintext", &p).unwrap();
+            let (a, oa) = RustCrypto.encrypt(k.as_stored(), &alg, b"same plaintext", &p).unwrap();
+            let (b, ob) = RustCrypto.encrypt(k.as_stored(), &alg, b"same plaintext", &p).unwrap();
             assert_ne!(a, b, "{id}: a fresh nonce or IV each time");
             assert_ne!(oa, ob, "{id}");
             assert_eq!(oa.encoding, "raw");
@@ -388,16 +389,18 @@ mod tests {
     fn tampering_is_detected_and_releases_nothing() {
         for id in AEADS {
             let (alg, k, p) = (algorithm(id), key(id), params(id));
-            let (ct, out) = RustCrypto.encrypt(&k, &alg, b"secret", &p).unwrap();
+            let (ct, out) = RustCrypto.encrypt(k.as_stored(), &alg, b"secret", &p).unwrap();
             for i in [0, ct.len() - 1] {
                 let mut bad = ct.clone();
                 bad[i] ^= 1;
-                let e = RustCrypto.decrypt(&k, &alg, &bad, &out, &p).unwrap_err();
+                let e = RustCrypto.decrypt(k.as_stored(), &alg, &bad, &out, &p).unwrap_err();
                 assert_eq!(e.code(), Code::AuthenticationFailed, "{id}");
             }
             let other = EncryptParams::Aead { aad: b"other".to_vec() };
-            assert_eq!(RustCrypto.decrypt(&k, &alg, &ct, &out, &other).unwrap_err().code(), Code::AuthenticationFailed);
-            assert_eq!(RustCrypto.decrypt(&key(id), &alg, &ct, &out, &p).unwrap_err().code(), Code::AuthenticationFailed);
+            let e = RustCrypto.decrypt(k.as_stored(), &alg, &ct, &out, &other).unwrap_err();
+            assert_eq!(e.code(), Code::AuthenticationFailed);
+            let e = RustCrypto.decrypt(key(id).as_stored(), &alg, &ct, &out, &p).unwrap_err();
+            assert_eq!(e.code(), Code::AuthenticationFailed);
         }
     }
 
@@ -407,7 +410,7 @@ mod tests {
         // AES(IV + i) over the full 128 bits.
         let alg = algorithm("aes-128-ctr");
         let k = key("aes-128-ctr");
-        let (ct, out) = RustCrypto.encrypt(&k, &alg, &[0u8; 32], &EncryptParams::None).unwrap();
+        let (ct, out) = RustCrypto.encrypt(k.as_stored(), &alg, &[0u8; 32], &EncryptParams::None).unwrap();
         let Some(AlgorithmOutput::BlockCipherOutput(o)) = out.algorithm_output else { panic!() };
         assert_eq!(&o.iv[12..], &[0, 0, 0, 0], "a 96-bit nonce and a zero counter");
         use aes::cipher::{BlockCipherEncrypt, KeyInit as _};
@@ -424,13 +427,14 @@ mod tests {
     fn wrong_parameters_and_metadata_are_refused() {
         let alg = algorithm("aes-256-gcm-128-96");
         let k = key("aes-256-gcm-128-96");
-        assert_eq!(RustCrypto.encrypt(&k, &alg, b"x", &EncryptParams::None).unwrap_err().code(), Code::InvalidArgument);
-        let (ct, _) = RustCrypto.encrypt(&k, &alg, b"x", &params("aes-256-gcm-128-96")).unwrap();
+        let e = RustCrypto.encrypt(k.as_stored(), &alg, b"x", &EncryptParams::None).unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+        let (ct, _) = RustCrypto.encrypt(k.as_stored(), &alg, b"x", &params("aes-256-gcm-128-96")).unwrap();
         let cbc_meta = block_output(vec![0; 16]);
-        let e = RustCrypto.decrypt(&k, &alg, &ct, &cbc_meta, &params("aes-256-gcm-128-96")).unwrap_err();
+        let e = RustCrypto.decrypt(k.as_stored(), &alg, &ct, &cbc_meta, &params("aes-256-gcm-128-96")).unwrap_err();
         assert_eq!(e.code(), Code::InvalidArgument);
         let short_key = GeneratedKey { private: zeroize::Zeroizing::new(vec![0; 16]), ..k };
-        let e = RustCrypto.encrypt(&short_key, &alg, b"x", &params("aes-256-gcm-128-96")).unwrap_err();
+        let e = RustCrypto.encrypt(short_key.as_stored(), &alg, b"x", &params("aes-256-gcm-128-96")).unwrap_err();
         assert_eq!(e.code(), Code::InvalidKeyMaterial);
     }
 }

@@ -15,7 +15,7 @@ use sha2::Digest;
 use super::RustCrypto;
 use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
 use crate::domain::core::{Code, Error, hash_output_len};
-use crate::domain::provider::{Encoding, GeneratedKey, SignContext, Signer};
+use crate::domain::provider::{Encoding, SignContext, Signer, StoredKey};
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
 
 const OP: &str = "RustCrypto::sign";
@@ -207,7 +207,7 @@ fn bad_key(what: &str) -> Error {
     Error::new(Code::InvalidKeyMaterial, OP, format!("the stored {what} does not parse"))
 }
 
-fn public(key: &GeneratedKey, want: Encoding) -> Result<&[u8], Error> {
+fn public<'a>(key: StoredKey<'a>, want: Encoding) -> Result<&'a [u8], Error> {
     match &key.public {
         Some((bytes, enc)) if *enc == want => Ok(bytes),
         _ => Err(bad_key("public key")),
@@ -223,7 +223,7 @@ macro_rules! ecdsa_sign {
     ($curve:ident, $key:expr, $prehash:expr) => {{
         use $curve::ecdsa::signature::hazmat::RandomizedPrehashSigner;
         $key.check_encoding(Encoding::Sec1Der)?;
-        let secret = $curve::SecretKey::from_sec1_der(&$key.private).map_err(|_| bad_key("ECDSA private key"))?;
+        let secret = $curve::SecretKey::from_sec1_der($key.private).map_err(|_| bad_key("ECDSA private key"))?;
         let signing = $curve::ecdsa::SigningKey::from(&secret);
         // The digest length is checked before; what remains is the RNG.
         let sig: $curve::ecdsa::DerSignature =
@@ -245,7 +245,7 @@ macro_rules! ecdsa_verify {
     }};
 }
 
-fn ecdsa_sign(curve: Curve, key: &GeneratedKey, prehash: &[u8]) -> Result<Vec<u8>, Error> {
+fn ecdsa_sign(curve: Curve, key: StoredKey<'_>, prehash: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(match curve {
         Curve::P256 => ecdsa_sign!(p256, key, prehash),
         Curve::P384 => ecdsa_sign!(p384, key, prehash),
@@ -253,7 +253,7 @@ fn ecdsa_sign(curve: Curve, key: &GeneratedKey, prehash: &[u8]) -> Result<Vec<u8
     })
 }
 
-fn ecdsa_verify(curve: Curve, key: &GeneratedKey, prehash: &[u8], sig: &[u8]) -> Result<bool, Error> {
+fn ecdsa_verify(curve: Curve, key: StoredKey<'_>, prehash: &[u8], sig: &[u8]) -> Result<bool, Error> {
     Ok(match curve {
         Curve::P256 => ecdsa_verify!(p256, key, prehash, sig),
         Curve::P384 => ecdsa_verify!(p384, key, prehash, sig),
@@ -292,13 +292,13 @@ impl sha2::digest::FixedOutput for Sha512Digest {
     }
 }
 
-fn ed25519_signing(key: &GeneratedKey) -> Result<ed25519_dalek::SigningKey, Error> {
+fn ed25519_signing(key: StoredKey<'_>) -> Result<ed25519_dalek::SigningKey, Error> {
     use ed25519_dalek::pkcs8::DecodePrivateKey;
     key.check_encoding(Encoding::Pkcs8Der)?;
-    ed25519_dalek::SigningKey::from_pkcs8_der(&key.private).map_err(|_| bad_key("Ed25519 private key"))
+    ed25519_dalek::SigningKey::from_pkcs8_der(key.private).map_err(|_| bad_key("Ed25519 private key"))
 }
 
-fn ed25519_verifying(key: &GeneratedKey) -> Result<ed25519_dalek::VerifyingKey, Error> {
+fn ed25519_verifying(key: StoredKey<'_>) -> Result<ed25519_dalek::VerifyingKey, Error> {
     use ed25519_dalek::pkcs8::DecodePublicKey;
     ed25519_dalek::VerifyingKey::from_public_key_der(public(key, Encoding::SpkiDer)?)
         .map_err(|_| bad_key("Ed25519 public key"))
@@ -309,7 +309,7 @@ fn ed25519_digest(digest: &[u8]) -> Sha512Digest {
 }
 
 fn ml_dsa_sign<P: ml_dsa::MlDsaParams>(
-    key: &GeneratedKey,
+    key: StoredKey<'_>,
     message: &[u8],
     ctx: &[u8],
     deterministic: bool,
@@ -319,7 +319,7 @@ where
 {
     use ml_dsa::pkcs8::DecodePrivateKey;
     key.check_encoding(Encoding::Pkcs8Der)?;
-    let sk = ml_dsa::SigningKey::<P>::from_pkcs8_der(&key.private).map_err(|_| bad_key("ML-DSA private key"))?;
+    let sk = ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key"))?;
     let sig = if deterministic {
         // The context length is checked before, so this cannot fail.
         sk.expanded_key()
@@ -333,7 +333,7 @@ where
 }
 
 fn ml_dsa_verify<P: ml_dsa::MlDsaParams>(
-    key: &GeneratedKey,
+    key: StoredKey<'_>,
     message: &[u8],
     ctx: &[u8],
     sig: &[u8],
@@ -366,7 +366,7 @@ impl RustCrypto {
     fn sign_message(
         &self,
         s: Scheme,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         message: &[u8],
         ctx: Option<&[u8]>,
     ) -> Result<Vec<u8>, Error> {
@@ -391,7 +391,7 @@ impl RustCrypto {
     fn verify_message(
         &self,
         s: Scheme,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         message: &[u8],
         sig: &[u8],
         ctx: Option<&[u8]>,
@@ -443,7 +443,7 @@ impl Signer for RustCrypto {
 
     fn sign(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         message: &[u8],
         c: &SignContext,
@@ -457,7 +457,7 @@ impl Signer for RustCrypto {
 
     fn verify(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         message: &[u8],
         signature: &[u8],
@@ -471,7 +471,7 @@ impl Signer for RustCrypto {
 
     fn sign_digest(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         digest: &[u8],
         hash: HashAlgorithm,
@@ -494,7 +494,7 @@ impl Signer for RustCrypto {
 
     fn verify_digest(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         digest: &[u8],
         hash: HashAlgorithm,
@@ -521,6 +521,7 @@ mod tests {
     use super::*;
     use crate::adapters::storage::InMemoryTemplateRegistry;
     use crate::domain::provider::Backend;
+    use crate::domain::provider::GeneratedKey;
     use crate::domain::template::TemplateRegistry;
 
     fn algorithm(id: &str) -> api::AlgorithmDetails {
@@ -548,24 +549,33 @@ mod tests {
     fn messages_sign_and_verify_within_the_bound() {
         for id in MESSAGE_TEMPLATES {
             let (k, a) = key(id);
-            let (sig, out) = RustCrypto.sign(&k, &a, b"message", &SignContext::None).unwrap();
+            let (sig, out) = RustCrypto.sign(k.as_stored(), &a, b"message", &SignContext::None).unwrap();
             assert!(sig.len() <= RustCrypto.signature_len_bound(&a).unwrap(), "{id}");
             assert_eq!(out, RustCrypto.output_shape(&a).unwrap(), "{id}");
-            assert!(RustCrypto.verify(&k, &a, b"message", &sig, &SignContext::None).unwrap(), "{id}");
-            assert!(!RustCrypto.verify(&k, &a, b"messagf", &sig, &SignContext::None).unwrap(), "{id}: other message");
+            assert!(RustCrypto.verify(k.as_stored(), &a, b"message", &sig, &SignContext::None).unwrap(), "{id}");
+            assert!(
+                !RustCrypto.verify(k.as_stored(), &a, b"messagf", &sig, &SignContext::None).unwrap(),
+                "{id}: other message"
+            );
             let mut flipped = sig.clone();
             *flipped.last_mut().unwrap() ^= 1;
-            assert!(!RustCrypto.verify(&k, &a, b"message", &flipped, &SignContext::None).unwrap(), "{id}: flipped");
+            assert!(
+                !RustCrypto.verify(k.as_stored(), &a, b"message", &flipped, &SignContext::None).unwrap(),
+                "{id}: flipped"
+            );
             // Malformed signatures are invalid, not errors.
             for bad in [&[][..], &sig[..sig.len() - 1], &[0u8; 5000][..]] {
                 assert!(
-                    !RustCrypto.verify(&k, &a, b"message", bad, &SignContext::None).unwrap(),
+                    !RustCrypto.verify(k.as_stored(), &a, b"message", bad, &SignContext::None).unwrap(),
                     "{id}: {}",
                     bad.len()
                 );
             }
             let (other, _) = key(id);
-            assert!(!RustCrypto.verify(&other, &a, b"message", &sig, &SignContext::None).unwrap(), "{id}: other key");
+            assert!(
+                !RustCrypto.verify(other.as_stored(), &a, b"message", &sig, &SignContext::None).unwrap(),
+                "{id}: other key"
+            );
         }
     }
 
@@ -574,8 +584,8 @@ mod tests {
     fn ecdsa_and_ml_dsa_are_hedged_ed25519_is_deterministic() {
         for id in ["ecdsa-p256-sha256-der", "ml-dsa-44", "ed25519"] {
             let (k, a) = key(id);
-            let one = RustCrypto.sign(&k, &a, b"m", &SignContext::None).unwrap().0;
-            let two = RustCrypto.sign(&k, &a, b"m", &SignContext::None).unwrap().0;
+            let one = RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap().0;
+            let two = RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap().0;
             assert_eq!(one == two, id == "ed25519", "{id}");
         }
     }
@@ -587,9 +597,9 @@ mod tests {
         if let Some(Algorithm::MlDsa(p)) = a.algorithm.as_mut() {
             p.deterministic = true;
         }
-        let one = RustCrypto.sign(&k, &a, b"m", &SignContext::None).unwrap().0;
-        assert_eq!(one, RustCrypto.sign(&k, &a, b"m", &SignContext::None).unwrap().0);
-        assert!(RustCrypto.verify(&k, &a, b"m", &one, &SignContext::None).unwrap());
+        let one = RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap().0;
+        assert_eq!(one, RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::None).unwrap().0);
+        assert!(RustCrypto.verify(k.as_stored(), &a, b"m", &one, &SignContext::None).unwrap());
     }
 
     #[test]
@@ -611,12 +621,12 @@ mod tests {
     fn ml_dsa_binds_the_context() {
         let (k, a) = key("ml-dsa-65");
         let ctx = SignContext::Domain(b"app-v1".to_vec());
-        let (sig, _) = RustCrypto.sign(&k, &a, b"m", &ctx).unwrap();
-        assert!(RustCrypto.verify(&k, &a, b"m", &sig, &ctx).unwrap());
-        assert!(!RustCrypto.verify(&k, &a, b"m", &sig, &SignContext::None).unwrap());
-        assert!(!RustCrypto.verify(&k, &a, b"m", &sig, &SignContext::Domain(b"app-v2".to_vec())).unwrap());
+        let (sig, _) = RustCrypto.sign(k.as_stored(), &a, b"m", &ctx).unwrap();
+        assert!(RustCrypto.verify(k.as_stored(), &a, b"m", &sig, &ctx).unwrap());
+        assert!(!RustCrypto.verify(k.as_stored(), &a, b"m", &sig, &SignContext::None).unwrap());
+        assert!(!RustCrypto.verify(k.as_stored(), &a, b"m", &sig, &SignContext::Domain(b"app-v2".to_vec())).unwrap());
         let long = SignContext::Domain(vec![0; 256]);
-        assert_eq!(RustCrypto.sign(&k, &a, b"m", &long).unwrap_err().code(), Code::InvalidArgument);
+        assert_eq!(RustCrypto.sign(k.as_stored(), &a, b"m", &long).unwrap_err().code(), Code::InvalidArgument);
     }
 
     #[test]
@@ -624,7 +634,7 @@ mod tests {
     fn context_is_refused_where_the_algorithm_has_none() {
         for id in ["ecdsa-p256-sha256-der", "ed25519"] {
             let (k, a) = key(id);
-            let err = RustCrypto.sign(&k, &a, b"m", &SignContext::Domain(b"c".to_vec())).unwrap_err();
+            let err = RustCrypto.sign(k.as_stored(), &a, b"m", &SignContext::Domain(b"c".to_vec())).unwrap_err();
             assert_eq!(err.code(), Code::InvalidArgument, "{id}");
         }
     }
@@ -642,19 +652,28 @@ mod tests {
             let (k, a) = key(id);
             for h in *hashes {
                 let digest = sha(*h, b"message");
-                let (sig, _) = RustCrypto.sign_digest(&k, &a, &digest, *h, &SignContext::None).unwrap();
+                let (sig, _) = RustCrypto.sign_digest(k.as_stored(), &a, &digest, *h, &SignContext::None).unwrap();
                 assert!(sig.len() <= RustCrypto.signature_len_bound(&a).unwrap());
-                assert!(RustCrypto.verify_digest(&k, &a, &digest, *h, &sig, &SignContext::None).unwrap(), "{id} {h:?}");
+                assert!(
+                    RustCrypto.verify_digest(k.as_stored(), &a, &digest, *h, &sig, &SignContext::None).unwrap(),
+                    "{id} {h:?}"
+                );
                 let other = sha(*h, b"other");
-                assert!(!RustCrypto.verify_digest(&k, &a, &other, *h, &sig, &SignContext::None).unwrap(), "{id} {h:?}");
+                assert!(
+                    !RustCrypto.verify_digest(k.as_stored(), &a, &other, *h, &sig, &SignContext::None).unwrap(),
+                    "{id} {h:?}"
+                );
             }
             // SHA-224 is too weak for every curve here; a SHA-256-length
             // digest declared as SHA-512 is refused by length.
             let short = sha(HashAlgorithm::Sha256, b"m");
-            let err =
-                RustCrypto.sign_digest(&k, &a, &short[..28], HashAlgorithm::Sha224, &SignContext::None).unwrap_err();
+            let err = RustCrypto
+                .sign_digest(k.as_stored(), &a, &short[..28], HashAlgorithm::Sha224, &SignContext::None)
+                .unwrap_err();
             assert_eq!(err.code(), Code::InvalidArgument, "{id}");
-            let err = RustCrypto.sign_digest(&k, &a, &short, HashAlgorithm::Sha512, &SignContext::None).unwrap_err();
+            let err = RustCrypto
+                .sign_digest(k.as_stored(), &a, &short, HashAlgorithm::Sha512, &SignContext::None)
+                .unwrap_err();
             assert_eq!(err.code(), Code::InvalidArgument, "{id}");
         }
     }

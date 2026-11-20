@@ -1,6 +1,6 @@
 use crate::secret::SecretVec;
 
-use super::GeneratedKey;
+use super::StoredKey;
 use crate::domain::core::Error;
 use crate::proto::api;
 
@@ -33,7 +33,7 @@ pub trait Cipher: Send + Sync {
     /// the output. Every successful encryption sets an output kind.
     fn encrypt(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         plaintext: &[u8],
         params: &EncryptParams,
@@ -44,7 +44,7 @@ pub trait Cipher: Send + Sync {
     /// is released.
     fn decrypt(
         &self,
-        key: &GeneratedKey,
+        key: StoredKey<'_>,
         algorithm: &api::AlgorithmDetails,
         ciphertext: &[u8],
         output: &api::ProviderOutput,

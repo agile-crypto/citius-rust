@@ -2,7 +2,7 @@ use std::time::SystemTime;
 
 use crate::domain::core::ScopeSpecification;
 use crate::domain::key::{Key, KeyId, Origin, Version};
-use crate::domain::provider::{Encoding, GeneratedKey, ProviderRegistry};
+use crate::domain::provider::{Encoding, ProviderRegistry, StoredKey};
 use crate::proto::api;
 
 /// What a caller may know about one version of a key (Go: the
@@ -32,7 +32,7 @@ impl KeyMetadata {
     pub fn of(key: &Key, v: &Version, providers: &ProviderRegistry) -> KeyMetadata {
         // The stored material is the provider's GeneratedKey; its public half
         // is meant to be read. Material of another format has none to show.
-        let public_key = GeneratedKey::from_bytes(v.material()).ok().and_then(|g| g.public);
+        let public_key = StoredKey::parse(v.material()).ok().and_then(|k| k.public).map(|(b, e)| (b.to_vec(), e));
         KeyMetadata {
             id: key.id().clone(),
             name: key.name().to_owned(),
