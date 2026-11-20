@@ -45,6 +45,9 @@ cargo xtask miri            # the unit tests under Miri (undefined behaviour
                             # in unsafe code, data races between Rust threads)
 cargo xtask tsan            # tests/c/*.c against a library built with
                             # ThreadSanitizer, Rust std included
+cargo xtask memcheck        # tests/c/*.c with a checking allocator around
+                            # the whole process, the library included:
+                            # Guard Malloc (macOS), valgrind (Linux)
 cargo xtask interop         # signatures, ciphertexts and metadata
                             # cross-checked with Go's software provider
 cargo xtask all             # test-c, miri, tsan and interop
@@ -71,6 +74,22 @@ Why the sanitizers are set up this way:
 - For TSan both sides are instrumented. A process may hold only one TSan
   runtime: on macOS the C tests link Rust's (`librustc-nightly_rt.tsan`),
   not clang's.
+
+Buffer bounds inside the library, where ASan does not look, are checked two
+more ways:
+- `tests/c/test_buffer_bounds.c` places every caller buffer, slice, string
+  and versioned struct directly against a `PROT_NONE` guard page, so one byte
+  read or written out of bounds faults. It sweeps every output region's
+  capacity from 0 to its need + 1 against the SIZE QUERIES contract
+  (`BUFFER_TOO_SMALL` with every `*_len` set and nothing written below the
+  need, nothing written beyond `*_len` above it). It also passes versioned
+  structs with every `struct_size`, from the size field alone to a newer
+  caller's zero tail.
+- `cargo xtask memcheck` runs all C tests under Guard Malloc (every heap
+  allocation of the process against a guard page, after it and then before
+  it) or valgrind memcheck. Guard Malloc aligns allocations to 16 bytes, so
+  overruns into that padding go unseen; the guard-page test covers caller
+  buffers to the byte.
 
 ## Before pushing
 

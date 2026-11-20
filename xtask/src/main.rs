@@ -4,6 +4,9 @@
 //!                              compile and run tests/c/*.c plain and with
 //!                              ASan+UBSan
 //!   cargo xtask check-symbols  only the symbol check
+//!   cargo xtask memcheck       tests/c/*.c with a checking allocator around
+//!                              the whole process, the library included:
+//!                              Guard Malloc (macOS), valgrind (Linux)
 //!   cargo xtask miri           run the library's unit tests under Miri
 //!   cargo xtask tsan           build the library with ThreadSanitizer and run
 //!                              tests/c/*.c against it
@@ -39,12 +42,13 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "test-c" => test_c(),
         "check-symbols" => build().and_then(|b| check_symbols(&b)),
+        "memcheck" => memcheck(),
         "miri" => miri(),
         "tsan" => tsan(),
         "interop" => interop(),
         "install" => install(&env::args().skip(2).collect::<Vec<_>>()),
         "all" => test_c().and_then(|()| miri()).and_then(|()| tsan()).and_then(|()| interop()),
-        _ => Err("usage: cargo xtask <test-c|check-symbols|miri|tsan|interop|install --prefix DIR|all>".to_owned()),
+        _ => Err("usage: cargo xtask <test-c|check-symbols|memcheck|miri|tsan|interop|install --prefix DIR|all>".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -236,14 +240,47 @@ fn test_c() -> Result<(), String> {
     check_symbols(&b)?;
     let asan = ["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"];
     run_c_tests(&[
-        Variant { name: "plain", lib_dir: b.lib_dir.clone(), compile: vec!["-O1"], link: vec![] },
+        Variant { name: "plain", lib_dir: b.lib_dir.clone(), compile: vec!["-O1"], ..Variant::default() },
         Variant {
             name: "asan-ubsan",
             lib_dir: b.lib_dir,
             compile: asan.to_vec(),
             link: asan.iter().map(|f| f.to_string()).collect(),
+            ..Variant::default()
         },
     ])
+}
+
+/// The C tests with a checking allocator around the whole process, the
+/// Rust library included (ASan in test-c instruments only the C side):
+/// - macOS: Guard Malloc, every allocation against a guard page, once with
+///   the guard after it (overflows) and once before (underflows);
+/// - Linux: Valgrind memcheck.
+fn memcheck() -> Result<(), String> {
+    let b = build()?;
+    let base = |name| Variant { name, lib_dir: b.lib_dir.clone(), compile: vec!["-O1", "-g"], ..Variant::default() };
+    if cfg!(target_os = "macos") {
+        const GMALLOC: &str = "/usr/lib/libgmalloc.dylib";
+        if !Path::new(GMALLOC).exists() {
+            return Err(format!("{GMALLOC} not found (Guard Malloc ships with macOS)"));
+        }
+        run_c_tests(&[
+            Variant { run_env: vec![("DYLD_INSERT_LIBRARIES", GMALLOC)], ..base("gmalloc-after") },
+            Variant {
+                run_env: vec![("DYLD_INSERT_LIBRARIES", GMALLOC), ("MALLOC_PROTECT_BEFORE", "1")],
+                ..base("gmalloc-before")
+            },
+        ])
+    } else if cfg!(target_os = "linux") {
+        output(Command::new("valgrind").arg("--version"), "valgrind --version")
+            .map_err(|_| "valgrind not found; install it (e.g. apt install valgrind)".to_owned())?;
+        run_c_tests(&[Variant {
+            wrapper: vec!["valgrind", "--quiet", "--error-exitcode=99", "--leak-check=no", "--trace-children=no"],
+            ..base("valgrind")
+        }])
+    } else {
+        Err("memcheck needs macOS (Guard Malloc) or Linux (valgrind)".to_owned())
+    }
 }
 
 /// The library's unit tests under Miri, which detects undefined behaviour in
@@ -294,19 +331,30 @@ fn tsan() -> Result<(), String> {
     } else {
         vec!["-fsanitize=thread".to_owned()]
     };
-    run_c_tests(&[Variant { name: "tsan", lib_dir, compile: vec!["-O1", "-g", "-fsanitize=thread"], link }])
+    run_c_tests(&[Variant {
+        name: "tsan",
+        lib_dir,
+        compile: vec!["-O1", "-g", "-fsanitize=thread"],
+        link,
+        ..Variant::default()
+    }])
 }
 
 // ---------------------------------------------------------------------------
 // Running the C tests
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct Variant {
     name: &'static str,
     /// Where the library to link against lives.
     lib_dir: PathBuf,
     compile: Vec<&'static str>,
     link: Vec<String>,
+    /// Environment for running each test (e.g. Guard Malloc).
+    run_env: Vec<(&'static str, &'static str)>,
+    /// A command each test runs under (e.g. valgrind and its flags).
+    wrapper: Vec<&'static str>,
 }
 
 fn run_c_tests(variants: &[Variant]) -> Result<(), String> {
@@ -366,7 +414,16 @@ fn run_c_tests(variants: &[Variant]) -> Result<(), String> {
                 continue;
             }
             // LeakSanitizer is not available everywhere (e.g. macOS arm64).
-            let ran = Command::new(&exe)
+            let mut cmd = match v.wrapper.split_first() {
+                Some((tool, args)) => {
+                    let mut c = Command::new(tool);
+                    c.args(args).arg(&exe);
+                    c
+                }
+                None => Command::new(&exe),
+            };
+            let ran = cmd
+                .envs(v.run_env.iter().copied())
                 .env("ASAN_OPTIONS", "detect_leaks=0:abort_on_error=1")
                 .env("TSAN_OPTIONS", "halt_on_error=1")
                 .status()

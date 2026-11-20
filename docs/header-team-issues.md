@@ -95,6 +95,30 @@ No file-backed key repository exists yet; only the in-memory one does. (An earli
 
 ---
 
+## 6. Storage requirements depend on the storage's alignment, which no header states (low)
+
+**What.** Storage regions hold arrays of `agc_kv`/`agc_kb` items, which must
+be 8-byte aligned (agc_metadata.h, contract 4). For a `storage.data` that is
+not 8-byte aligned, the library pads, so the requirement it reports depends
+on the address: `agc_metadata_decode` asks 74 bytes for an aligned region and
+75 for one at an odd address (found by tests/c/test_buffer_bounds.c).
+- `agc_metadata_storage_len` promises the "exact number of storage bytes
+  agc_metadata_decode() would require". That holds only for aligned storage.
+- "One retry therefore always suffices" (agc_crypto_types.h, SIZE QUERIES)
+  holds only if the retry's region has the same alignment as the query's.
+
+malloc'd storage is aligned, so ordinary callers never see this. A caller
+carving storage out of an arena at arbitrary offsets can get
+`AGC_ERR_BUFFER_TOO_SMALL` with exactly the size it was told. Nothing
+unsafe happens: the library refuses and writes nothing.
+
+**Ask.** State that `storage.data` must be aligned to 8 bytes (or
+`_Alignof(max_align_t)`), or that requirements are bounds that include
+alignment padding. Our implementation already treats them as the latter
+(`ffi/translation/rust_to_c.rs`).
+
+---
+
 ## Not issues, for the record
 
 - **`agc_poly1305_params` with only `reserved`** is correct. The pinned `Poly1305Params` has no fields, and C has no empty structs. (We briefly reported this as a defect; it was our misreading.)
