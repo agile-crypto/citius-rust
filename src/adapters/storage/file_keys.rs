@@ -485,10 +485,31 @@ mod tests {
     use crate::domain::core::Scope;
     use crate::domain::key::testing::{key, version};
 
-    fn dir(name: &str) -> PathBuf {
+    /// A fresh directory for one test's store. It also holds
+    /// `secret::FORKING` shared until the test ends, so no fork test's child
+    /// can inherit this store's lock descriptor while it is open.
+    fn dir(name: &str) -> TestDir {
         let d = std::env::temp_dir().join(format!("agc-filestore-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
-        d
+        TestDir { path: d, _no_fork: crate::secret::FORKING.read().unwrap_or_else(std::sync::PoisonError::into_inner) }
+    }
+
+    struct TestDir {
+        path: PathBuf,
+        _no_fork: std::sync::RwLockReadGuard<'static, ()>,
+    }
+
+    impl std::ops::Deref for TestDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl AsRef<Path> for TestDir {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
     }
 
     fn wk() -> WrappingKey {

@@ -425,6 +425,13 @@ pub(crate) mod leak_check {
     }
 }
 
+/// Tests that fork(2) hold this exclusively; tests that hold a file store's
+/// lock descriptor open hold it shared. A child forked while another test's
+/// store is open inherits that descriptor, and with it the store's lock,
+/// until it exits: the other test's reopen would then fail at random.
+#[cfg(test)]
+pub(crate) static FORKING: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +550,7 @@ mod tests {
     fn a_forked_child_gets_no_copy_of_a_secret() {
         #[cfg(not(miri))]
         {
+            let _no_store_open = super::FORKING.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             let s = SecretBytes::new_with(&[0x5a; 64], Locking::BestEffort).unwrap();
             let inherited = s.0.inherited;
             let p = s.as_ptr();
