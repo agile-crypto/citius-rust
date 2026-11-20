@@ -277,7 +277,7 @@ impl KeyOrchestrator {
     pub fn validate_transform(&self, spec: TransformSpec) -> Result<MigrationValidation, Error> {
         let key = self.keys.get_by_name(&spec.key_name)?.ok_or_else(|| not_found("validate_transform", &spec.key_name))?;
         let version = key.current();
-        let source = self.providers.get(version.provider());
+        let source = self.providers.get(version.provider()).cloned();
         let refused = |e: Error| -> Result<String, Error> {
             if is_refusal(e.code()) || matches!(e.code(), Code::IncompatibleParameters | Code::KeyOperationNotAllowed)
                 || matches!(e.code(), Code::NoMatchingTemplate | Code::TemplateNotFound | Code::TemplateDeprecated | Code::TemplateForbidden)
@@ -329,7 +329,7 @@ impl KeyOrchestrator {
         let template = self.templates.get(version.template_id()).cloned().ok_or_else(|| {
             Error::new(Code::TemplateNotFound, OP, format!("the key's template {} is gone", version.template_id()))
         })?;
-        let source = self.providers.get(version.provider());
+        let source = self.providers.get(version.provider()).cloned();
         Ok(Migration { key, version, template, source })
     }
 

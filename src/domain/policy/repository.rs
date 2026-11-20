@@ -12,7 +12,14 @@ pub trait PolicyRepository: Send + Sync {
     /// `expected_version` > 0, at that version too. `PolicyVersionConflict`
     /// otherwise, and then nothing is stored; `PolicyNotFound` if it is gone.
     fn update(&self, p: Policy, expected_version: i64) -> Result<(), Error>;
+    /// A copy of the stored policy, for administration.
     fn get(&self, name: &str) -> Result<Option<Policy>, Error>;
+    /// Calls `f` once with the stored policy, in place under the
+    /// repository's lock, if there is one by that name. Every operation
+    /// checks a policy: this copies nothing, and, unlike a shared `Arc`,
+    /// writes no reference count that all threads using the policy (one
+    /// serves many keys) would contend on.
+    fn inspect(&self, name: &str, f: &mut dyn FnMut(&Policy)) -> Result<(), Error>;
     /// `PolicyNotFound` if there is none.
     fn delete(&self, name: &str) -> Result<(), Error>;
     /// Every policy, ordered by name.

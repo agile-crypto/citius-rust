@@ -50,6 +50,14 @@ impl PolicyRepository for InMemoryPolicyRepository {
         Ok(m.get(name).cloned())
     }
 
+    fn inspect(&self, name: &str, f: &mut dyn FnMut(&Policy)) -> Result<(), Error> {
+        let m = self.policies.read().map_err(|_| poisoned("InMemoryPolicyRepository.inspect"))?;
+        if let Some(p) = m.get(name) {
+            f(p);
+        }
+        Ok(())
+    }
+
     fn delete(&self, name: &str) -> Result<(), Error> {
         const OP: &str = "InMemoryPolicyRepository.delete";
         let mut m = self.policies.write().map_err(|_| poisoned(OP))?;

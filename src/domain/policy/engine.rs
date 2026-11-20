@@ -43,25 +43,43 @@ impl Enforcer {
     }
 
     fn policy(&self, name: &str, op: &'static str) -> Result<Policy, Error> {
+        Self::named(name, op)?;
+        self.policies.get(name)?.ok_or_else(|| Self::not_found(name, op))
+    }
+
+    /// `f` applied to the stored policy in place (`PolicyRepository::inspect`):
+    /// what every evaluation uses, as no evaluation keeps the policy.
+    fn with_policy<R>(&self, name: &str, op: &'static str, f: impl FnOnce(&Policy) -> R) -> Result<R, Error> {
+        Self::named(name, op)?;
+        let (mut f, mut out) = (Some(f), None);
+        self.policies.inspect(name, &mut |p| out = f.take().map(|f| f(p)))?;
+        out.ok_or_else(|| Self::not_found(name, op))
+    }
+
+    fn named(name: &str, op: &'static str) -> Result<(), Error> {
         if name.is_empty() {
             return Err(Error::new(Code::InvalidArgument, op, "a policy name is required"));
         }
-        self.policies
-            .get(name)?
-            .ok_or_else(|| Error::new(Code::PolicyNotFound, op, format!("no policy named {name}")))
+        Ok(())
+    }
+
+    fn not_found(name: &str, op: &'static str) -> Error {
+        Error::new(Code::PolicyNotFound, op, format!("no policy named {name}"))
     }
 }
 
 impl Evaluator for Enforcer {
     fn validate_operation(&self, policy: &str, op: Operation, template_id: Option<&str>) -> Result<(), Error> {
         const OP: &str = "Enforcer::validate_operation";
-        let p = self.policy(policy, OP)?;
+        let (template_ok, op_ok) = self.with_policy(policy, OP, |p| {
+            (template_id.is_none_or(|t| p.rules().allows_template(t)), p.rules().allows_operation(op))
+        })?;
         if let Some(t) = template_id
-            && !p.rules().allows_template(t)
+            && !template_ok
         {
             return Err(Error::new(Code::PolicyViolation, OP, format!("template {t} is not allowed by policy {policy}")));
         }
-        if !p.rules().allows_operation(op) {
+        if !op_ok {
             return Err(Error::new(
                 Code::PolicyViolation,
                 OP,
@@ -72,18 +90,16 @@ impl Evaluator for Enforcer {
     }
 
     fn allowed_templates(&self, policy: &str) -> Result<Vec<String>, Error> {
-        Ok(self.policy(policy, "Enforcer::allowed_templates")?.rules().allowed_templates().to_vec())
+        self.with_policy(policy, "Enforcer::allowed_templates", |p| p.rules().allowed_templates().to_vec())
     }
 
     fn provider_requirements(&self, policy: &str) -> Result<ProviderRequirements, Error> {
-        Ok(self.policy(policy, "Enforcer::provider_requirements")?.rules().provider_requirements())
+        self.with_policy(policy, "Enforcer::provider_requirements", |p| p.rules().provider_requirements())
     }
 
     fn check_template_security(&self, policy: &str, info: &TemplateSecurityInfo) -> Result<(), Error> {
         const OP: &str = "Enforcer::check_template_security";
-        self.policy(policy, OP)?
-            .rules()
-            .check_security(info)
+        self.with_policy(policy, OP, |p| p.rules().check_security(info))?
             .map_err(|m| Error::new(Code::PolicyViolation, OP, format!("{m} (policy {policy})")))
     }
 }

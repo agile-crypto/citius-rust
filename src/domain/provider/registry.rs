@@ -87,8 +87,8 @@ impl ProviderRegistry {
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<dyn Backend>> {
-        self.providers.iter().find(|p| p.name() == name).cloned()
+    pub fn get(&self, name: &str) -> Option<&Arc<dyn Backend>> {
+        self.providers.iter().find(|p| p.name() == name)
     }
 
     pub fn list(&self) -> &[Arc<dyn Backend>] {
@@ -136,7 +136,7 @@ impl ProviderRegistry {
             let p = self
                 .get(name)
                 .ok_or_else(|| Error::new(Code::ProviderNotFound, OP, format!("no provider named {name}")))?;
-            if !serves(&p) {
+            if !serves(p) {
                 return Err(Error::new(
                     Code::ProviderIncompatible,
                     OP,
@@ -151,7 +151,7 @@ impl ProviderRegistry {
                     format!("provider {name} does not meet: {}", missing.join(", ")),
                 ));
             }
-            return Ok(p);
+            return Ok(p.clone());
         }
 
         let ranked = self.rank(&req.template_id, &req.implementation);

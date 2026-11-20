@@ -94,7 +94,7 @@ impl CryptoOrchestrator {
     /// validateSignatureScopeParams): a context exactly for the WITH_CONTEXT
     /// scopes, and the entry point (message or digest) the scope is for.
     fn check_sign_params(r: &Resolved, input: &SignInput, context: &SignContext) -> Result<(), Error> {
-        let scope = r.version.scope_spec().scope;
+        let scope = r.version().scope_spec().scope;
         let (prehashed, with_context) = match scope {
             Scope::Signature(SignatureScope::Standard) => (false, false),
             Scope::Signature(SignatureScope::WithContext) => (false, true),
@@ -133,21 +133,21 @@ impl CryptoOrchestrator {
         input: &SignInput,
         context: &SignContext,
         verify: bool,
-    ) -> Result<Resolved, Error> {
+    ) -> Result<Resolved<'_>, Error> {
         input.check()?;
         let (op, declared) = input.operations(verify);
         let direction = if verify { Direction::Receiving } else { Direction::Originating };
-        let (_, r) = self.resolve(key_name, version, direction, op, declared)?;
+        let r = self.resolve(key_name, version, direction, op, declared)?;
         Self::check_sign_params(&r, input, context)?;
         if let SignInput::Digest { digest, hash } = *input {
             // The key version accepts only the hashes it recorded when it was
             // created (Go: validateDigestHash).
-            let accepted = &r.version.scope_spec().properties.accepted_digest_hashes;
+            let accepted = &r.version().scope_spec().properties.accepted_digest_hashes;
             if accepted.is_empty() {
                 return Err(Error::new(
                     Code::Internal,
                     OP,
-                    format!("key version {} records no accepted digest hash", r.version.number()),
+                    format!("key version {} records no accepted digest hash", r.version().number()),
                 ));
             }
             if !accepted.contains(&hash) {
@@ -156,7 +156,7 @@ impl CryptoOrchestrator {
                     OP,
                     format!(
                         "key version {} does not accept digest hash {hash:?} (accepted: {accepted:?})",
-                        r.version.number()
+                        r.version().number()
                     ),
                 ));
             }
@@ -186,7 +186,7 @@ impl CryptoOrchestrator {
     ) -> Result<Signed, E> {
         let r = self.resolve_sign(req.key_name, None, &req.input, &req.context, false)?;
         let signer = r.signer()?;
-        let shape = signed_metadata(r.version.number(), signer.output_shape(r.algorithm())?, &req);
+        let shape = signed_metadata(r.version().number(), signer.output_shape(r.algorithm())?, &req);
         admit(Sizes {
             artifact: signer.signature_len_bound(r.algorithm())?,
             metadata: metadata::encode(&shape, enc)?.len(),
@@ -207,7 +207,7 @@ impl CryptoOrchestrator {
         if signature.len() > signer.signature_len_bound(r.algorithm())? {
             return Err(Error::new(Code::ProviderContractViolation, OP, "the signature exceeds the provider's bound"));
         }
-        let metadata = signed_metadata(r.version.number(), output, &req);
+        let metadata = signed_metadata(r.version().number(), output, &req);
         Ok(Signed { signature, metadata })
     }
 
@@ -230,9 +230,7 @@ impl CryptoOrchestrator {
         non_empty(req.signature, "signature")?;
         let r = self.resolve_sign(req.key_name, req.key_version, &req.input, &req.context, true)?;
         let metadata = match enc {
-            Some(enc) => {
-                metadata::encode(&Self::metadata(r.version.number(), no_output(), req.user_context.clone()), enc)?.len()
-            }
+            Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
             None => 0,
         };
         admit(Sizes { artifact: 0, metadata })?;
@@ -244,7 +242,7 @@ impl CryptoOrchestrator {
                 signer.verify_digest(&key, r.algorithm(), digest, hash, req.signature, &req.context)?
             }
         };
-        Ok(Verified { valid, metadata: Self::metadata(r.version.number(), no_output(), req.user_context) })
+        Ok(Verified { valid, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
     }
 }
 

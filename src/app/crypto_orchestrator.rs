@@ -66,20 +66,28 @@ pub struct Sizes {
     pub metadata: usize,
 }
 
-/// A key version resolved for an operation.
-pub(super) struct Resolved {
-    pub(super) version: Version,
-    template: Template,
-    provider: Arc<dyn Backend>,
+/// A key version resolved for an operation. It shares the stored key and
+/// borrows the template and provider from the orchestrator: resolving
+/// copies nothing, and the locked material stays where it is.
+pub(super) struct Resolved<'a> {
+    key: Arc<Key>,
+    /// Index of the resolved version in `key.versions()`.
+    at: usize,
+    template: &'a Template,
+    provider: &'a dyn Backend,
 }
 
-impl Resolved {
+impl Resolved<'_> {
+    pub(super) fn version(&self) -> &Version {
+        &self.key.versions()[self.at]
+    }
+
     pub(super) fn algorithm(&self) -> &api::AlgorithmDetails {
         self.template.info().algorithm.as_ref().expect("templates always have an algorithm")
     }
 
     pub(super) fn material(&self) -> Result<GeneratedKey, Error> {
-        GeneratedKey::from_bytes(self.version.material())
+        GeneratedKey::from_bytes(self.version().material())
     }
 
     fn cipher(&self) -> Result<&dyn Cipher, Error> {
@@ -126,7 +134,7 @@ impl CryptoOrchestrator {
         direction: Direction,
         op: Operation,
         declared: api::CryptoOperation,
-    ) -> Result<(Arc<Key>, Resolved), Error> {
+    ) -> Result<Resolved<'_>, Error> {
         const OP: &str = "CryptoOrchestrator";
         if key_name.is_empty() {
             return Err(Error::new(Code::InvalidArgument, OP, "a key name is required"));
@@ -136,15 +144,17 @@ impl CryptoOrchestrator {
             Direction::Originating => key.can_originate()?,
             Direction::Receiving => key.can_receive()?,
         }
-        let version = match version {
-            None => key.current().clone(),
-            Some(n) => key
-                .version(n)
-                .cloned()
+        let at = match version {
+            None => key.versions().len() - 1,
+            Some(n) => n
+                .checked_sub(1)
+                .map(|i| i as usize)
+                .filter(|&i| i < key.versions().len())
                 .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("key {key_name} has no version {n}")))?,
         };
+        let version = &key.versions()[at];
         self.policy.validate_operation(key.policy(), op, Some(version.template_id()))?;
-        let template = self.templates.get(version.template_id()).cloned().ok_or_else(|| {
+        let template = self.templates.get(version.template_id()).ok_or_else(|| {
             Error::new(Code::TemplateNotFound, OP, format!("the key's template {} is gone", version.template_id()))
         })?;
         if !template.supports_operation(&version.scope_spec().scope, declared) {
@@ -157,14 +167,15 @@ impl CryptoOrchestrator {
         let provider = self.providers.get(version.provider()).ok_or_else(|| {
             Error::new(Code::ProviderNotFound, OP, format!("the key's provider {} is not registered", version.provider()))
         })?;
-        Ok((key, Resolved { version, template, provider }))
+        let provider = provider.as_ref();
+        Ok(Resolved { key, at, template, provider })
     }
 
     /// The parameters must fit the version's scope (Go:
     /// validateEncryptionScopeParams): AEAD parameters for a standard AEAD
     /// key, none for a block or stream cipher key.
     fn check_encrypt_params(r: &Resolved, params: &EncryptParams) -> Result<(), Error> {
-        let scope = r.version.scope_spec().scope;
+        let scope = r.version().scope_spec().scope;
         let fits = match params {
             EncryptParams::Aead { .. } => scope == Scope::Aead(api::AeadScope::Standard),
             EncryptParams::None => matches!(scope, Scope::SymmetricCipher(_)),
@@ -211,7 +222,7 @@ impl CryptoOrchestrator {
     ) -> Result<Encrypted, E> {
         let r = self.resolve_encrypt(&req)?;
         let cipher = r.cipher()?;
-        let shape = Self::metadata(r.version.number(), cipher.output_shape(r.algorithm())?, req.user_context.clone());
+        let shape = Self::metadata(r.version().number(), cipher.output_shape(r.algorithm())?, req.user_context.clone());
         admit(Sizes {
             artifact: cipher.ciphertext_len(r.algorithm(), req.plaintext.len())?,
             metadata: metadata::encode(&shape, enc)?.len(),
@@ -219,25 +230,36 @@ impl CryptoOrchestrator {
         Ok(Self::encrypt_resolved(&r, req)?)
     }
 
-    fn resolve_encrypt(&self, req: &EncryptRequest) -> Result<Resolved, Error> {
+    /// The encoded length of metadata that carries no provider output
+    /// (decryption, verification).
+    pub(super) fn metadata_len(
+        version: u32,
+        user_context: &BTreeMap<String, String>,
+        enc: MetadataEncoding,
+    ) -> Result<usize, Error> {
+        Ok(metadata::encode(&Self::metadata(version, no_output(), user_context.clone()), enc)?.len())
+    }
+
+    fn resolve_encrypt(&self, req: &EncryptRequest) -> Result<Resolved<'_>, Error> {
         non_empty(req.plaintext, "plaintext")?;
-        let (_, r) = self.resolve(req.key_name, None, Direction::Originating, Operation::Encrypt, api::CryptoOperation::Encrypt)?;
+        let (op, declared) = (Operation::Encrypt, api::CryptoOperation::Encrypt);
+        let r = self.resolve(req.key_name, None, Direction::Originating, op, declared)?;
         Self::check_encrypt_params(&r, &req.params)?;
         Ok(r)
     }
 
-    fn encrypt_resolved(r: &Resolved, req: EncryptRequest) -> Result<Encrypted, Error> {
+    fn encrypt_resolved(r: &Resolved<'_>, req: EncryptRequest) -> Result<Encrypted, Error> {
         let (ciphertext, output) = r.cipher()?.encrypt(&r.material()?, r.algorithm(), req.plaintext, &req.params)?;
         require_output(&output)?;
-        Ok(Encrypted { ciphertext, metadata: Self::metadata(r.version.number(), output, req.user_context) })
+        Ok(Encrypted { ciphertext, metadata: Self::metadata(r.version().number(), output, req.user_context) })
     }
 
-    fn resolve_decrypt(&self, req: &DecryptRequest) -> Result<Resolved, Error> {
+    fn resolve_decrypt(&self, req: &DecryptRequest) -> Result<Resolved<'_>, Error> {
         non_empty(req.ciphertext, "ciphertext")?;
         if req.metadata.key_version == 0 {
             return Err(Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata names no key version"));
         }
-        let (_, r) = self.resolve(
+        let r = self.resolve(
             req.key_name,
             Some(req.metadata.key_version),
             Direction::Receiving,
@@ -301,9 +323,7 @@ impl CryptoOrchestrator {
     ) -> Result<Decrypted, E> {
         let r = self.resolve_decrypt(&req)?;
         let metadata = match enc {
-            Some(enc) => {
-                metadata::encode(&Self::metadata(r.version.number(), no_output(), req.user_context.clone()), enc)?.len()
-            }
+            Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
             None => 0,
         };
         admit(Sizes { artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?, metadata })?;
@@ -317,7 +337,7 @@ impl CryptoOrchestrator {
             .as_ref()
             .ok_or_else(|| Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata has no provider output"))?;
         let plaintext = r.cipher()?.decrypt(&r.material()?, r.algorithm(), req.ciphertext, output, &req.params)?;
-        Ok(Decrypted { plaintext, metadata: Self::metadata(r.version.number(), no_output(), req.user_context) })
+        Ok(Decrypted { plaintext, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
     }
 }
 
@@ -525,6 +545,17 @@ pub(super) mod tests {
         fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
             self.inner.list()
         }
+    }
+
+    #[test]
+    fn resolving_shares_the_stored_key() {
+        let w = world();
+        create(&w, "k", AEAD);
+        let (op, declared) = (Operation::Encrypt, api::CryptoOperation::Encrypt);
+        let r = w.crypto.resolve("k", None, Direction::Originating, op, declared).unwrap();
+        let stored = w.repo.get_by_name("k").unwrap().unwrap();
+        assert!(Arc::ptr_eq(&r.key, &stored), "no copy of the key, its versions or their material");
+        assert!(std::ptr::eq(r.version(), stored.current()));
     }
 
     #[test]
