@@ -59,7 +59,9 @@ fn main() {
         .expect("Couldn't write header function list");
 
     let types_header = fs::read_to_string(format!("{include_dir}/agc_types.h")).expect("Couldn't read agc_types.h");
-    fs::write(out_path.join("rc_table.rs"), rc_table(&types_header)).expect("Couldn't write rc table");
+    let table = rc_table(&types_header);
+    check_rc_table_complete(&bindings.to_string(), &table);
+    fs::write(out_path.join("rc_table.rs"), table).expect("Couldn't write rc table");
 
     let enum_file = enum_helpers(&bindings.to_string(), &functions);
     fs::write(out_path.join("enum_helpers.rs"), enum_file).expect("Couldn't write enum helpers");
@@ -161,6 +163,25 @@ fn rc_table(types_header: &str) -> String {
     }
     out.push_str("];\n");
     out
+}
+
+/// rc_table reads agc_types.h as text and skips lines it does not recognise,
+/// so a reformatted header could silently drop codes from agc_rc_name and
+/// agc_rc_message. Every result code the bindings define (AGC_OK and
+/// AGC_ERR_*) must be in the table.
+fn check_rc_table_complete(bindings: &str, table: &str) {
+    let file = syn::parse_file(bindings).expect("bindings.rs is not valid Rust");
+    let missing: Vec<String> = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(c) => Some(c.ident.to_string()),
+            _ => None,
+        })
+        .filter(|n| n == "AGC_OK" || n.starts_with("AGC_ERR_"))
+        .filter(|n| !table.contains(&format!("crate::bindings::{n} as")))
+        .collect();
+    assert!(missing.is_empty(), "agc_types.h: result codes missing from the rc table (format changed?): {missing:?}");
 }
 
 /// The `agc_<enum>_name` / `agc_<enum>_from_name` pair for every enum the
