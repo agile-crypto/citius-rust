@@ -2,7 +2,7 @@ use std::any::Any;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Code, Error, PublicCache};
+use crate::domain::core::{Cached, Code, Error, PublicCache};
 use crate::secret::extend_secret;
 
 /// How key bytes are encoded, recorded next to them so that the provider
@@ -109,22 +109,6 @@ pub struct StoredKey<'a> {
     cache: Option<&'a PublicCache>,
 }
 
-/// A value from the version's cache, or made for this call alone.
-pub enum Cached<'a, T> {
-    Shared(&'a T),
-    Fresh(T),
-}
-
-impl<T> std::ops::Deref for Cached<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        match self {
-            Cached::Shared(v) => v,
-            Cached::Fresh(v) => v,
-        }
-    }
-}
-
 impl<'a> StoredKey<'a> {
     /// The same key with the cache of the version it belongs to.
     pub fn with_cache(self, cache: &'a PublicCache) -> StoredKey<'a> {
@@ -132,14 +116,16 @@ impl<'a> StoredKey<'a> {
     }
 
     /// A public value the provider derives from this key, made once per
-    /// version (`PublicCache`). `make` must derive it from this key alone,
-    /// and it must be public: the cache is ordinary memory.
+    /// version (`PublicCache`) if its `bytes` fit the cache budget. `make`
+    /// must derive it from this key alone, and it must be public: the cache
+    /// is ordinary memory.
     pub fn public_value<T: Any + Send + Sync>(
         &self,
+        bytes: usize,
         make: impl FnOnce() -> Result<T, Error>,
     ) -> Result<Cached<'a, T>, Error> {
         match self.cache {
-            Some(cache) => cache.get_or_try_init(make).map(Cached::Shared),
+            Some(cache) => cache.get_or_try_init(bytes, make),
             None => make().map(Cached::Fresh),
         }
     }

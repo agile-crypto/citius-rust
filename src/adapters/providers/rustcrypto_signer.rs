@@ -17,8 +17,8 @@ use zeroize::Zeroizing;
 
 use super::RustCrypto;
 use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
-use crate::domain::core::{Code, Error, hash_output_len};
-use crate::domain::provider::{Cached, Encoding, SignContext, Signer, StoredKey};
+use crate::domain::core::{Cached, Code, Error, hash_output_len};
+use crate::domain::provider::{Encoding, SignContext, Signer, StoredKey};
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
 
 const OP: &str = "RustCrypto::sign";
@@ -259,7 +259,7 @@ macro_rules! ecdsa_verify {
     ($curve:ident, $key:expr, $prehash:expr, $sig:expr) => {{
         use $curve::ecdsa::signature::hazmat::PrehashVerifier;
         use $curve::pkcs8::DecodePublicKey;
-        let vk = $key.public_value(|| {
+        let vk = $key.public_value(size_of::<$curve::ecdsa::VerifyingKey>(), || {
             $curve::ecdsa::VerifyingKey::from_public_key_der(public($key, Encoding::SpkiDer)?)
                 .map_err(|_| bad_key("ECDSA public key"))
         })?;
@@ -343,7 +343,7 @@ fn ed25519_secret(key: StoredKey<'_>) -> Result<ExpandedSecretKey, Error> {
 /// would otherwise use, must match it.
 fn ed25519_public<'a>(key: StoredKey<'a>) -> Result<Cached<'a, ed25519_dalek::VerifyingKey>, Error> {
     use ed25519_dalek::pkcs8::DecodePublicKey;
-    key.public_value(|| {
+    key.public_value(size_of::<ed25519_dalek::VerifyingKey>(), || {
         let vk = ed25519_dalek::VerifyingKey::from(&ed25519_secret(key)?);
         if let Some((spki, Encoding::SpkiDer)) = key.public
             && ed25519_dalek::VerifyingKey::from_public_key_der(spki).ok() != Some(vk)
@@ -386,15 +386,34 @@ where
     Ok(sig.encode().to_vec())
 }
 
-fn ml_dsa_verify<P: ml_dsa::MlDsaParams>(
+impl MlDsa {
+    /// The heap a decoded verifying key holds: `t1`, `2^d * t1` in the NTT
+    /// domain and the K x L matrix `A_hat`, each polynomial 256 coefficients
+    /// of 4 bytes (FIPS 204, table 1: 24 KiB for ML-DSA-44, 72 KiB for -87).
+    fn verifying_key_heap(self) -> usize {
+        let (k, l) = match self {
+            MlDsa::L44 => (4, 4),
+            MlDsa::L65 => (6, 5),
+            MlDsa::L87 => (8, 7),
+        };
+        (k * l + 2 * k) * 256 * 4
+    }
+}
+
+fn ml_dsa_verify<P: ml_dsa::MlDsaParams + 'static>(
+    level: MlDsa,
     key: StoredKey<'_>,
     message: &[u8],
     ctx: &[u8],
     sig: &[u8],
 ) -> Result<bool, Error> {
-    let public = public(key, Encoding::Raw)?;
-    let encoded = ml_dsa::EncodedVerifyingKey::<P>::try_from(public).map_err(|_| bad_key("ML-DSA public key"))?;
-    let vk = ml_dsa::VerifyingKey::<P>::decode(&encoded);
+    // Decoding expands the public matrix, most of a verification's work;
+    // the decoded key is kept per version, within the cache budget.
+    let vk = key.public_value(size_of::<ml_dsa::VerifyingKey<P>>() + level.verifying_key_heap(), || {
+        let public = public(key, Encoding::Raw)?;
+        let encoded = ml_dsa::EncodedVerifyingKey::<P>::try_from(public).map_err(|_| bad_key("ML-DSA public key"))?;
+        Ok(ml_dsa::VerifyingKey::<P>::decode(&encoded))
+    })?;
     let Some(sig) = ml_dsa::EncodedSignature::<P>::try_from(sig).ok().and_then(|s| ml_dsa::Signature::<P>::decode(&s))
     else {
         return Ok(false);
@@ -459,9 +478,9 @@ impl RustCrypto {
             Scheme::MlDsa { level, .. } => {
                 let ctx = ctx.unwrap_or_default();
                 match level {
-                    MlDsa::L44 => ml_dsa_verify::<ml_dsa::MlDsa44>(key, message, ctx, sig),
-                    MlDsa::L65 => ml_dsa_verify::<ml_dsa::MlDsa65>(key, message, ctx, sig),
-                    MlDsa::L87 => ml_dsa_verify::<ml_dsa::MlDsa87>(key, message, ctx, sig),
+                    MlDsa::L44 => ml_dsa_verify::<ml_dsa::MlDsa44>(level, key, message, ctx, sig),
+                    MlDsa::L65 => ml_dsa_verify::<ml_dsa::MlDsa65>(level, key, message, ctx, sig),
+                    MlDsa::L87 => ml_dsa_verify::<ml_dsa::MlDsa87>(level, key, message, ctx, sig),
                 }
             }
             _ => unreachable!("check_entry admits message schemes only"),
@@ -854,14 +873,15 @@ mod tests {
         assert_eq!(verify.code(), Code::InvalidKeyMaterial);
     }
 
-    /// With a key version, the public key is derived once and kept on the
-    /// version; signing and verifying keep working from it.
+    /// With a key version, the public key is derived (Ed25519) or decoded
+    /// (ECDSA, ML-DSA) once and kept on the version; signing and verifying
+    /// keep working from it.
     #[test]
     #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
     fn a_versions_public_key_is_derived_once() {
         use crate::domain::core::{Scope, ScopeSpecification};
         use crate::domain::key::{Locking, Origin, Provenance, Version};
-        for id in ["ed25519", "ecdsa-p256-sha256-der"] {
+        for id in ["ed25519", "ecdsa-p256-sha256-der", "ml-dsa-65"] {
             let (k, a) = key(id);
             let v = Version::new(
                 1,

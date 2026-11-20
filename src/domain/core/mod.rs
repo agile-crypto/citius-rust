@@ -14,6 +14,6 @@ pub use hash::*;
 pub use id::*;
 pub use operation::*;
 pub use provider_requirements::*;
-pub use public_cache::PublicCache;
+pub use public_cache::{Cached, PublicCache};
 pub use scope::*;
 pub use spec::*;
