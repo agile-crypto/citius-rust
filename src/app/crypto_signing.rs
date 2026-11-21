@@ -126,19 +126,28 @@ impl CryptoOrchestrator {
         Ok(())
     }
 
-    fn resolve_sign(
+    /// `with_resolved` for signing or verification: the lookup the input
+    /// implies, then the checks the version must pass for it, then `then`.
+    fn with_signing<R, E: From<Error>>(
         &self,
         key_name: &str,
         version: Option<u32>,
         input: &SignInput,
         context: &SignContext,
         verify: bool,
-    ) -> Result<Resolved<'_>, Error> {
+        then: impl FnOnce(Resolved<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
         input.check()?;
         let (op, declared) = input.operations(verify);
         let direction = if verify { Direction::Receiving } else { Direction::Originating };
-        let r = self.resolve(key_name, version, direction, op, declared)?;
-        Self::check_sign_params(&r, input, context)?;
+        self.with_resolved(key_name, version, direction, op, declared, |r| {
+            Self::check_signing(&r, input, context)?;
+            then(r)
+        })
+    }
+
+    fn check_signing(r: &Resolved, input: &SignInput, context: &SignContext) -> Result<(), Error> {
+        Self::check_sign_params(r, input, context)?;
         if let SignInput::Digest { digest, hash } = *input {
             // The key version accepts only the hashes it recorded when it was
             // created (Go: validateDigestHash).
@@ -162,14 +171,13 @@ impl CryptoOrchestrator {
             }
             r.signer()?.check_digest(r.algorithm(), digest, hash)?;
         }
-        Ok(r)
+        Ok(())
     }
 
     /// Signs with the key's current version (Go: Sign, DigestSign).
     #[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API sizes first (*_admitting)"))]
     pub fn sign(&self, req: SignRequest) -> Result<Signed, Error> {
-        let r = self.resolve_sign(req.key_name, None, &req.input, &req.context, false)?;
-        Self::sign_resolved(&r, req)
+        self.with_signing(req.key_name, None, &req.input, &req.context, false, |r| Self::sign_resolved(&r, &req))
     }
 
     /// `sign` for a caller that must see the sizes first (the C API's size
@@ -184,17 +192,18 @@ impl CryptoOrchestrator {
         enc: MetadataEncoding,
         admit: impl FnOnce(Sizes) -> Result<(), E>,
     ) -> Result<Signed, E> {
-        let r = self.resolve_sign(req.key_name, None, &req.input, &req.context, false)?;
-        let signer = r.signer()?;
-        let shape = signed_metadata(r.version().number(), signer.output_shape(r.algorithm())?, &req);
-        admit(Sizes {
-            artifact: signer.signature_len_bound(r.algorithm())?,
-            metadata: metadata::encode(&shape, enc)?.len(),
-        })?;
-        Ok(Self::sign_resolved(&r, req)?)
+        self.with_signing(req.key_name, None, &req.input, &req.context, false, |r| {
+            let signer = r.signer()?;
+            let shape = signed_metadata(r.version().number(), signer.output_shape(r.algorithm())?, &req);
+            admit(Sizes {
+                artifact: signer.signature_len_bound(r.algorithm())?,
+                metadata: metadata::encode(&shape, enc)?.len(),
+            })?;
+            Ok(Self::sign_resolved(&r, &req)?)
+        })
     }
 
-    fn sign_resolved(r: &Resolved, req: SignRequest) -> Result<Signed, Error> {
+    fn sign_resolved(r: &Resolved, req: &SignRequest) -> Result<Signed, Error> {
         let signer = r.signer()?;
         let key = r.material()?;
         let (signature, output) = match req.input {
@@ -207,7 +216,7 @@ impl CryptoOrchestrator {
         if signature.len() > signer.signature_len_bound(r.algorithm())? {
             return Err(Error::new(Code::ProviderContractViolation, OP, "the signature exceeds the provider's bound"));
         }
-        let metadata = signed_metadata(r.version().number(), output, &req);
+        let metadata = signed_metadata(r.version().number(), output, req);
         Ok(Signed { signature, metadata })
     }
 
@@ -228,21 +237,23 @@ impl CryptoOrchestrator {
         admit: impl FnOnce(Sizes) -> Result<(), E>,
     ) -> Result<Verified, E> {
         non_empty(req.signature, "signature")?;
-        let r = self.resolve_sign(req.key_name, req.key_version, &req.input, &req.context, true)?;
-        let metadata = match enc {
-            Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
-            None => 0,
-        };
-        admit(Sizes { artifact: 0, metadata })?;
-        let signer = r.signer()?;
-        let key = r.material()?;
-        let valid = match req.input {
-            SignInput::Message(m) => signer.verify(key, r.algorithm(), m, req.signature, &req.context)?,
-            SignInput::Digest { digest, hash } => {
-                signer.verify_digest(key, r.algorithm(), digest, hash, req.signature, &req.context)?
-            }
-        };
-        Ok(Verified { valid, metadata: Self::metadata(r.version().number(), no_output(), req.user_context) })
+        self.with_signing(req.key_name, req.key_version, &req.input, &req.context, true, |r| {
+            let metadata = match enc {
+                Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
+                None => 0,
+            };
+            admit(Sizes { artifact: 0, metadata })?;
+            let signer = r.signer()?;
+            let key = r.material()?;
+            let valid = match req.input {
+                SignInput::Message(m) => signer.verify(key, r.algorithm(), m, req.signature, &req.context)?,
+                SignInput::Digest { digest, hash } => {
+                    signer.verify_digest(key, r.algorithm(), digest, hash, req.signature, &req.context)?
+                }
+            };
+            let metadata = Self::metadata(r.version().number(), no_output(), req.user_context.clone());
+            Ok(Verified { valid, metadata })
+        })
     }
 }
 

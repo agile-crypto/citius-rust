@@ -1,37 +1,49 @@
 use std::collections::BTreeMap;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use arc_swap::ArcSwap;
 
 use crate::domain::core::{Code, Error, poisoned};
 use crate::domain::policy::{Policy, PolicyRepository};
 
-/// Policies held in process memory, ordered by name.
+/// Policies held in process memory, ordered by name. Like the key index
+/// (key_index.rs), one immutable snapshot that writers replace whole: every
+/// operation checks a policy, and that check writes nothing shared.
 pub struct InMemoryPolicyRepository {
-    policies: RwLock<BTreeMap<String, Policy>>,
+    policies: ArcSwap<BTreeMap<String, Policy>>,
+    writer: Mutex<()>,
 }
 
 impl InMemoryPolicyRepository {
     pub fn new() -> Self {
-        InMemoryPolicyRepository { policies: RwLock::new(BTreeMap::new()) }
+        InMemoryPolicyRepository { policies: ArcSwap::default(), writer: Mutex::new(()) }
+    }
+
+    /// The writer's lock and a copy of the current policies to change.
+    fn write(&self, op: &'static str) -> Result<(MutexGuard<'_, ()>, BTreeMap<String, Policy>), Error> {
+        let guard = self.writer.lock().map_err(|_| poisoned(op))?;
+        Ok((guard, BTreeMap::clone(&self.policies.load())))
     }
 }
 
 impl PolicyRepository for InMemoryPolicyRepository {
     fn create(&self, p: Policy) -> Result<(), Error> {
         const OP: &str = "InMemoryPolicyRepository.create";
-        let mut m = self.policies.write().map_err(|_| poisoned(OP))?;
+        let (_writing, mut m) = self.write(OP)?;
         if m.contains_key(p.name()) {
             return Err(Error::new(Code::AlreadyExists, OP, format!("policy {} exists", p.name())));
         }
         m.insert(p.name().to_owned(), p);
+        self.policies.store(Arc::new(m));
         Ok(())
     }
 
     fn update(&self, p: Policy, expected_version: i64) -> Result<(), Error> {
         const OP: &str = "InMemoryPolicyRepository.update";
-        let mut m = self.policies.write().map_err(|_| poisoned(OP))?;
+        let (_writing, mut m) = self.write(OP)?;
         let slot = m.get_mut(p.name()).ok_or_else(|| not_found(OP, p.name()))?;
-        // One check under the lock, so two updates from the same version
-        // cannot both succeed (Go's repository has no compare-and-put).
+        // One check under the writer's lock, so two updates from the same
+        // version cannot both succeed (Go's repository has no compare-and-put).
         let stale = slot.version() != p.version() - 1;
         if stale || (expected_version > 0 && slot.version() != expected_version) {
             let want = if expected_version > 0 { expected_version } else { p.version() - 1 };
@@ -42,17 +54,16 @@ impl PolicyRepository for InMemoryPolicyRepository {
             ));
         }
         *slot = p;
+        self.policies.store(Arc::new(m));
         Ok(())
     }
 
     fn get(&self, name: &str) -> Result<Option<Policy>, Error> {
-        let m = self.policies.read().map_err(|_| poisoned("InMemoryPolicyRepository.get"))?;
-        Ok(m.get(name).cloned())
+        Ok(self.policies.load().get(name).cloned())
     }
 
     fn inspect(&self, name: &str, f: &mut dyn FnMut(&Policy)) -> Result<(), Error> {
-        let m = self.policies.read().map_err(|_| poisoned("InMemoryPolicyRepository.inspect"))?;
-        if let Some(p) = m.get(name) {
+        if let Some(p) = self.policies.load().get(name) {
             f(p);
         }
         Ok(())
@@ -60,13 +71,14 @@ impl PolicyRepository for InMemoryPolicyRepository {
 
     fn delete(&self, name: &str) -> Result<(), Error> {
         const OP: &str = "InMemoryPolicyRepository.delete";
-        let mut m = self.policies.write().map_err(|_| poisoned(OP))?;
-        m.remove(name).map(|_| ()).ok_or_else(|| not_found(OP, name))
+        let (_writing, mut m) = self.write(OP)?;
+        m.remove(name).ok_or_else(|| not_found(OP, name))?;
+        self.policies.store(Arc::new(m));
+        Ok(())
     }
 
     fn list(&self) -> Result<Vec<Policy>, Error> {
-        let m = self.policies.read().map_err(|_| poisoned("InMemoryPolicyRepository.list"))?;
-        Ok(m.values().cloned().collect())
+        Ok(self.policies.load().values().cloned().collect())
     }
 }
 

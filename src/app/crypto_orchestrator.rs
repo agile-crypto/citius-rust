@@ -75,11 +75,12 @@ pub struct Sizes {
     pub metadata: usize,
 }
 
-/// A key version resolved for an operation. It shares the stored key and
-/// borrows the template and provider from the orchestrator: resolving
-/// copies nothing, and the locked material stays where it is.
+/// A key version resolved for an operation. It borrows the stored key from
+/// the key store's current snapshot (`with_resolved`), and the template and
+/// provider from the orchestrator: resolving copies nothing and writes
+/// nothing shared, and the locked material stays where it is.
 pub(super) struct Resolved<'a> {
-    key: Arc<Key>,
+    key: &'a Key,
     /// Index of the resolved version in `key.versions()`.
     at: usize,
     template: &'a Template,
@@ -137,19 +138,41 @@ impl CryptoOrchestrator {
     /// 2-6): the key, its lifecycle rule, the version (current, or the one
     /// the metadata names), the policy, the template's declaration of the
     /// operation for the version's scope, and the version's provider.
-    pub(super) fn resolve(
+    /// Runs `then` with `key_name`'s version resolved for an operation: the
+    /// key looked up in place in the store's snapshot (`inspect_by_name`),
+    /// its lifecycle, the policy and the template checked, the provider
+    /// found. The operation runs inside the lookup, on the borrowed key: one
+    /// lookup per call, and nothing written that other threads share (F7).
+    pub(super) fn with_resolved<R, E: From<Error>>(
         &self,
         key_name: &str,
         version: Option<u32>,
         direction: Direction,
         op: Operation,
         declared: api::CryptoOperation,
-    ) -> Result<Resolved<'_>, Error> {
+        then: impl FnOnce(Resolved<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
         const OP: &str = "CryptoOrchestrator";
         if key_name.is_empty() {
-            return Err(Error::new(Code::InvalidArgument, OP, "a key name is required"));
+            return Err(Error::new(Code::InvalidArgument, OP, "a key name is required").into());
         }
-        let key = self.keys.get_by_name(key_name)?.ok_or_else(|| not_found(OP, key_name))?;
+        let (mut then, mut result) = (Some(then), None);
+        self.keys.inspect_by_name(key_name, &mut |key| {
+            let then = then.take().expect("a store calls `f` at most once");
+            result = Some(self.resolved(key, version, direction, op, declared).map_err(E::from).and_then(then));
+        })?;
+        result.unwrap_or_else(|| Err(not_found(OP, key_name).into()))
+    }
+
+    fn resolved<'a>(
+        &'a self,
+        key: &'a Key,
+        version: Option<u32>,
+        direction: Direction,
+        op: Operation,
+        declared: api::CryptoOperation,
+    ) -> Result<Resolved<'a>, Error> {
+        const OP: &str = "CryptoOrchestrator";
         match direction {
             Direction::Originating => key.can_originate()?,
             Direction::Receiving => key.can_receive()?,
@@ -160,7 +183,7 @@ impl CryptoOrchestrator {
                 .checked_sub(1)
                 .map(|i| i as usize)
                 .filter(|&i| i < key.versions().len())
-                .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("key {key_name} has no version {n}")))?,
+                .ok_or_else(|| Error::new(Code::KeyNotFound, OP, format!("key {} has no version {n}", key.name())))?,
         };
         let version = &key.versions()[at];
         self.policy.validate_operation(key.policy(), op, Some(version.template_id()))?;
@@ -215,11 +238,12 @@ impl CryptoOrchestrator {
     /// Encrypts with the key's current version (Go: Encrypt).
     #[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API sizes first (*_admitting)"))]
     pub fn encrypt(&self, req: EncryptRequest) -> Result<Encrypted, Error> {
-        let r = self.resolve_encrypt(&req)?;
-        let mut ciphertext = vec![0; r.cipher()?.ciphertext_len(r.algorithm(), req.plaintext.len())?];
-        let w = Self::encrypt_resolved(&r, req, &mut ciphertext)?;
-        ciphertext.truncate(w.len);
-        Ok(Encrypted { ciphertext, metadata: w.metadata })
+        self.with_encrypt(req, |r, req| {
+            let mut ciphertext = vec![0; r.cipher()?.ciphertext_len(r.algorithm(), req.plaintext.len())?];
+            let w = Self::encrypt_resolved(&r, req, &mut ciphertext)?;
+            ciphertext.truncate(w.len);
+            Ok(Encrypted { ciphertext, metadata: w.metadata })
+        })
     }
 
     /// `encrypt` into the caller's memory, for a caller that must see the
@@ -235,14 +259,16 @@ impl CryptoOrchestrator {
         enc: MetadataEncoding,
         admit: impl FnOnce(Sizes) -> Result<&'b mut [u8], E>,
     ) -> Result<Written, E> {
-        let r = self.resolve_encrypt(&req)?;
-        let cipher = r.cipher()?;
-        let shape = Self::metadata(r.version().number(), cipher.output_shape(r.algorithm())?, req.user_context.clone());
-        let out = admit(Sizes {
-            artifact: cipher.ciphertext_len(r.algorithm(), req.plaintext.len())?,
-            metadata: metadata::encode(&shape, enc)?.len(),
-        })?;
-        Ok(Self::encrypt_resolved(&r, req, out)?)
+        self.with_encrypt(req, |r, req| {
+            let cipher = r.cipher()?;
+            let shape =
+                Self::metadata(r.version().number(), cipher.output_shape(r.algorithm())?, req.user_context.clone());
+            let out = admit(Sizes {
+                artifact: cipher.ciphertext_len(r.algorithm(), req.plaintext.len())?,
+                metadata: metadata::encode(&shape, enc)?.len(),
+            })?;
+            Ok(Self::encrypt_resolved(&r, req, out)?)
+        })
     }
 
     /// The encoded length of metadata that carries no provider output
@@ -255,12 +281,18 @@ impl CryptoOrchestrator {
         Ok(metadata::encode(&Self::metadata(version, no_output(), user_context.clone()), enc)?.len())
     }
 
-    fn resolve_encrypt(&self, req: &EncryptRequest) -> Result<Resolved<'_>, Error> {
+    /// `with_resolved` for an encryption, which gets the request back.
+    fn with_encrypt<R, E: From<Error>>(
+        &self,
+        req: EncryptRequest,
+        then: impl FnOnce(Resolved<'_>, EncryptRequest) -> Result<R, E>,
+    ) -> Result<R, E> {
         non_empty(req.plaintext, "plaintext")?;
         let (op, declared) = (Operation::Encrypt, api::CryptoOperation::Encrypt);
-        let r = self.resolve(req.key_name, None, Direction::Originating, op, declared)?;
-        Self::check_encrypt_params(&r, &req.params)?;
-        Ok(r)
+        self.with_resolved(req.key_name, None, Direction::Originating, op, declared, |r| {
+            Self::check_encrypt_params(&r, &req.params)?;
+            then(r, req)
+        })
     }
 
     fn encrypt_resolved(r: &Resolved<'_>, req: EncryptRequest, out: &mut [u8]) -> Result<Written, Error> {
@@ -269,20 +301,23 @@ impl CryptoOrchestrator {
         Ok(Written { len, metadata: Self::metadata(r.version().number(), output, req.user_context) })
     }
 
-    fn resolve_decrypt(&self, req: &DecryptRequest) -> Result<Resolved<'_>, Error> {
+    /// `with_resolved` for a decryption, which gets the request back.
+    fn with_decrypt<R, E: From<Error>>(
+        &self,
+        req: DecryptRequest,
+        then: impl FnOnce(Resolved<'_>, DecryptRequest) -> Result<R, E>,
+    ) -> Result<R, E> {
         non_empty(req.ciphertext, "ciphertext")?;
         if req.metadata.key_version == 0 {
-            return Err(Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata names no key version"));
+            let e = Error::new(Code::InvalidArgument, "CryptoOrchestrator", "the metadata names no key version");
+            return Err(e.into());
         }
-        let r = self.resolve(
-            req.key_name,
-            Some(req.metadata.key_version),
-            Direction::Receiving,
-            Operation::Decrypt,
-            api::CryptoOperation::Decrypt,
-        )?;
-        Self::check_encrypt_params(&r, &req.params)?;
-        Ok(r)
+        let (op, declared) = (Operation::Decrypt, api::CryptoOperation::Decrypt);
+        let version = Some(req.metadata.key_version);
+        self.with_resolved(req.key_name, version, Direction::Receiving, op, declared, |r| {
+            Self::check_encrypt_params(&r, &req.params)?;
+            then(r, req)
+        })
     }
 
     /// An upper bound on the encoded metadata any operation on `key_name`
@@ -323,12 +358,13 @@ impl CryptoOrchestrator {
     /// authentication failure no plaintext is released.
     #[cfg_attr(not(test), allow(dead_code, reason = "for Rust callers; the C API sizes first (*_admitting)"))]
     pub fn decrypt(&self, req: DecryptRequest) -> Result<Decrypted, Error> {
-        let r = self.resolve_decrypt(&req)?;
-        let bound = r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?;
-        let mut plaintext = SecretVec::from(vec![0; bound]);
-        let w = Self::decrypt_resolved(&r, req, &mut plaintext)?;
-        plaintext.truncate(w.len);
-        Ok(Decrypted { plaintext, metadata: w.metadata })
+        self.with_decrypt(req, |r, req| {
+            let bound = r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?;
+            let mut plaintext = SecretVec::from(vec![0; bound]);
+            let w = Self::decrypt_resolved(&r, req, &mut plaintext)?;
+            plaintext.truncate(w.len);
+            Ok(Decrypted { plaintext, metadata: w.metadata })
+        })
     }
 
     /// `decrypt` into the caller's memory, for a caller that must see the
@@ -347,20 +383,21 @@ impl CryptoOrchestrator {
         enc: Option<MetadataEncoding>,
         admit: impl FnOnce(Sizes, Option<Vec<u8>>) -> Result<&'b mut [u8], E>,
     ) -> Result<Written, E> {
-        let r = self.resolve_decrypt(&req)?;
-        let encoded = match enc {
-            Some(enc) => {
-                let md = Self::metadata(r.version().number(), no_output(), req.user_context.clone());
-                Some(metadata::encode(&md, enc)?)
-            }
-            None => None,
-        };
-        let sizes = Sizes {
-            artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?,
-            metadata: encoded.as_ref().map_or(0, Vec::len),
-        };
-        let out = admit(sizes, encoded)?;
-        Ok(Self::decrypt_resolved(&r, req, out)?)
+        self.with_decrypt(req, |r, req| {
+            let encoded = match enc {
+                Some(enc) => {
+                    let md = Self::metadata(r.version().number(), no_output(), req.user_context.clone());
+                    Some(metadata::encode(&md, enc)?)
+                }
+                None => None,
+            };
+            let sizes = Sizes {
+                artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?,
+                metadata: encoded.as_ref().map_or(0, Vec::len),
+            };
+            let out = admit(sizes, encoded)?;
+            Ok(Self::decrypt_resolved(&r, req, out)?)
+        })
     }
 
     fn decrypt_resolved(r: &Resolved, req: DecryptRequest, out: &mut [u8]) -> Result<Written, Error> {
@@ -582,14 +619,21 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn resolving_shares_the_stored_key() {
+    fn resolving_borrows_the_stored_key() {
         let w = world();
         create(&w, "k", AEAD);
         let (op, declared) = (Operation::Encrypt, api::CryptoOperation::Encrypt);
-        let r = w.crypto.resolve("k", None, Direction::Originating, op, declared).unwrap();
         let stored = w.repo.get_by_name("k").unwrap().unwrap();
-        assert!(Arc::ptr_eq(&r.key, &stored), "no copy of the key, its versions or their material");
-        assert!(std::ptr::eq(r.version(), stored.current()));
+        w.crypto
+            .with_resolved("k", None, Direction::Originating, op, declared, |r| {
+                assert!(std::ptr::eq(r.key, &*stored), "no copy of the key, its versions or their material");
+                assert!(std::ptr::eq(r.version(), stored.current()));
+                Ok::<(), Error>(())
+            })
+            .unwrap();
+        let nothing = |_: Resolved<'_>| Ok::<(), Error>(());
+        let missing = w.crypto.with_resolved("nope", None, Direction::Originating, op, declared, nothing);
+        assert_eq!(missing.unwrap_err().code(), Code::KeyNotFound);
     }
 
     #[test]

@@ -215,12 +215,17 @@ impl KeyRepository for FileKeyRepository {
         self.index.update("FileKeyRepository.update", k, |k| self.write(k))
     }
 
+    fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) -> Result<(), Error> {
+        self.index.inspect_by_name(name, f);
+        Ok(())
+    }
+
     fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
-        self.index.get_by_id("FileKeyRepository.get_by_id", id)
+        Ok(self.index.get_by_id(id))
     }
 
     fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
-        self.index.get_by_name("FileKeyRepository.get_by_name", name)
+        Ok(self.index.get_by_name(name))
     }
 
     fn delete(&self, id: &KeyId) -> Result<(), Error> {
@@ -228,7 +233,7 @@ impl KeyRepository for FileKeyRepository {
     }
 
     fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
-        self.index.list("FileKeyRepository.list")
+        Ok(self.index.list())
     }
 }
 

@@ -25,6 +25,16 @@ pub trait KeyRepository: Send + Sync {
     #[cfg_attr(not(test), expect(dead_code, reason = "Go's KeyRepository.GetByID; every C entry point names keys"))]
     fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error>;
     fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error>;
+    /// Calls `f` once with the stored key, in place, if there is one by that
+    /// name. Every operation looks up its key: this copies nothing and, in
+    /// the stores here, writes nothing shared (no lock word, no reference
+    /// count), which all threads using the store would contend on (F7).
+    fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) -> Result<(), Error> {
+        if let Some(k) = self.get_by_name(name)? {
+            f(&k);
+        }
+        Ok(())
+    }
     /// `KeyNotFound` for an unknown id.
     #[cfg_attr(not(test), expect(dead_code, reason = "G30: reachable once Go implements DeleteKey"))]
     fn delete(&self, id: &KeyId) -> Result<(), Error>;

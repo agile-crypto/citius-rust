@@ -10,6 +10,9 @@ edition = "2024"
 # to enable it (hmac: the RFC 6979 nonce DRBG; poly1305: ChaCha20-Poly1305's
 # one-time key, which chacha20poly1305/zeroize leaves out).
 aes = { version = "0.9.3", features = ["zeroize"] }
+# Read-mostly maps (key index, policies): lookups write no shared cache line
+# (docs/performance.md F7).
+arc-swap = "1.9"
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 cbc = { version = "0.2.1", features = ["zeroize"] }
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }

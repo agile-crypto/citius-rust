@@ -1,27 +1,37 @@
 //! The index both key stores keep in memory: keys by id, ids by name.
 //!
-//! One lock guards both maps, so the name index can never disagree with the
-//! keys, and every check-then-write is atomic. Keys are held behind `Arc`:
-//! a lookup shares the stored key (one reference count) instead of copying
-//! it with every version, which is what made a lookup on the hot path cost
-//! a dozen allocations (docs/performance.md F3).
+//! The index is one immutable snapshot that writers replace whole
+//! (`ArcSwap`), so the name index can never disagree with the keys, and a
+//! lookup writes nothing shared: no lock word, no reference count. A shared
+//! `RwLock` read writes its reader count, and on 8 threads that cache line
+//! alone capped all lookups at ~5 M/s (docs/performance.md F7). Keys are
+//! held behind `Arc`, so a new snapshot copies the maps, not the keys.
 //!
-//! A store adds persistence by passing a closure to the writes: it runs
-//! under the lock, after the checks and before the index changes, so a key
-//! that cannot be persisted is not recorded either.
+//! Writers take a mutex, copy the snapshot, change the copy and publish it:
+//! every check-then-write is atomic, and a write costs time linear in the
+//! number of keys (key administration is rare; operations are not). A store
+//! adds persistence by passing a closure to the writes: it runs after the
+//! checks and before the new snapshot is published, so a key that cannot be
+//! persisted is not recorded either.
+//!
+//! A panic during a write leaves the published snapshot as it was: lookups
+//! keep working on consistent data, and later writes fail closed.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use arc_swap::ArcSwap;
 
 use crate::domain::core::{Code, Error, poisoned};
 use crate::domain::key::{Key, KeyId};
 
 #[derive(Default)]
 pub(super) struct KeyIndex {
-    state: RwLock<State>,
+    state: ArcSwap<State>,
+    writer: Mutex<()>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct State {
     keys: HashMap<KeyId, Arc<Key>>,
     names: HashMap<String, KeyId>,
@@ -31,13 +41,21 @@ impl KeyIndex {
     /// Adds a key read back from storage, before the index is shared.
     /// False (and nothing added) if its id or name is already taken.
     pub(super) fn load(&mut self, k: Key) -> bool {
-        let s = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if s.keys.contains_key(k.id()) || s.names.contains_key(k.name()) {
-            return false;
+        // Not shared yet: the snapshot has one owner and is changed in place.
+        let arc = std::mem::take(&mut self.state).into_inner();
+        let mut s = Arc::try_unwrap(arc).unwrap_or_else(|shared| (*shared).clone());
+        let added = !s.keys.contains_key(k.id()) && !s.names.contains_key(k.name());
+        if added {
+            s.names.insert(k.name().to_owned(), k.id().clone());
+            s.keys.insert(k.id().clone(), Arc::new(k));
         }
-        s.names.insert(k.name().to_owned(), k.id().clone());
-        s.keys.insert(k.id().clone(), Arc::new(k));
-        true
+        self.state = ArcSwap::from_pointee(s);
+        added
+    }
+
+    fn write(&self, op: &'static str) -> Result<(MutexGuard<'_, ()>, State), Error> {
+        let guard = self.writer.lock().map_err(|_| poisoned(op))?;
+        Ok((guard, State::clone(&self.state.load())))
     }
 
     /// Records a new key at revision 1 (`KeyRepository::create`).
@@ -47,7 +65,7 @@ impl KeyIndex {
         mut k: Key,
         persist: impl FnOnce(&Key) -> Result<(), Error>,
     ) -> Result<Key, Error> {
-        let mut s = self.state.write().map_err(|_| poisoned(op))?;
+        let (_writing, mut s) = self.write(op)?;
         if s.keys.contains_key(k.id()) {
             return Err(Error::new(Code::AlreadyExists, op, format!("key id {} exists", k.id().as_str())));
         }
@@ -58,6 +76,7 @@ impl KeyIndex {
         persist(&k)?;
         s.names.insert(k.name().to_owned(), k.id().clone());
         s.keys.insert(k.id().clone(), Arc::new(k.clone()));
+        self.state.store(Arc::new(s));
         Ok(k)
     }
 
@@ -69,7 +88,7 @@ impl KeyIndex {
         mut k: Key,
         persist: impl FnOnce(&Key) -> Result<(), Error>,
     ) -> Result<Key, Error> {
-        let mut s = self.state.write().map_err(|_| poisoned(op))?;
+        let (_writing, mut s) = self.write(op)?;
         let stored = s
             .keys
             .get(k.id())
@@ -81,6 +100,7 @@ impl KeyIndex {
         k.set_revision(k.revision() + 1);
         persist(&k)?;
         s.keys.insert(k.id().clone(), Arc::new(k.clone()));
+        self.state.store(Arc::new(s));
         Ok(k)
     }
 
@@ -91,35 +111,41 @@ impl KeyIndex {
         id: &KeyId,
         persist: impl FnOnce(&Key) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut s = self.state.write().map_err(|_| poisoned(op))?;
+        let (_writing, mut s) = self.write(op)?;
         let k = s
             .keys
-            .get(id)
+            .remove(id)
             .ok_or_else(|| Error::new(Code::KeyNotFound, op, format!("no key with id {}", id.as_str())))?;
-        persist(k)?;
-        let name = k.name().to_owned();
-        s.keys.remove(id);
+        persist(&k)?;
         // Keep the name index consistent with `keys`.
-        s.names.remove(&name);
+        s.names.remove(k.name());
+        self.state.store(Arc::new(s));
         Ok(())
     }
 
-    pub(super) fn get_by_name(&self, op: &'static str, name: &str) -> Result<Option<Arc<Key>>, Error> {
-        let s = self.state.read().map_err(|_| poisoned(op))?;
-        Ok(s.names.get(name).and_then(|id| s.keys.get(id)).cloned())
+    /// Calls `f` with the stored key, in place in the current snapshot, if
+    /// there is one by that name (`KeyRepository::inspect_by_name`).
+    pub(super) fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) {
+        let s = self.state.load();
+        if let Some(k) = s.names.get(name).and_then(|id| s.keys.get(id)) {
+            f(k);
+        }
     }
 
-    pub(super) fn get_by_id(&self, op: &'static str, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
-        let s = self.state.read().map_err(|_| poisoned(op))?;
-        Ok(s.keys.get(id).cloned())
+    pub(super) fn get_by_name(&self, name: &str) -> Option<Arc<Key>> {
+        let s = self.state.load();
+        s.names.get(name).and_then(|id| s.keys.get(id)).cloned()
+    }
+
+    pub(super) fn get_by_id(&self, id: &KeyId) -> Option<Arc<Key>> {
+        self.state.load().keys.get(id).cloned()
     }
 
     /// Every key, ordered by name.
-    pub(super) fn list(&self, op: &'static str) -> Result<Vec<Arc<Key>>, Error> {
-        let s = self.state.read().map_err(|_| poisoned(op))?;
-        let mut keys: Vec<Arc<Key>> = s.keys.values().cloned().collect();
+    pub(super) fn list(&self) -> Vec<Arc<Key>> {
+        let mut keys: Vec<Arc<Key>> = self.state.load().keys.values().cloned().collect();
         keys.sort_by(|a, b| a.name().cmp(b.name()));
-        Ok(keys)
+        keys
     }
 }
 
@@ -133,23 +159,27 @@ mod tests {
     }
 
     #[test]
-    fn a_poisoned_lock_fails_closed() {
+    fn a_panic_while_writing_leaves_lookups_working_and_writes_closed() {
         let index = KeyIndex::default();
+        index.create("create", key("key-1", "x"), none).unwrap();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = index.state.write().unwrap();
-            panic!("simulated bug while holding the lock");
+            let _ = index.create("create", key("key-2", "y"), |_| panic!("simulated bug while persisting"));
         }));
-        assert_eq!(index.get_by_name("get", "x").unwrap_err().code(), Code::Internal);
-        assert_eq!(index.create("create", key("key-1", "x"), none).unwrap_err().code(), Code::Internal);
+        assert!(index.get_by_name("x").is_some(), "the published snapshot is intact");
+        assert!(index.get_by_name("y").is_none(), "the half-done write was never published");
+        assert_eq!(index.create("create", key("key-3", "z"), none).unwrap_err().code(), Code::Internal);
     }
 
     #[test]
     fn a_lookup_shares_the_stored_key() {
         let index = KeyIndex::default();
         index.create("create", key("key-1", "x"), none).unwrap();
-        let a = index.get_by_name("get", "x").unwrap().unwrap();
-        let b = index.get_by_name("get", "x").unwrap().unwrap();
+        let a = index.get_by_name("x").unwrap();
+        let b = index.get_by_name("x").unwrap();
         assert!(Arc::ptr_eq(&a, &b), "no copy per lookup");
+        let mut seen = None;
+        index.inspect_by_name("x", &mut |k| seen = Some(k as *const Key));
+        assert_eq!(seen, Some(Arc::as_ptr(&a)), "inspected in place");
     }
 
     #[test]
@@ -157,6 +187,19 @@ mod tests {
         let index = KeyIndex::default();
         let fail = |_: &Key| Err(Error::new(Code::Internal, "persist", "disk full"));
         assert!(index.create("create", key("key-1", "x"), fail).is_err());
-        assert!(index.get_by_name("get", "x").unwrap().is_none());
+        assert!(index.get_by_name("x").is_none());
+    }
+
+    #[test]
+    fn a_snapshot_held_by_a_reader_survives_a_write() {
+        let index = KeyIndex::default();
+        index.create("create", key("key-1", "x"), none).unwrap();
+        index.inspect_by_name("x", &mut |k| {
+            // A write while this reader holds the snapshot: it publishes a
+            // new one and leaves the reader's untouched.
+            index.delete("delete", k.id(), none).unwrap();
+            assert_eq!(k.name(), "x");
+        });
+        assert!(index.get_by_name("x").is_none());
     }
 }
