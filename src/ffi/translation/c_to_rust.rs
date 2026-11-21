@@ -299,7 +299,7 @@ pub unsafe fn spec_from_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::api;
+    use crate::domain::core::AeadScope;
 
     fn convert(p: &agc_create_key_params) -> Result<KeyCreationSpec, FfiError> {
         // SAFETY: test params hold only NULL or 'static C string literals.
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(spec.policy, "default");
         assert_eq!(spec.template_id, None);
         // Only the kind is set: any AEAD scope, no further requirements.
-        assert_eq!(spec.scope_spec, ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Unspecified)));
+        assert_eq!(spec.scope_spec, ScopeSpecification::any_of(Scope::Aead(AeadScope::Unspecified)));
     }
 
     #[test]
@@ -376,7 +376,7 @@ mod tests {
         p.scope_spec.u.aead.security.quantum_safe = agc_tribool_AGC_FALSE;
         p.scope_spec.u.aead.additional_properties = agc_kv_list { items: kvs.as_ptr(), count: 1 };
         let spec = convert(&p).unwrap().scope_spec;
-        assert_eq!(spec.scope, Scope::Aead(api::AeadScope::Deterministic));
+        assert_eq!(spec.scope, Scope::Aead(AeadScope::Deterministic));
         assert_eq!(spec.properties.nonce_misuse_resistant, Some(true));
         let sec = spec.security.unwrap();
         assert_eq!((sec.strength_bits, sec.quantum_safe), (256, Some(false)));

@@ -535,11 +535,10 @@ fn recommend(options: &[StrategyAssessment]) -> (Strategy, String) {
 mod tests {
     use super::*;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
-    use crate::domain::core::{KeyCreationSpec, ProviderRequirements, Scope, ScopeSpecification};
+    use crate::domain::core::{AeadScope, KeyCreationSpec, ProviderRequirements, Scope, ScopeSpecification};
     use crate::domain::policy::{Enforcer, Manager};
     use crate::domain::provider::testing::FakeProvider;
     use crate::domain::provider::{Channels, ProviderRegistry, Transfer};
-    use crate::proto::api::AeadScope;
 
     const POLICY: &str = r#"{"version": "1", "allowed_templates": ["chacha20-poly1305"],
         "allowed_operations": {"key_operations": ["create_key"]}}"#;

@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 
 use super::{Code, Error};
 use crate::proto::api::{self, scope_specification::ScopeSpec};
+use super::vocabulary::{
+    AeadScope, DiskEncryptionScope, GenericSecretScope, HashScope, KdfScope, KemScope, KeyAgreementScope,
+    KeyWrappingScope, MacScope, NistSecurityLevel, NistStatus, SignatureScope, SymmetricCipherScope,
+};
 
 /// The kind of intent a key serves: the primitive family whose scopes it can
 /// be used for. Every key is created for exactly one kind. In the order of
@@ -27,17 +31,17 @@ pub enum ScopeKind {
 /// The family's `Unspecified` value means "any scope of this kind".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
-    Signature(api::SignatureScope),
-    Aead(api::AeadScope),
-    Mac(api::MacScope),
-    Kem(api::KemScope),
-    KeyAgreement(api::KeyAgreementScope),
-    Kdf(api::KdfScope),
-    Hash(api::HashScope),
-    KeyWrapping(api::KeyWrappingScope),
-    SymmetricCipher(api::SymmetricCipherScope),
-    DiskEncryption(api::DiskEncryptionScope),
-    GenericSecret(api::GenericSecretScope),
+    Signature(SignatureScope),
+    Aead(AeadScope),
+    Mac(MacScope),
+    Kem(KemScope),
+    KeyAgreement(KeyAgreementScope),
+    Kdf(KdfScope),
+    Hash(HashScope),
+    KeyWrapping(KeyWrappingScope),
+    SymmetricCipher(SymmetricCipherScope),
+    DiskEncryption(DiskEncryptionScope),
+    GenericSecret(GenericSecretScope),
 }
 
 impl Scope {
@@ -47,7 +51,7 @@ impl Scope {
     /// domain context exactly for the WITH_CONTEXT scopes.
     pub fn check_signing(&self, digest: bool, with_context: bool) -> Result<(), Error> {
         const OP: &str = "Scope::check_signing";
-        use api::SignatureScope as S;
+        use crate::domain::core::SignatureScope as S;
         let (prehashed, takes_context) = match self {
             Scope::Signature(S::Standard) => (false, false),
             Scope::Signature(S::WithContext) => (false, true),
@@ -75,7 +79,7 @@ impl Scope {
     /// key, none for a block or stream cipher key.
     pub fn check_encryption(&self, aead_params: bool) -> Result<(), Error> {
         let fits = match aead_params {
-            true => *self == Scope::Aead(api::AeadScope::Standard),
+            true => *self == Scope::Aead(AeadScope::Standard),
             false => matches!(self, Scope::SymmetricCipher(_)),
         };
         if !fits {
@@ -126,7 +130,7 @@ impl Scope {
     /// Every scope, in the order of Go's `core.Scope` (core.ListScopes):
     /// what ListScopes returns them in.
     pub const ALL: [Scope; 28] = {
-        use api::*;
+        use super::vocabulary::*;
         [
             Scope::Signature(SignatureScope::Standard),
             Scope::Signature(SignatureScope::WithContext),
@@ -208,9 +212,9 @@ impl Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SecurityProperties {
     pub strength_bits: u32,
-    pub nist_level: api::NistSecurityLevel,
+    pub nist_level: NistSecurityLevel,
     pub quantum_safe: Option<bool>,
-    pub nist_status: api::NistStatus,
+    pub nist_status: NistStatus,
     pub fips_approved: Option<bool>,
 }
 
@@ -391,9 +395,9 @@ fn security_satisfies(got: Option<&SecurityProperties>, want: Option<&SecurityPr
     let Some(got) = got else { return false };
     wanted_true_is_true(got.fips_approved, want.fips_approved)
         && wanted_true_is_true(got.quantum_safe, want.quantum_safe)
-        && (want.nist_level == api::NistSecurityLevel::Unspecified || got.nist_level as i32 >= want.nist_level as i32)
+        && (want.nist_level == NistSecurityLevel::Unspecified || got.nist_level as i32 >= want.nist_level as i32)
         && got.strength_bits >= want.strength_bits
-        && (want.nist_status == api::NistStatus::Unspecified || got.nist_status == want.nist_status)
+        && (want.nist_status == NistStatus::Unspecified || got.nist_status == want.nist_status)
 }
 
 fn properties_satisfy(got: &PrimitiveProperties, want: &PrimitiveProperties) -> bool {
@@ -412,7 +416,7 @@ mod tests {
 
     #[test]
     fn a_scope_decides_how_its_key_signs() {
-        use api::SignatureScope as S;
+        use crate::domain::core::SignatureScope as S;
         let code = |s: Scope, digest, ctx| s.check_signing(digest, ctx).err().map(|e| e.code());
         assert_eq!(code(Scope::Signature(S::Standard), false, false), None);
         assert_eq!(code(Scope::Signature(S::WithContext), false, true), None);
@@ -422,18 +426,18 @@ mod tests {
         assert_eq!(code(Scope::Signature(S::Prehashed), false, false), Some(Code::KeyOperationNotAllowed));
         assert_eq!(code(Scope::Signature(S::Standard), false, true), Some(Code::InvalidArgument));
         assert_eq!(code(Scope::Signature(S::WithContext), false, false), Some(Code::InvalidArgument));
-        assert_eq!(code(Scope::Aead(api::AeadScope::Standard), false, false), Some(Code::KeyOperationNotAllowed));
+        assert_eq!(code(Scope::Aead(AeadScope::Standard), false, false), Some(Code::KeyOperationNotAllowed));
     }
 
     #[test]
     fn a_scope_decides_its_encryption_parameters() {
-        let aead = Scope::Aead(api::AeadScope::Standard);
-        let cipher = Scope::SymmetricCipher(api::SymmetricCipherScope::Unspecified);
+        let aead = Scope::Aead(AeadScope::Standard);
+        let cipher = Scope::SymmetricCipher(SymmetricCipherScope::Unspecified);
         assert!(aead.check_encryption(true).is_ok() && cipher.check_encryption(false).is_ok());
         assert_eq!(aead.check_encryption(false).unwrap_err().code(), Code::InvalidArgument);
         assert_eq!(cipher.check_encryption(true).unwrap_err().code(), Code::InvalidArgument);
     }
-    use api::{AeadScope, NistSecurityLevel, NistStatus, SignatureScope};
+    use crate::domain::core::{AeadScope, NistSecurityLevel, NistStatus, SignatureScope};
 
     fn sig(s: SignatureScope) -> ScopeSpecification {
         ScopeSpecification::any_of(Scope::Signature(s))
@@ -581,7 +585,7 @@ mod go_scope_tests {
         unique.dedup();
         assert_eq!(unique.len(), 28, "names are unique");
         assert!(Scope::ALL.iter().all(|s| !s.is_any()));
-        assert_eq!(Scope::Signature(api::SignatureScope::Unspecified).name(), None);
+        assert_eq!(Scope::Signature(SignatureScope::Unspecified).name(), None);
         // Kinds appear in contiguous runs, in ScopeKind order.
         let kinds: Vec<ScopeKind> = Scope::ALL.iter().map(Scope::kind).collect();
         let mut runs = kinds.clone();
@@ -591,15 +595,15 @@ mod go_scope_tests {
 
     #[test]
     fn to_proto_inverts_from_proto() {
-        let mut s = ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Prehashed));
+        let mut s = ScopeSpecification::any_of(Scope::Signature(SignatureScope::Prehashed));
         s.properties.non_malleable = Some(false);
         s.properties.deterministic = Some(true);
         s.properties.accepted_digest_hashes = vec![api::HashAlgorithm::Sha384, api::HashAlgorithm::Sha512];
         s.security = Some(SecurityProperties {
             strength_bits: 192,
-            nist_level: api::NistSecurityLevel::NistSecurityLevel3,
+            nist_level: NistSecurityLevel::NistSecurityLevel3,
             quantum_safe: Some(false),
-            nist_status: api::NistStatus::Approved,
+            nist_status: NistStatus::Approved,
             fips_approved: None,
         });
         s.additional = BTreeMap::from([("k".into(), "v".into())]);

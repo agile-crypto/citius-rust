@@ -81,9 +81,8 @@ impl TemplateRegistry for InMemoryTemplateRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::core::{Scope, ScopeSpecification};
+    use crate::domain::core::{AeadScope, KemScope, Scope, ScopeSpecification, SignatureScope, TemplateStatus};
     use crate::domain::template::testing::template;
-    use crate::proto::api::{AeadScope, KemScope, SignatureScope, TemplateStatus};
 
     const AEAD: Scope = Scope::Aead(AeadScope::Standard);
 
@@ -191,7 +190,7 @@ mod tests {
         assert_eq!(pick(Scope::Kem(KemScope::Standard)).unwrap(), "ml-kem-1024");
         assert!(pick(Scope::Signature(SignatureScope::Prehashed)).unwrap().contains("prehashed"));
         // The catalog has no hash templates.
-        let hash = Scope::Hash(crate::proto::api::HashScope::Standard);
+        let hash = Scope::Hash(crate::domain::core::HashScope::Standard);
         assert_eq!(pick(hash).unwrap_err().code(), Code::NoMatchingTemplate);
     }
 

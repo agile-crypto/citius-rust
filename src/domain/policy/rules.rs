@@ -1,7 +1,6 @@
 use serde::Deserialize;
 
-use crate::domain::core::{MAX_FIPS_140_LEVEL, Operation, ProviderRequirements};
-use crate::proto::api::TemplateStatus;
+use crate::domain::core::{MAX_FIPS_140_LEVEL, Operation, ProviderRequirements, TemplateStatus};
 
 /// A policy's rules (rules JSON, schema version 1), parsed and validated.
 ///

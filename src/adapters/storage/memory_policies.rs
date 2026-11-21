@@ -101,9 +101,8 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
-    use crate::domain::core::{Operation, ProviderRequirements};
+    use crate::domain::core::{Operation, ProviderRequirements, TemplateStatus};
     use crate::domain::policy::{Enforcer, Evaluator, Manager, TemplateSecurityInfo};
-    use crate::proto::api::TemplateStatus;
 
     const DOC: &str = r#"{"version": "1",
         "allowed_templates": ["b", "a"],

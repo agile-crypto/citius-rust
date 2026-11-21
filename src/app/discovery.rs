@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::domain::core::{Code, Error, ProviderRequirements, Scope, ScopeSpecification};
+use crate::domain::core::{Code, Error, ProviderRequirements, Scope, ScopeSpecification, TemplateStatus};
 use crate::domain::provider::{Backend, Candidate, ProviderRegistry};
 use crate::domain::template::{Template, TemplateRegistry};
 use crate::proto::api;
@@ -25,7 +25,7 @@ pub struct Discovery {
 #[derive(Default)]
 pub struct TemplateFilter {
     pub scope_spec: Option<ScopeSpecification>,
-    pub allowed_statuses: Vec<api::TemplateStatus>,
+    pub allowed_statuses: Vec<TemplateStatus>,
     pub required_standards: Vec<String>,
 }
 
@@ -234,6 +234,7 @@ impl Discovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::core::SignatureScope;
     use crate::adapters::providers::RustCrypto;
     use crate::adapters::storage::InMemoryTemplateRegistry;
     use crate::domain::provider::testing::FakeProvider;
@@ -256,13 +257,13 @@ mod tests {
 
         // The catalog has 64 ACTIVE and 8 ACCEPTABLE templates.
         let acceptable = d.list_templates(&TemplateFilter {
-            allowed_statuses: vec![api::TemplateStatus::Acceptable],
+            allowed_statuses: vec![TemplateStatus::Acceptable],
             ..Default::default()
         });
         assert_eq!(acceptable.len(), 8);
-        assert!(acceptable.iter().all(|t| t.status == api::TemplateStatus::Acceptable as i32));
+        assert!(acceptable.iter().all(|t| t.status == TemplateStatus::Acceptable as i32));
         let none = d.list_templates(&TemplateFilter {
-            allowed_statuses: vec![api::TemplateStatus::Deprecated],
+            allowed_statuses: vec![TemplateStatus::Deprecated],
             ..Default::default()
         });
         assert!(none.is_empty());
@@ -273,7 +274,7 @@ mod tests {
         assert!(rfc8032.iter().all(|t| t.standards.contains(&"RFC 8032".to_owned())));
 
         let prehashed = d.list_templates(&TemplateFilter {
-            scope_spec: Some(ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Prehashed))),
+            scope_spec: Some(ScopeSpecification::any_of(Scope::Signature(SignatureScope::Prehashed))),
             ..Default::default()
         });
         assert!(prehashed.iter().any(|t| t.template_id == "ed25519ph"));

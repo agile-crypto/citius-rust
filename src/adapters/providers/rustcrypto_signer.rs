@@ -620,6 +620,7 @@ impl Signer for RustCrypto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::core::SignatureScope;
     use crate::adapters::storage::InMemoryTemplateRegistry;
     use crate::domain::provider::Backend;
     use crate::domain::provider::GeneratedKey;
@@ -914,7 +915,7 @@ mod tests {
                 1,
                 id.into(),
                 "rustcrypto".into(),
-                ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
+                ScopeSpecification::any_of(Scope::Signature(SignatureScope::Standard)),
                 SecretBytes::new_with(&k.to_bytes(), Locking::BestEffort).unwrap(),
                 Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
                 std::time::SystemTime::UNIX_EPOCH,
@@ -945,7 +946,7 @@ mod tests {
                 1,
                 id.into(),
                 "rustcrypto".into(),
-                ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
+                ScopeSpecification::any_of(Scope::Signature(SignatureScope::Standard)),
                 SecretBytes::new_with(&k.to_bytes(), Locking::BestEffort).unwrap(),
                 Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
                 std::time::SystemTime::UNIX_EPOCH,

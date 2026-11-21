@@ -20,6 +20,7 @@ use crate::ffi::translation::{
 };
 use crate::ffi::versioned;
 use crate::proto::api;
+use crate::domain::core::TemplateStatus;
 
 /// A snapshot to iterate over.
 struct Iter<T> {
@@ -163,7 +164,7 @@ pub unsafe extern "C" fn agc_list_templates(
             .map(|&s| {
                 i32::try_from(s)
                     .ok()
-                    .and_then(|s| api::TemplateStatus::try_from(s).ok())
+                    .and_then(|s| TemplateStatus::try_from(s).ok())
                     .ok_or_else(|| FfiError::invalid(format!("allowed_statuses: {s} is not a template status")))
             })
             .collect::<Result<_, _>>()?;

@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use crate::domain::core::ScopeSpecification;
+use crate::domain::core::{KeyLifecycleState, ScopeSpecification};
 use crate::domain::key::{Key, KeyId, Origin, Version};
 use crate::domain::provider::{Encoding, ProviderRegistry, StoredKey};
 use crate::proto::api;
@@ -14,7 +14,7 @@ pub struct KeyMetadata {
     pub id: KeyId,
     pub name: String,
     pub policy: String,
-    pub state: api::KeyLifecycleState,
+    pub state: KeyLifecycleState,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
     pub version: u32,

@@ -27,7 +27,7 @@ use prost::Message;
 use zeroize::Zeroizing;
 
 use super::key_index::{KeyIndex, Loading};
-use crate::domain::core::{Code, Error, ScopeSpecification};
+use crate::domain::core::{Code, Error, KeyLifecycleState, ScopeSpecification};
 use crate::domain::key::*;
 use crate::proto::api;
 use crate::secret::{AllocError, Locking, SecretBytes, extend_secret};
@@ -323,7 +323,7 @@ fn decode(b: &[u8], locking: Locking) -> Result<Key, Error> {
     let id = KeyId::new(r.str()?);
     let name = r.str()?;
     let policy = r.str()?;
-    let state = i32::try_from(r.u32()?).ok().and_then(|s| api::KeyLifecycleState::try_from(s).ok()).ok_or_else(malformed)?;
+    let state = i32::try_from(r.u32()?).ok().and_then(|s| KeyLifecycleState::try_from(s).ok()).ok_or_else(malformed)?;
     let created_at = r.time()?;
     let updated_at = r.time()?;
     let revision = r.u64()?;
@@ -448,7 +448,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::core::Scope;
+    use crate::domain::core::{AeadScope, Scope};
     use crate::domain::key::testing::{key, version};
 
     /// A fresh directory for one test's store. It also holds
@@ -489,13 +489,13 @@ mod tests {
             let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
             let mut k = r.create(key("key_1", "alpha")).unwrap();
             k.add_version(version(2)).unwrap();
-            k.transition(api::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
+            k.transition(KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
             r.update(k).unwrap();
             r.create(key("key_2", "beta")).unwrap();
         }
         let r = FileKeyRepository::open(&d, wk(), Locking::BestEffort).unwrap();
         let k = r.get_by_name("alpha").unwrap().unwrap();
-        assert_eq!((k.versions().len(), k.state(), k.revision()), (2, api::KeyLifecycleState::Suspended, 2));
+        assert_eq!((k.versions().len(), k.state(), k.revision()), (2, KeyLifecycleState::Suspended, 2));
         assert_eq!(k.current().material(), version(2).material(), "material round-trips");
         assert_eq!(r.list().unwrap().iter().map(|k| k.name()).collect::<Vec<_>>(), ["alpha", "beta"]);
         let _ = fs::remove_dir_all(&d);
@@ -640,7 +640,7 @@ mod tests {
                     n,
                     "aes-256-gcm-128-96".into(),
                     "fake".into(),
-                    ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Standard)),
+                    ScopeSpecification::any_of(Scope::Aead(AeadScope::Standard)),
                     SecretBytes::new_with(&m, Locking::BestEffort).unwrap(),
                     Provenance { extractable: true, approved_lineage: false, origin: Origin::Generated },
                     SystemTime::UNIX_EPOCH,

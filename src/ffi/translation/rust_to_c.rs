@@ -426,7 +426,7 @@ mod tests {
     use super::*;
     use crate::domain::key::KeyId;
     use crate::ffi::translation::scope_spec;
-    use crate::proto::api::{AeadScope, KeyLifecycleState, SignatureScope};
+    use crate::domain::core::{AeadScope, KeyLifecycleState, SignatureScope};
 
     fn metadata() -> KeyMetadata {
         let mut spec = ScopeSpecification::any_of(Scope::Signature(SignatureScope::Prehashed));

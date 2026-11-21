@@ -320,7 +320,7 @@ pub struct KeyFilter {
     pub scope_spec: Option<ScopeSpecification>,
     pub provider: Option<String>,
     pub policy: Option<String>,
-    pub state: Option<crate::proto::api::KeyLifecycleState>,
+    pub state: Option<crate::domain::core::KeyLifecycleState>,
 }
 
 impl KeyFilter {
@@ -390,10 +390,9 @@ mod tests {
     use super::*;
     use crate::adapters::providers::RustCrypto;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
-    use crate::domain::core::{ProviderRequirements, Scope, ScopeSpecification};
+    use crate::domain::core::{AeadScope, HashScope, ProviderRequirements, Scope, ScopeSpecification, SignatureScope};
     use crate::domain::policy::{Enforcer, Manager};
     use crate::domain::provider::{Backend, GeneratedKey, testing::FakeProvider};
-    use crate::proto::api::{AeadScope, HashScope, SignatureScope};
 
     const AEAD: Scope = Scope::Aead(AeadScope::Standard);
 
@@ -682,7 +681,7 @@ mod tests {
         let ko = orchestrator(AGILE);
         ko.create_key(spec("k", AEAD, None)).unwrap();
         let mut stored = Arc::unwrap_or_clone(ko.keys.get_by_name("k").unwrap().unwrap());
-        stored.transition(crate::proto::api::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
+        stored.transition(crate::domain::core::KeyLifecycleState::Suspended, SystemTime::now()).unwrap();
         ko.keys.update(stored).unwrap();
         assert_eq!(code(ko.transform_key(transform("k", None, false))), Code::KeyOperationNotAllowed);
     }

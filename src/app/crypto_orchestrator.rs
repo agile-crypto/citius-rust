@@ -415,10 +415,12 @@ pub(super) fn require_output(o: &api::ProviderOutput) -> Result<(), Error> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use crate::domain::core::{
+        AeadScope, KeyCreationSpec, KeyLifecycleState, ProviderRequirements, ScopeSpecification, SymmetricCipherScope,
+    };
     use crate::adapters::providers::RustCrypto;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
     use crate::app::KeyOrchestrator;
-    use crate::domain::core::{KeyCreationSpec, ProviderRequirements, ScopeSpecification};
     use crate::domain::policy::{Enforcer, Manager};
 
     const POLICY: &str = r#"{"version": "1",
@@ -461,7 +463,7 @@ pub(super) mod tests {
             .unwrap();
     }
 
-    const AEAD: Scope = Scope::Aead(api::AeadScope::Unspecified);
+    const AEAD: Scope = Scope::Aead(AeadScope::Unspecified);
 
     fn aead() -> EncryptParams {
         EncryptParams::Aead { aad: b"ad".to_vec() }
@@ -534,7 +536,7 @@ pub(super) mod tests {
     fn parameters_must_fit_the_scope() {
         let w = world();
         create(&w, "aead", AEAD);
-        create(&w, "cbc", Scope::SymmetricCipher(api::SymmetricCipherScope::Unspecified));
+        create(&w, "cbc", Scope::SymmetricCipher(SymmetricCipherScope::Unspecified));
         let code = |r: Result<Encrypted, Error>| r.err().unwrap().code();
         assert_eq!(code(w.crypto.encrypt(encrypt("aead", b"x", EncryptParams::None))), Code::InvalidArgument);
         assert_eq!(code(w.crypto.encrypt(encrypt("cbc", b"x", aead()))), Code::InvalidArgument);
@@ -550,7 +552,7 @@ pub(super) mod tests {
 
         // A suspended key decrypts what exists but encrypts nothing new.
         let mut k = Arc::unwrap_or_clone(w.repo.get_by_name("k").unwrap().unwrap());
-        k.transition(api::KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
+        k.transition(KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
         w.repo.update(k).unwrap();
         assert_eq!(w.crypto.encrypt(encrypt("k", b"x", aead())).err().unwrap().code(), Code::KeyOperationNotAllowed);
         assert!(w.crypto.decrypt(decrypt("k", &e, aead())).is_ok());

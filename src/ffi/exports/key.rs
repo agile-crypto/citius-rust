@@ -9,7 +9,7 @@ use crate::ffi::error::FfiError;
 use crate::ffi::guard::{guard, guard_value};
 use crate::ffi::translation::{fill_key_info_response, key_info_size, optional_str, required_str, scope_spec, spec_from_params};
 use crate::ffi::{exports::core::{clear_handle, context}, versioned};
-use crate::proto::api;
+use crate::domain::core::KeyLifecycleState;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agc_create_key(
@@ -154,7 +154,7 @@ pub unsafe extern "C" fn agc_list_keys(
             v => Some(
                 i32::try_from(v)
                     .ok()
-                    .and_then(|v| api::KeyLifecycleState::try_from(v).ok())
+                    .and_then(|v| KeyLifecycleState::try_from(v).ok())
                     .ok_or_else(|| FfiError::invalid(format!("lifecycle_state {v} is not a known state")))?,
             ),
         };

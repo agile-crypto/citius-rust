@@ -293,8 +293,8 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+    use crate::domain::core::{AeadScope, KeyLifecycleState, Scope, ScopeSpecification};
     use crate::app::KeyMetadata;
-    use crate::domain::core::{Scope, ScopeSpecification};
     use crate::domain::key::KeyId;
 
     fn result() -> MigrationResult {
@@ -303,13 +303,13 @@ mod tests {
                 id: KeyId::new("key_1"),
                 name: "k".into(),
                 policy: "p".into(),
-                state: api::KeyLifecycleState::Active,
+                state: KeyLifecycleState::Active,
                 created_at: SystemTime::UNIX_EPOCH,
                 updated_at: SystemTime::UNIX_EPOCH,
                 version: 2,
                 template_id: "chacha20-poly1305".into(),
                 provider: "hsm-1".into(),
-                scope_spec: ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Standard)),
+                scope_spec: ScopeSpecification::any_of(Scope::Aead(AeadScope::Standard)),
                 extractable: false,
                 public_key: None,
                 implementation: api::ImplementationProperties::default(),

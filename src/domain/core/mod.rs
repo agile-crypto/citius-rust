@@ -8,6 +8,7 @@ mod provider_requirements;
 mod provider_state;
 mod scope;
 mod spec;
+mod vocabulary;
 
 pub use error::*;
 pub use hash::*;
@@ -17,3 +18,4 @@ pub use provider_requirements::*;
 pub use provider_state::ProviderState;
 pub use scope::*;
 pub use spec::*;
+pub use vocabulary::*;

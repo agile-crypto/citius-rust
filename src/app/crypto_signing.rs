@@ -226,12 +226,12 @@ mod tests {
     use sha2::Digest;
 
     use super::*;
-    use crate::domain::core::Scope;
-    use crate::proto::api::SignatureScope;
+    use crate::domain::core::{
+        AeadScope, KeyCreationSpec, KeyLifecycleState, ProviderRequirements, Scope, ScopeSpecification, SignatureScope,
+    };
     use crate::adapters::providers::RustCrypto;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
     use crate::app::{KeyOrchestrator, TransformSpec};
-    use crate::domain::core::{KeyCreationSpec, ProviderRequirements, ScopeSpecification};
     use crate::domain::key::KeyRepository;
     use crate::domain::policy::{Enforcer, Manager};
     use crate::domain::provider::ProviderRegistry;
@@ -459,7 +459,7 @@ mod tests {
 
         // A suspended key verifies what exists but signs nothing new.
         let mut k = Arc::unwrap_or_clone(w.repo.get_by_name("k").unwrap().unwrap());
-        k.transition(api::KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
+        k.transition(KeyLifecycleState::Suspended, std::time::SystemTime::now()).unwrap();
         w.repo.update(k).unwrap();
         assert_eq!(
             code(w.crypto.sign(sign("k", SignInput::Message(b"m"), SignContext::None))),
@@ -488,7 +488,7 @@ mod tests {
                 name: "aead".into(),
                 policy: "p".into(),
                 template_id: None,
-                scope_spec: ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Unspecified)),
+                scope_spec: ScopeSpecification::any_of(Scope::Aead(AeadScope::Unspecified)),
                 provider_id: None,
                 provider_requirements: ProviderRequirements::default(),
             })

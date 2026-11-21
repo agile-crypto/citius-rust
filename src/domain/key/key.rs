@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use crate::domain::core::{Code, Error, ProviderState, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::HashAlgorithm;
-use crate::proto::api::KeyLifecycleState as State;
+use crate::domain::core::KeyLifecycleState as State;
 use crate::secret::SecretBytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -355,8 +355,7 @@ impl Key {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
-    use crate::domain::core::Scope;
-    use crate::proto::api::AeadScope;
+    use crate::domain::core::{AeadScope, Scope};
 
     pub fn version(n: u32) -> Version {
         Version::new(
@@ -379,8 +378,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{key, version};
     use super::*;
-    use crate::domain::core::Scope;
-    use crate::proto::api::SignatureScope;
+    use crate::domain::core::{Scope, SignatureScope};
 
     #[test]
     fn a_version_signs_only_the_digest_hashes_it_recorded() {

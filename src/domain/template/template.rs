@@ -1,4 +1,4 @@
-use crate::domain::core::{Code, Error, Scope, ScopeSpecification, SecurityProperties};
+use crate::domain::core::{Code, Error, Scope, ScopeSpecification, SecurityProperties, SignatureScope, TemplateStatus};
 use crate::proto::api;
 
 /// An algorithm template: a fully specified algorithm, the scopes it serves
@@ -35,7 +35,7 @@ impl Template {
         if info.scoped_capabilities.is_empty() {
             return Err(invalid("no scoped capabilities".into()));
         }
-        api::TemplateStatus::try_from(info.status).map_err(|_| invalid(format!("unknown status {}", info.status)))?;
+        TemplateStatus::try_from(info.status).map_err(|_| invalid(format!("unknown status {}", info.status)))?;
         let capabilities = info
             .scoped_capabilities
             .iter()
@@ -62,14 +62,14 @@ impl Template {
         &self.info.template_id
     }
 
-    pub fn status(&self) -> api::TemplateStatus {
-        api::TemplateStatus::try_from(self.info.status).expect("checked in new")
+    pub fn status(&self) -> TemplateStatus {
+        TemplateStatus::try_from(self.info.status).expect("checked in new")
     }
 
     /// Whether intent-based selection may pick this template. Deprecated,
     /// forbidden and experimental templates are never picked implicitly.
     pub fn is_selectable(&self) -> bool {
-        matches!(self.status(), api::TemplateStatus::Active | api::TemplateStatus::Acceptable)
+        matches!(self.status(), TemplateStatus::Active | TemplateStatus::Acceptable)
     }
 
     pub fn capabilities(&self) -> &[Capability] {
@@ -158,7 +158,7 @@ pub fn check_requested_digest_hashes(want: &ScopeSpecification) -> Result<(), Er
 pub fn is_prehashed(scope: Scope) -> bool {
     matches!(
         scope,
-        Scope::Signature(api::SignatureScope::Prehashed | api::SignatureScope::PrehashedWithContext)
+        Scope::Signature(SignatureScope::Prehashed | SignatureScope::PrehashedWithContext)
     )
 }
 
@@ -168,7 +168,7 @@ pub(crate) mod testing {
     use crate::proto::api::{scope_specification::ScopeSpec, AeadScopeSpec, SignatureScopeSpec};
 
     /// A minimal valid template serving `scope`, for tests.
-    pub fn template(id: &str, scope: Scope, status: api::TemplateStatus) -> Template {
+    pub fn template(id: &str, scope: Scope, status: TemplateStatus) -> Template {
         let spec = match scope {
             Scope::Signature(s) => ScopeSpec::Signature(SignatureScopeSpec { scope: s as i32, ..Default::default() }),
             Scope::Aead(s) => ScopeSpec::Aead(AeadScopeSpec { scope: s as i32, ..Default::default() }),
@@ -193,7 +193,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::template;
     use super::*;
-    use api::{SignatureScope, TemplateStatus};
+    use crate::domain::core::{SignatureScope, TemplateStatus};
 
     #[test]
     fn invalid_templates_are_rejected_at_creation() {

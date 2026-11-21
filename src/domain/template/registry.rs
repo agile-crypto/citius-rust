@@ -1,6 +1,5 @@
 use super::template::Template;
-use crate::domain::core::{Code, Error, ScopeSpecification};
-use crate::proto::api::TemplateStatus;
+use crate::domain::core::{Code, Error, ScopeSpecification, TemplateStatus};
 
 /// Which templates are eligible for a selection. There is deliberately no
 /// default: callers choose `all_templates()` or `only_templates(ids)`, and an

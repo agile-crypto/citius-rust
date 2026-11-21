@@ -4,3 +4,4 @@
 //! and `ffi`; a domain never encodes or decodes (tests/architecture.rs).
 
 pub mod metadata;
+mod vocabulary;
