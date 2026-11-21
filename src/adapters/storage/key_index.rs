@@ -126,7 +126,7 @@ impl KeyIndex {
         if s.names[n].contains_key(k.name()) {
             return Err(Error::new(Code::AlreadyExists, op, format!("key name {} exists", k.name())));
         }
-        k.set_revision(1);
+        k.advance_revision(op, None)?;
         persist(&k)?;
         Arc::make_mut(&mut s.names[n]).insert(k.name().to_owned(), k.id().clone());
         Arc::make_mut(&mut s.keys[i]).insert(k.id().clone(), Arc::new(k.clone()));
@@ -147,11 +147,7 @@ impl KeyIndex {
         let stored = s.keys[i]
             .get(k.id())
             .ok_or_else(|| Error::new(Code::KeyNotFound, op, format!("no key with id {}", k.id().as_str())))?;
-        if stored.revision() != k.revision() {
-            let msg = format!("key {} changed since it was read; retry", k.name());
-            return Err(Error::new(Code::ConcurrentAccess, op, msg));
-        }
-        k.set_revision(k.revision() + 1);
+        k.advance_revision(op, Some(stored))?;
         persist(&k)?;
         Arc::make_mut(&mut s.keys[i]).insert(k.id().clone(), Arc::new(k.clone()));
         self.state.store(Arc::new(s));

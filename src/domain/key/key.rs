@@ -282,9 +282,24 @@ impl Key {
         self.revision
     }
 
-    /// For repositories: the revision under which this copy is stored.
-    pub fn set_revision(&mut self, revision: u64) {
-        self.revision = revision;
+    /// For repositories: moves this copy to the revision it is stored under
+    /// next. A new key (`stored` is `None`) gets revision 1. A changed key
+    /// must still be at the revision of `stored`, the copy now in the store,
+    /// and gets the one after; a stale copy is refused (`ConcurrentAccess`),
+    /// so two concurrent changes cannot silently overwrite each other.
+    pub fn advance_revision(&mut self, op: &'static str, stored: Option<&Key>) -> Result<(), Error> {
+        match stored {
+            None => self.revision = 1,
+            Some(s) if s.id == self.id && s.revision == self.revision => self.revision += 1,
+            Some(s) if s.id != self.id => {
+                return Err(Error::new(Code::Internal, op, format!("key {} is not key {}", self.name, s.name)));
+            }
+            Some(_) => {
+                let msg = format!("key {} changed since it was read; retry", self.name);
+                return Err(Error::new(Code::ConcurrentAccess, op, msg));
+            }
+        }
+        Ok(())
     }
 
     /// Appends the next version, which becomes current. Only an ACTIVE key
@@ -408,6 +423,22 @@ mod tests {
         assert!(v.check_digest_hash(HashAlgorithm::Sha384).is_ok());
         assert_eq!(v.check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::InvalidArgument);
         assert_eq!(version(1).check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::Internal);
+    }
+
+    #[test]
+    fn revisions_advance_one_at_a_time_and_refuse_stale_copies() {
+        let mut k = key("k1", "a");
+        assert_eq!(k.revision(), 0);
+        k.advance_revision("t", None).unwrap();
+        assert_eq!(k.revision(), 1);
+        let stored = k.clone();
+        let mut stale = k.clone();
+        k.advance_revision("t", Some(&stored)).unwrap();
+        assert_eq!(k.revision(), 2);
+        assert_eq!(stale.advance_revision("t", Some(&k)).unwrap_err().code(), Code::ConcurrentAccess);
+        assert_eq!(stale.revision(), 1, "a refused copy keeps its revision");
+        let other = key("k2", "b");
+        assert_eq!(k.advance_revision("t", Some(&other)).unwrap_err().code(), Code::Internal);
     }
 
     #[test]
