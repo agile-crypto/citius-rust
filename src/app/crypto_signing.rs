@@ -232,14 +232,16 @@ impl CryptoOrchestrator {
     /// As `sign_admitting`, one lookup serves both.
     pub fn verify_admitting<E: From<Error>>(
         &self,
-        req: VerifyRequest,
+        mut req: VerifyRequest,
         enc: Option<MetadataEncoding>,
         admit: impl FnOnce(Sizes) -> Result<(), E>,
     ) -> Result<Verified, E> {
         non_empty(req.signature, "signature")?;
+        // Moved out first: the lookup below borrows the request.
+        let user_context = std::mem::take(&mut req.user_context);
         self.with_signing(req.key_name, req.key_version, &req.input, &req.context, true, |r| {
             let metadata = match enc {
-                Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
+                Some(enc) => Self::metadata_len(r.version().number(), &user_context, enc)?,
                 None => 0,
             };
             admit(Sizes { artifact: 0, metadata })?;
@@ -251,7 +253,7 @@ impl CryptoOrchestrator {
                     signer.verify_digest(key, r.algorithm(), digest, hash, req.signature, &req.context)?
                 }
             };
-            let metadata = Self::metadata(r.version().number(), no_output(), req.user_context.clone());
+            let metadata = Self::metadata(r.version().number(), no_output(), user_context);
             Ok(Verified { valid, metadata })
         })
     }

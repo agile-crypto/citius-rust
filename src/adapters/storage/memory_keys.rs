@@ -30,16 +30,15 @@ impl KeyRepository for InMemoryKeyRepository {
     }
 
     fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
-        Ok(self.index.get_by_name(name))
+        self.index.get_by_name("InMemoryKeyRepository.get_by_name", name)
     }
 
     fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) -> Result<(), Error> {
-        self.index.inspect_by_name(name, f);
-        Ok(())
+        self.index.inspect_by_name("InMemoryKeyRepository.inspect_by_name", name, f)
     }
 
     fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
-        Ok(self.index.get_by_id(id))
+        self.index.get_by_id("InMemoryKeyRepository.get_by_id", id)
     }
 
     fn delete(&self, id: &KeyId) -> Result<(), Error> {
@@ -47,7 +46,7 @@ impl KeyRepository for InMemoryKeyRepository {
     }
 
     fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
-        Ok(self.index.list())
+        self.index.list("InMemoryKeyRepository.list")
     }
 }
 

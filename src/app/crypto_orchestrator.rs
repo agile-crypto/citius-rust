@@ -610,6 +610,10 @@ pub(super) mod tests {
             self.lookups.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.inner.get_by_name(name)
         }
+        fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) -> Result<(), Error> {
+            self.lookups.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.inspect_by_name(name, f)
+        }
         fn delete(&self, id: &crate::domain::key::KeyId) -> Result<(), Error> {
             self.inner.delete(id)
         }

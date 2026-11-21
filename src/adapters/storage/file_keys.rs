@@ -26,7 +26,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use prost::Message;
 use zeroize::Zeroizing;
 
-use super::key_index::KeyIndex;
+use super::key_index::{KeyIndex, Loading};
 use crate::domain::core::{Code, Error, ScopeSpecification};
 use crate::domain::key::*;
 use crate::proto::api;
@@ -110,7 +110,7 @@ impl FileKeyRepository {
         lock.try_lock().map_err(|_| {
             Error::new(Code::ConcurrentAccess, OP, format!("key store {} is in use by another context", dir.display()))
         })?;
-        let mut index = KeyIndex::default();
+        let mut index = Loading::default();
         for entry in fs::read_dir(dir).map_err(|e| io(OP, "cannot list the directory", e))? {
             let path = entry.map_err(|e| io(OP, "cannot list the directory", e))?.path();
             if path.extension().and_then(|e| e.to_str()) != Some(EXTENSION) {
@@ -129,7 +129,7 @@ impl FileKeyRepository {
                 return Err(Error::new(Code::Internal, OP, format!("key store: two keys are named {name}")));
             }
         }
-        Ok(FileKeyRepository { dir: dir.to_owned(), key, index, lock: Mutex::new(Some(lock)) })
+        Ok(FileKeyRepository { dir: dir.to_owned(), key, index: index.finish(), lock: Mutex::new(Some(lock)) })
     }
 
     /// In a forked child: closes the child's copy of the lock descriptor,
@@ -216,16 +216,15 @@ impl KeyRepository for FileKeyRepository {
     }
 
     fn inspect_by_name(&self, name: &str, f: &mut dyn FnMut(&Key)) -> Result<(), Error> {
-        self.index.inspect_by_name(name, f);
-        Ok(())
+        self.index.inspect_by_name("FileKeyRepository.inspect_by_name", name, f)
     }
 
     fn get_by_id(&self, id: &KeyId) -> Result<Option<Arc<Key>>, Error> {
-        Ok(self.index.get_by_id(id))
+        self.index.get_by_id("FileKeyRepository.get_by_id", id)
     }
 
     fn get_by_name(&self, name: &str) -> Result<Option<Arc<Key>>, Error> {
-        Ok(self.index.get_by_name(name))
+        self.index.get_by_name("FileKeyRepository.get_by_name", name)
     }
 
     fn delete(&self, id: &KeyId) -> Result<(), Error> {
@@ -233,7 +232,7 @@ impl KeyRepository for FileKeyRepository {
     }
 
     fn list(&self) -> Result<Vec<Arc<Key>>, Error> {
-        Ok(self.index.list())
+        self.index.list("FileKeyRepository.list")
     }
 }
 

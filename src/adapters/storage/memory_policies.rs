@@ -19,6 +19,15 @@ impl InMemoryPolicyRepository {
         InMemoryPolicyRepository { policies: ArcSwap::default(), writer: Mutex::new(()) }
     }
 
+    /// The current policies, unless a write panicked (fail closed, as a
+    /// poisoned lock did; the poison flag is a read of a line nobody writes).
+    fn read(&self, op: &'static str) -> Result<arc_swap::Guard<Arc<BTreeMap<String, Policy>>>, Error> {
+        if self.writer.is_poisoned() {
+            return Err(poisoned(op));
+        }
+        Ok(self.policies.load())
+    }
+
     /// The writer's lock and a copy of the current policies to change.
     fn write(&self, op: &'static str) -> Result<(MutexGuard<'_, ()>, BTreeMap<String, Policy>), Error> {
         let guard = self.writer.lock().map_err(|_| poisoned(op))?;
@@ -59,11 +68,11 @@ impl PolicyRepository for InMemoryPolicyRepository {
     }
 
     fn get(&self, name: &str) -> Result<Option<Policy>, Error> {
-        Ok(self.policies.load().get(name).cloned())
+        Ok(self.read("InMemoryPolicyRepository.get")?.get(name).cloned())
     }
 
     fn inspect(&self, name: &str, f: &mut dyn FnMut(&Policy)) -> Result<(), Error> {
-        if let Some(p) = self.policies.load().get(name) {
+        if let Some(p) = self.read("InMemoryPolicyRepository.inspect")?.get(name) {
             f(p);
         }
         Ok(())
@@ -78,7 +87,7 @@ impl PolicyRepository for InMemoryPolicyRepository {
     }
 
     fn list(&self) -> Result<Vec<Policy>, Error> {
-        Ok(self.policies.load().values().cloned().collect())
+        Ok(self.read("InMemoryPolicyRepository.list")?.values().cloned().collect())
     }
 }
 
@@ -108,6 +117,18 @@ mod tests {
 
     fn code<T: std::fmt::Debug>(r: Result<T, Error>) -> Code {
         r.unwrap_err().code()
+    }
+
+    #[test]
+    fn a_panic_while_writing_fails_the_store_closed() {
+        let repo = InMemoryPolicyRepository::new();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _writing = repo.writer.lock().unwrap();
+            panic!("simulated bug while writing");
+        }));
+        assert_eq!(code(repo.get("p")), Code::Internal);
+        assert_eq!(code(repo.inspect("p", &mut |_| ())), Code::Internal);
+        assert_eq!(code(repo.list()), Code::Internal);
     }
 
     #[test]
