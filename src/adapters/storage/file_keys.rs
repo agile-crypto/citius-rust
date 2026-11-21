@@ -30,7 +30,7 @@ use super::key_index::{KeyIndex, Loading};
 use crate::domain::core::{Code, Error, ScopeSpecification};
 use crate::domain::key::*;
 use crate::proto::api;
-use crate::secret::{Locking, SecretBytes, extend_secret};
+use crate::secret::{AllocError, Locking, SecretBytes, extend_secret};
 
 const FORMAT_V1: u8 = 1;
 const NONCE_LEN: usize = 12;
@@ -64,7 +64,7 @@ impl WrappingKey {
         if bytes.len() != 32 {
             return Err(invalid(format!("the wrapping key must be 32 bytes, not {}", bytes.len())));
         }
-        let key = SecretBytes::new_with(&bytes, locking).map_err(|e| secret_error(OP, "the wrapping key", e))?;
+        let key = SecretBytes::new_with(&bytes, locking).map_err(|e| held_error(OP, "the wrapping key", e))?;
         Ok(WrappingKey(key))
     }
 
@@ -351,16 +351,20 @@ fn decode(b: &[u8], locking: Locking) -> Result<Key, Error> {
             template_id,
             provider,
             scope_spec,
-            material,
+            SecretBytes::new_with(&material, locking).map_err(|e| held_error("decode", "the key material", e))?,
             Provenance { extractable, approved_lineage, origin },
             created,
-            locking,
-        )?);
+        ));
     }
     if !r.0.is_empty() {
         return Err(malformed());
     }
     Key::restore(id, &name, &policy, state, versions, created_at, updated_at, revision)
+}
+
+/// A secret (`what`) that could not be held as `require_locked_memory` asks.
+fn held_error(op: &'static str, what: &str, e: AllocError) -> Error {
+    Error::new(Code::ResourceExhausted, op, e.describe(what))
 }
 
 fn malformed() -> Error {
@@ -566,28 +570,24 @@ mod tests {
                 "t".into(),
                 "p".into(),
                 ScopeSpecification::any_of(*scope),
-                Zeroizing::new(vec![i as u8; 4]),
+                SecretBytes::new_with(&[i as u8; 4], Locking::BestEffort).unwrap(),
                 Provenance { extractable: i % 2 == 0, approved_lineage: true, origin: Origin::Generated },
                 SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 123),
-                Locking::BestEffort,
-            )
-            .unwrap();
+            );
             let mut k = Key::new(KeyId::new(format!("key_{i}")), "n", "pol", first).unwrap();
             let next = Version::new(
                 2,
                 "t".into(),
                 "q".into(),
                 ScopeSpecification::any_of(*scope),
-                Zeroizing::new(vec![9; 4]),
+                SecretBytes::new_with(&[9; 4], Locking::BestEffort).unwrap(),
                 Provenance {
                     extractable: false,
                     approved_lineage: false,
                     origin: Origin::Transferred { source_version: 1, source_provider: "p".into() },
                 },
                 SystemTime::UNIX_EPOCH + Duration::new(1_700_000_001, 0),
-                Locking::BestEffort,
-            )
-            .unwrap();
+            );
             k.add_version(next).unwrap();
             let back = decode(&encode(&k), Locking::BestEffort).unwrap();
             assert_eq!(encode(&back), encode(&k), "{scope:?}");
@@ -641,12 +641,10 @@ mod tests {
                     "aes-256-gcm-128-96".into(),
                     "fake".into(),
                     ScopeSpecification::any_of(Scope::Aead(api::AeadScope::Standard)),
-                    m,
+                    SecretBytes::new_with(&m, Locking::BestEffort).unwrap(),
                     Provenance { extractable: true, approved_lineage: false, origin: Origin::Generated },
                     SystemTime::UNIX_EPOCH,
-                    Locking::BestEffort,
                 )
-                .unwrap()
             };
             let leaks = leaks_during(|| {
                 // Two versions: the record outgrew its buffer after the first

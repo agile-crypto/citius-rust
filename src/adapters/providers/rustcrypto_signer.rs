@@ -906,7 +906,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
     fn a_versions_public_key_is_derived_once() {
         use crate::domain::core::{Scope, ScopeSpecification};
-        use crate::domain::key::{Locking, Origin, Provenance, Version};
+        use crate::domain::key::{Origin, Provenance, Version};
+        use crate::secret::{Locking, SecretBytes};
         for id in ["ed25519", "ecdsa-p256-sha256-der", "ml-dsa-65"] {
             let (k, a) = key(id);
             let v = Version::new(
@@ -914,12 +915,10 @@ mod tests {
                 id.into(),
                 "rustcrypto".into(),
                 ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
-                k.to_bytes(),
+                SecretBytes::new_with(&k.to_bytes(), Locking::BestEffort).unwrap(),
                 Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
                 std::time::SystemTime::UNIX_EPOCH,
-                Locking::BestEffort,
-            )
-            .unwrap();
+            );
             let stored = StoredKey::parse(v.material()).unwrap().with_state(v.provider_state());
             let (sig, _) = RustCrypto.sign(stored, &a, b"m", &SignContext::None).unwrap();
             assert!(RustCrypto.verify(stored, &a, b"m", &sig, &SignContext::None).unwrap(), "{id}");
@@ -935,7 +934,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
     fn a_sealed_ml_dsa_key_signs_as_the_parsed_one() {
         use crate::domain::core::{Scope, ScopeSpecification};
-        use crate::domain::key::{Locking, Origin, Provenance, Version};
+        use crate::domain::key::{Origin, Provenance, Version};
+        use crate::secret::{Locking, SecretBytes};
         for id in ["ml-dsa-44", "ml-dsa-87"] {
             let (k, mut a) = key(id);
             if let Some(Algorithm::MlDsa(p)) = a.algorithm.as_mut() {
@@ -946,12 +946,10 @@ mod tests {
                 id.into(),
                 "rustcrypto".into(),
                 ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
-                k.to_bytes(),
+                SecretBytes::new_with(&k.to_bytes(), Locking::BestEffort).unwrap(),
                 Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
                 std::time::SystemTime::UNIX_EPOCH,
-                Locking::BestEffort,
-            )
-            .unwrap();
+            );
             let cached = StoredKey::parse(v.material()).unwrap().with_state(v.provider_state());
             let ctx = SignContext::Domain(b"ctx".to_vec());
             let first = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;

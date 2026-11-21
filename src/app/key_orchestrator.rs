@@ -7,6 +7,7 @@ use crate::domain::key::*;
 use crate::domain::policy::{Evaluator, TemplateSecurityInfo};
 use crate::domain::provider::{ProviderRegistry, Requirements, StoredKey, transfer_of};
 use crate::domain::template::*;
+use crate::secret::{Locking, SecretBytes};
 
 /// Runs the key lifecycle use cases. Holds no state of its own: everything
 /// it touches is behind a shared domain interface, so one orchestrator serves
@@ -96,11 +97,10 @@ impl KeyOrchestrator {
             template.id().into(),
             provider.name().into(),
             scope_spec,
-            material,
+            held(&material, self.locking)?,
             provenance,
             SystemTime::now(),
-            self.locking,
-        )?;
+        );
         let k = Key::new(KeyId::generate(), &spec.name, &spec.policy, first)?;
         let metadata = KeyMetadata::of(&k, k.current(), &self.providers);
         admit(&metadata)?;
@@ -144,11 +144,10 @@ impl KeyOrchestrator {
             template_id,
             provider.name().into(),
             scope_spec,
-            material,
+            held(&material, self.locking)?,
             provenance,
             SystemTime::now(),
-            self.locking,
-        )?;
+        );
         key.add_version(next)?;
         let metadata = KeyMetadata::of(&key, key.current(), &self.providers);
         admit(&metadata)?;
@@ -377,6 +376,13 @@ pub(super) fn security_info(template: &Template, scope_spec: &ScopeSpecification
         quantum_safe: sec.quantum_safe == Some(true),
         strength_bits: sec.strength_bits,
     }
+}
+
+/// New key material, held as the context asks (`require_locked_memory`):
+/// with `Locking::Required`, fails rather than keep it swappable.
+pub(super) fn held(material: &[u8], locking: Locking) -> Result<SecretBytes, Error> {
+    SecretBytes::new_with(material, locking)
+        .map_err(|e| Error::new(Code::ResourceExhausted, "hold key material", e.describe("the key material")))
 }
 
 #[cfg(test)]

@@ -2,13 +2,10 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use zeroize::Zeroizing;
-
 use crate::domain::core::{Code, Error, ProviderState, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::HashAlgorithm;
 use crate::proto::api::KeyLifecycleState as State;
-pub use crate::secret::Locking;
-use crate::secret::{AllocError, SecretBytes};
+use crate::secret::SecretBytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyId(String);
@@ -60,7 +57,8 @@ pub struct Version {
     template_id: String,
     provider: String,
     scope_spec: ScopeSpecification,
-    /// Locked, and shared by every clone of the version (and so of the key).
+    /// Held as a secret, and shared by every clone of the version (and so
+    /// of the key).
     material: SecretBytes,
     /// What the version's provider keeps with it (opaque to the domain).
     provider_state: Arc<ProviderState>,
@@ -68,39 +66,20 @@ pub struct Version {
     created_at: SystemTime,
 }
 
-/// The error for a secret (`what`) that could not be held as asked.
-pub fn secret_error(op: &'static str, what: &str, e: AllocError) -> Error {
-    let message = match e {
-        AllocError::NoMemory => format!("no memory is left for {what}"),
-        AllocError::NotLocked => {
-            format!("{what} cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required")
-        }
-        AllocError::InheritedByChildren => format!(
-            "{what} cannot be kept out of forked children (MADV_WIPEONFORK needs Linux 4.14), \
-             and locked memory is required"
-        ),
-    };
-    Error::new(Code::ResourceExhausted, op, message)
-}
-
 impl Version {
-    /// `locking` says how the material is held (`require_locked_memory`);
-    /// with `Locking::Required` this fails rather than keep it swappable.
-    #[allow(clippy::too_many_arguments)] // a version's fields, plus `locking`
+    /// The material comes already held as a secret: how (locked or not,
+    /// `require_locked_memory`) is the caller's choice, not the model's.
     pub fn new(
         number: u32,
         template_id: String,
         provider: String,
         scope_spec: ScopeSpecification,
-        material: Zeroizing<Vec<u8>>,
+        material: SecretBytes,
         provenance: Provenance,
         created_at: SystemTime,
-        locking: Locking,
-    ) -> Result<Self, Error> {
-        let material =
-            SecretBytes::new_with(&material, locking).map_err(|e| secret_error("Version::new", "the key material", e))?;
+    ) -> Self {
         let provider_state = Arc::default();
-        Ok(Version { number, template_id, provider, scope_spec, material, provider_state, provenance, created_at })
+        Version { number, template_id, provider, scope_spec, material, provider_state, provenance, created_at }
     }
 
     pub fn number(&self) -> u32 {
@@ -385,12 +364,10 @@ pub(crate) mod testing {
             "aes-256-gcm-128-96".into(),
             "fake".into(),
             ScopeSpecification::any_of(Scope::Aead(AeadScope::Standard)),
-            Zeroizing::new(vec![n as u8; 32]),
+            SecretBytes::new_with(&[n as u8; 32], crate::secret::Locking::BestEffort).unwrap(),
             Provenance { extractable: true, approved_lineage: false, origin: Origin::Generated },
             SystemTime::UNIX_EPOCH,
-            Locking::BestEffort,
         )
-        .unwrap()
     }
 
     pub fn key(id: &str, name: &str) -> Key {
@@ -414,12 +391,10 @@ mod tests {
             "t".into(),
             "p".into(),
             spec,
-            Zeroizing::new(vec![1; 32]),
+            SecretBytes::new_with(&[1; 32], crate::secret::Locking::BestEffort).unwrap(),
             Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
             SystemTime::UNIX_EPOCH,
-            Locking::BestEffort,
-        )
-        .unwrap();
+        );
         assert!(v.check_digest_hash(HashAlgorithm::Sha384).is_ok());
         assert_eq!(v.check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::InvalidArgument);
         assert_eq!(version(1).check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::Internal);

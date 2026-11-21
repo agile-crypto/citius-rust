@@ -65,6 +65,23 @@ pub enum AllocError {
     InheritedByChildren,
 }
 
+impl AllocError {
+    /// Why a secret (`what`, e.g. "the key material") could not be held as
+    /// asked, for an error message.
+    pub fn describe(self, what: &str) -> String {
+        match self {
+            AllocError::NoMemory => format!("no memory is left for {what}"),
+            AllocError::NotLocked => {
+                format!("{what} cannot be locked in RAM (RLIMIT_MEMLOCK is used up), and locked memory is required")
+            }
+            AllocError::InheritedByChildren => format!(
+                "{what} cannot be kept out of forked children (MADV_WIPEONFORK needs Linux 4.14), \
+                 and locked memory is required"
+            ),
+        }
+    }
+}
+
 /// What a forked child gets of a `SecretBytes` allocation. Locks are not
 /// inherited across fork(2), so a copied page would hold the secret
 /// unlocked, and a forked child never needs the library's secrets: an

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use super::key_orchestrator::{approved, not_found, security_info};
+use super::key_orchestrator::{approved, held, not_found, security_info};
 use super::{KeyMetadata, KeyOrchestrator, TransformSpec};
 use crate::domain::core::{Code, Error, Operation};
 use crate::domain::key::{Key, Origin, Provenance, Version};
@@ -182,11 +182,10 @@ impl KeyOrchestrator {
             template.id().to_owned(),
             target.name().to_owned(),
             version.scope_spec().clone(),
-            material,
+            held(&material, self.locking)?,
             provenance,
             SystemTime::now(),
-            self.locking,
-        )?)?;
+        ))?;
         let result = MigrationResult {
             key: KeyMetadata::of(&key, key.current(), &self.providers),
             strategy: spec.strategy,
