@@ -2,11 +2,9 @@ use std::ffi::c_char;
 use std::ptr;
 use std::time::SystemTime;
 
-use crate::app::{KeyMetadata, POLICY_FORMAT};
+use crate::app::{Encoding, KeyMetadata, POLICY_FORMAT, Policy};
 use crate::bindings::*;
 use crate::domain::core::{Scope, ScopeKind, ScopeSpecification, SecurityProperties};
-use crate::domain::policy::Policy;
-use crate::domain::provider::Encoding;
 use crate::ffi::error::FfiError;
 use crate::proto::api;
 

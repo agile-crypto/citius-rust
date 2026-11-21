@@ -1,7 +1,7 @@
 //! agc_policy.h — CryptoPolicyService (CRUD and listing; evaluation follows).
 
 use crate::bindings::*;
-use crate::domain::policy::Policy;
+use crate::app::Policy;
 use crate::ffi::error::FfiError;
 use crate::ffi::exports::core::{clear_handle, context};
 use crate::ffi::guard::{guard, guard_value};

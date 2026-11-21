@@ -5,7 +5,7 @@ use crate::secret::SecretVec;
 
 use super::key_orchestrator::not_found;
 use crate::domain::core::{Code, Error, Operation, Scope};
-use crate::domain::crypto::metadata::{self, MetadataEncoding};
+use crate::wire::metadata::{self, MetadataEncoding};
 use crate::domain::key::{Key, KeyRepository, Version};
 use crate::domain::policy::Evaluator;
 use crate::domain::provider::{Backend, Cipher, EncryptParams, ProviderRegistry, Signer, StoredKey};

@@ -19,3 +19,9 @@ pub use key_migration::*;
 pub use key_orchestrator::*;
 pub use policy_admin::*;
 pub use startup::*;
+
+// The domain types the application services take and return beyond the
+// shared kernel (`domain::core`): ffi names them through here, never the
+// domains themselves (tests/architecture.rs).
+pub use crate::domain::policy::Policy;
+pub use crate::domain::provider::{EncryptParams, Encoding, SignContext};

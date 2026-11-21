@@ -4,7 +4,6 @@
 //! meet, the application layer (`crate::app`) coordinates them.
 
 pub mod core;
-pub mod crypto;
 pub mod key;
 pub mod policy;
 pub mod provider;

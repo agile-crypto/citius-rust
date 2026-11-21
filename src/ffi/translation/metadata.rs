@@ -5,7 +5,7 @@ use std::ffi::c_char;
 
 use super::Packer;
 use crate::bindings::*;
-use crate::domain::crypto::metadata::{MetadataEncoding, kind};
+use crate::wire::metadata::{MetadataEncoding, kind};
 use crate::ffi::error::FfiError;
 use crate::proto::api::{self, provider_output::AlgorithmOutput};
 

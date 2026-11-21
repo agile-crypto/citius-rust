@@ -2,8 +2,8 @@
 
 use crate::app::{DecryptRequest, EncryptRequest};
 use crate::bindings::*;
-use crate::domain::crypto::metadata::{self, MetadataEncoding};
-use crate::domain::provider::EncryptParams;
+use crate::wire::metadata::{self, MetadataEncoding};
+use crate::app::EncryptParams;
 use crate::ffi::error::FfiError;
 use crate::ffi::exports::core::context;
 use crate::ffi::guard::guard;

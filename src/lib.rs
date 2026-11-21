@@ -11,6 +11,8 @@ mod app;
 mod domain;
 mod adapters;
 mod proto;
+// The C API's byte formats, shared by app, adapters and ffi, never by a domain.
+mod wire;
 // Below every layer: memory for secrets, used by all of them, and stacks
 // big enough for stack-hungry crypto.
 mod secret;

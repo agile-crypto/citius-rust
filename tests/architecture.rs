@@ -6,7 +6,12 @@
 //!   (`proto`, the shared vocabulary Go's core gets from citius-api-go);
 //! - `domain::core` uses nothing outside itself;
 //! - nothing below `ffi` knows the C types (`bindings`) or `ffi`;
-//! - `adapters` implement domain interfaces and know nothing of `app`.
+//! - `adapters` implement domain interfaces and know nothing of `app` or
+//!   `ffi`;
+//! - `ffi` reaches domains and adapters only through `app`, except for its
+//!   composition root, `ffi/context.rs`;
+//! - the published byte formats (`wire`) know only `domain::core` and
+//!   `proto`, and no domain uses them.
 //!
 //! Every path the code names that starts with `crate::` is checked, in `use`
 //! declarations and inline. `super::super` is rejected in domains so that a
@@ -19,9 +24,10 @@ use syn::visit::Visit;
 
 const SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 
-/// Every `crate::...` and `super::super...` path in one file, as strings.
+/// Every `crate::...` and `super::super...` path in one file, as strings;
+/// with `skip_tests`, none inside a `#[cfg(test)]` module.
 #[derive(Default)]
-struct Paths(Vec<String>);
+struct Paths(Vec<String>, bool);
 
 impl Paths {
     fn add_use(&mut self, prefix: &mut Vec<String>, tree: &syn::UseTree) {
@@ -45,7 +51,19 @@ impl Paths {
     }
 }
 
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("cfg") && a.parse_args::<syn::Ident>().is_ok_and(|i| i == "test")
+    })
+}
+
 impl<'ast> Visit<'ast> for Paths {
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        if !(self.1 && is_cfg_test(&m.attrs)) {
+            syn::visit::visit_item_mod(self, m);
+        }
+    }
+
     fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
         self.add_use(&mut Vec::new(), &u.tree);
     }
@@ -70,13 +88,17 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// (file relative to src/, path it names) for every file under `layer`.
 fn paths_in(layer: &str) -> Vec<(String, String)> {
+    paths_of(layer, false)
+}
+
+fn paths_of(layer: &str, skip_tests: bool) -> Vec<(String, String)> {
     let mut files = Vec::new();
     rust_files(&Path::new(SRC).join(layer), &mut files);
     assert!(!files.is_empty(), "no sources under src/{layer}");
     let mut found = Vec::new();
     for file in files {
         let ast = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
-        let mut paths = Paths::default();
+        let mut paths = Paths(Vec::new(), skip_tests);
         paths.visit_file(&ast);
         let rel = file.strip_prefix(SRC).unwrap().display().to_string();
         found.extend(paths.0.into_iter().map(|p| (rel.clone(), p)));
@@ -86,7 +108,11 @@ fn paths_in(layer: &str) -> Vec<(String, String)> {
 
 /// Fails listing every path in `layer` that `allowed` rejects.
 fn check(layer: &str, allowed: impl Fn(&str, &str) -> bool) {
-    let violations: Vec<String> = paths_in(layer)
+    check_paths(layer, paths_in(layer), allowed)
+}
+
+fn check_paths(layer: &str, paths: Vec<(String, String)>, allowed: impl Fn(&str, &str) -> bool) {
+    let violations: Vec<String> = paths
         .into_iter()
         .filter(|(file, path)| {
             (path.starts_with("crate::") || path.starts_with("super::super")) && !allowed(file, path)
@@ -131,6 +157,7 @@ fn adapters_depend_on_domains_only() {
             || is_below(path, "crate::proto")
             || is_below(path, "crate::secret")
             || is_below(path, "crate::stack")
+            || is_below(path, "crate::wire")
     });
 }
 
@@ -140,4 +167,25 @@ fn the_checker_sees_violations() {
     let paths = paths_in("ffi");
     assert!(paths.iter().any(|(_, p)| is_below(p, "crate::bindings")), "expected ffi to use bindings");
     assert!(paths.iter().any(|(_, p)| p == "crate::domain::core::ScopeKind"), "expected a nested use path");
+}
+
+#[test]
+fn the_published_formats_know_only_the_shared_kernel() {
+    check("wire", |_, path| {
+        is_below(path, "crate::wire") || is_below(path, "crate::domain::core") || is_below(path, "crate::proto")
+    });
+}
+
+/// `ffi/context.rs` is the composition root: it wires adapters and domain
+/// services into the application services, as do ffi's tests. Every other
+/// ffi file translates C to the application layer's calls and back, and so
+/// names no domain service or adapter: the domain types the application
+/// services take and return come through `crate::app`.
+#[test]
+fn ffi_reaches_the_domain_only_through_the_application_layer() {
+    check_paths("ffi", paths_of("ffi", true), |file, path| {
+        file == "ffi/context.rs"
+            || !(is_below(path, "crate::domain") || is_below(path, "crate::adapters"))
+            || is_below(path, "crate::domain::core")
+    });
 }

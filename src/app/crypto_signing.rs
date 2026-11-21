@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::crypto_orchestrator::{CryptoOrchestrator, Direction, Resolved, Sizes, no_output, non_empty, require_output};
 use crate::domain::core::{Code, Error, Operation, hash_output_len};
-use crate::domain::crypto::metadata::{self, MetadataEncoding};
+use crate::wire::metadata::{self, MetadataEncoding};
 use crate::domain::provider::SignContext;
 use crate::proto::api::{self, HashAlgorithm};
 

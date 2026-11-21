@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use super::RustCrypto;
 use crate::adapters::storage::InMemoryTemplateRegistry;
-use crate::domain::crypto::metadata::{self, MetadataEncoding};
+use crate::wire::metadata::{self, MetadataEncoding};
 use crate::domain::provider::{Backend, EncryptParams, Encoding, GeneratedKey, SignContext};
 use crate::domain::template::TemplateRegistry;
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm};

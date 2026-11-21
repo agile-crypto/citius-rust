@@ -1,7 +1,7 @@
 //! agc_metadata.h — OperationMetadata codec and envelopes.
 
 use crate::bindings::*;
-use crate::domain::crypto::metadata;
+use crate::wire::metadata;
 use crate::ffi::error::FfiError;
 use crate::ffi::guard::guard;
 use crate::ffi::translation::{Packer, check_representable, encoding, md_from_c, md_to_c, pack_exact, slice};
@@ -162,7 +162,7 @@ mod tests {
     use std::ptr;
 
     use super::*;
-    use crate::domain::crypto::metadata::MetadataEncoding;
+    use crate::wire::metadata::MetadataEncoding;
     use crate::bindings::{
         AGC_ERR_BUFFER_TOO_SMALL, AGC_ERR_CRYPTO_PROVIDER_NOT_FOUND, AGC_ERR_INVALID_ARGUMENT, AGC_OK,
     };
