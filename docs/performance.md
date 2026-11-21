@@ -1,7 +1,9 @@
 # Performance of citius-rust compared with RustCrypto
 
 Status: **measurements done (2026-11-19/20) on macOS (Rust layers and the C path) and Linux in an
-arm64 VM; defects fixed on `main` (2026-11-20)**. This file collects every finding as the basis
+arm64 VM; defects fixed on `main` (2026-11-20); improvements done (2026-11-21), see §7**: phases
+0–2 on `main`, phases 3–7 and the read-mostly stores on branches (docs/improvement-plan.md,
+Status). The findings below describe the code before the improvements. This file collects every finding as the basis
 for a discussion about improvements. The performance findings are unchanged in the library and
 open for that discussion. The defects they uncovered are fixed: F8 (keys silently unlocked), F12
 (stack overflows) and B1 (the build needed rustfmt), plus the related defects in §4.1.
@@ -868,3 +870,43 @@ the formatted spelling, so the build panics with "the bindings define AGC_API_VE
 That hits minimal toolchains, such as the `rust:1-*` Docker images and CI images without the
 rustfmt component. Fix: parse whitespace-tolerantly, or read the constant from bindgen's typed
 output (e.g. a generated `const`) rather than from text.
+
+## 7. After the improvements (2026-11-21)
+
+Raw results and how they were produced: `docs/perf-results/phase-0-2/README.md` and
+`docs/perf-results/phase-3-7/README.md`. macOS arm64, before and after measured in one session.
+
+### 7.1 Where each finding stands
+
+| Finding | Done | Effect (C path, p50) |
+|---|---|---|
+| F1 key re-derived per operation | phases 3, 4, 7 | sign Ed25519 −50 %, ECDSA −62 to −65 %, ML-DSA −35 to −44 %; verify ML-DSA −56 to −67 %, now within ~1 µs of RustCrypto |
+| F2 plaintext wipe | phase 2 | decrypt 1 MiB ~2× faster (phase 0–2 results) |
+| F3 two resolves, copies per call | phase 1 | AEAD/CBC/CTR at 32 B: encrypt ~3.0 → ~1.5 µs, decrypt ~2.0 → ~0.5 µs; allocations per call ~110 → 11–20 |
+| F6 data copies | phases 2, 5 | no internal plaintext or ciphertext: 1 MiB encrypt/decrypt a further −25 to −29 % (GCM, CTR) |
+| F7 thread scaling | read-mostly stores | decryption scales to 9–12 M ops/s on 8–12 threads (was 1.4–2.7 M); see 7.2 |
+| F8 memory per context | phase 6 | each context after the first: 358 KiB, 217k allocations → 512 B, 7 allocations |
+| F5 randomness per call | open | limits encryption across threads on macOS (7.2) |
+| F9, F10, F11 | not addressed | file-store fsyncs, ML-DSA's own tail, binary size |
+| F12 stack | indirectly | a sealed ML-DSA key signs without re-expanding; budgets not re-measured |
+
+### 7.2 Threads: two limits, one ours
+
+- **Decryption.** It draws no randomness, and it stopped scaling at 4 threads (4.1 M ops/s),
+  falling to 1.4 M on 12 threads. Every operation took two shared `RwLock`s for reading (key
+  index, policy store), and a read lock writes its reader count. On this Mac that one cache line
+  caps all takers at ~5 M/s on 8 threads (137 M/s on one; `rwlock-out.txt`). With the stores as
+  `arc-swap` snapshots and the operation running on the borrowed key, nothing shared is written
+  per call: 9.3 M ops/s on 8 threads, 12.0 M on 12 (one key per thread), 7.3 M / 9.5 M with one
+  key for all threads.
+- **Encryption.** Each encryption draws a nonce with `getentropy`. On macOS that call alone
+  peaks at ~2 M/s and degrades with more threads (`entropy-out.txt`), which is exactly the shape
+  encryption shows (1.6 M ops/s on 4 threads, 1.1 M on 12). The library's locks are not the
+  limit here. The remedy is F5's deferred userspace generator, which needs a security review.
+  On Linux, vDSO `getrandom` should not have this limit; that is still to be measured.
+
+### 7.3 Still open
+
+- F5 on macOS, after a security review; the Linux thread numbers (vDSO `getrandom`).
+- Stack budgets re-measured after phase 7.
+- A bare-metal Linux host for the published figures (§6, item 6).

@@ -1,0 +1,19 @@
+
+warning: `agilecrypto` (build script) generated 1 warning
+
+warning: `agilecrypto` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.16s
+
+== resident memory ==
+RLIMIT_MEMLOCK: unlimited
+page size: 16384 bytes
+context (open + 12 policies): +1680.0 KiB
+1000 keys aes-256-gcm-128-96        +17376.0 KiB  = 17.38 KiB per key
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/aes-256-gcm-128-96             1000     12.83     16.25     20.58     46.58    269.88    269.88     17.90
+1000 keys ed25519                   +17184.0 KiB  = 17.18 KiB per key
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/ed25519                        1000     39.04     44.54     50.25     95.42    207.29    207.29     47.00
+1000 keys ml-dsa-65                 +17408.0 KiB  = 17.41 KiB per key
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/ml-dsa-65                      1000    178.83    186.42    196.25    225.58    447.92    447.92    189.08

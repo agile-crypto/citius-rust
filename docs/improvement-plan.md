@@ -10,6 +10,43 @@ The guiding rule is to fix causes, not symptoms. The changes should make the cod
 read: one key lookup per call, keys parsed where they live, buffers whose types say what they
 hold.
 
+## Status (2026-11-21)
+
+| Phases | Branch | State |
+|---|---|---|
+| 0–2 | merged into `main` (9bb1d53), pushed to the public repository | done |
+| 3–7 | `improve/key-caches`, on `main` | done, reviewed, not merged |
+| deferred F7 stage 2 (arc-swap) | `improve/read-mostly`, on `improve/key-caches` | done, not merged |
+| deferred F5 (userspace randomness on macOS) | none | open: needs the security review this plan asks for |
+
+Results: `docs/perf-results/phase-0-2/` and `docs/perf-results/phase-3-7/`; summary in
+`docs/performance.md` §7.
+
+How the work differs from this plan:
+
+- **Phase 1:** `admit` returns the region the artifact goes to (`Result<&mut [u8], E>`), not
+  a set of output slices. The metadata is still encoded separately and copied with a
+  bounds-checked `put`. For decryption, the metadata is encoded before decrypting, so nothing
+  that can fail runs after the plaintext is written.
+- **Phases 3/4:**
+  - The per-version cache is `domain::core::PublicCache`, with a 64 MiB process budget for
+    every cached value, not only ML-DSA's.
+  - Providers fill it through `StoredKey::public_value`.
+  - It holds one type per version, which is checked at run time, not in the type.
+  - Ed25519 verification derives its public key from the secret too, and a stored copy that
+    is not the secret's is `InvalidKeyMaterial`.
+- **Phase 5:** done in its own commit after phase 1, not together with it.
+- **Phase 7:** `secret::Sealed<T>` is sealed by a bitwise copy from where the value lives
+  (`copy_of`, an `unsafe fn` with an "inline only" contract), not by moving a `T: ZeroizeOnDrop`.
+  Sealed values are only ever locked: no swappable fallback, whatever `require_locked_memory`
+  says. Whether a version's secret is sealed is decided at its first use.
+- **Stack budgets** were not re-measured. The sealing path puts no extra copy on the stack,
+  and the fallback is `main`'s heap path, so they can only have shrunk.
+- **F7 stage 2:**
+  - The trigger was measured: decryption, which draws no randomness, collapsed past 4 threads.
+  - A shared `std::sync::RwLock` read caps at ~5 M/s on 8 threads on its own.
+  - Encryption's limit on macOS is `getentropy` (F5), not the locks.
+
 ## Phase 0: defects found during the discussion (must do first)
 
 | # | Defect | Fix |

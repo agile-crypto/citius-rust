@@ -1,0 +1,41 @@
+context part (held)                               allocs   retained       peak
+                                                              bytes      bytes  µs build
+template registry (72 templates from JSON)          2404     217229     358517     205.3
+provider registry (RustCrypto)                         3        104        104       0.1
+policy engine + key repository (empty)                 2        184        184       0.1
+whole context (as Context::open, memory store)      2411     217757     358517     196.1
+
+operation                                         allocs      bytes       peak
+sign/ed25519/1KiB/L1                                   2         67         67
+sign/ed25519/1KiB/L2                                  53       2249       1457
+sign/ed25519/1KiB/L2ffi-wire                         109       4357       1457
+sign/ecdsa-p256-sha256-der/1KiB/L1                     3        106        103
+sign/ecdsa-p256-sha256-der/1KiB/L2                    54       2447       1485
+sign/ecdsa-p256-sha256-der/1KiB/L2ffi-wire           110       4629       1485
+sign/ml-dsa-65/1KiB/L1                                 7     117200     117197
+sign/ml-dsa-65/1KiB/L2                                59     121594     120146
+sign/ml-dsa-65/1KiB/L2ffi-wire                       116     124035     120146
+enc/aes-256-gcm-128-96/1024/L1                         4       1057       1057
+enc/aes-256-gcm-128-96/1024/L2ffi-wire               122       5552       1777
+dec/aes-256-gcm-128-96/1024/L1                         2       1042       1042
+dec/aes-256-gcm-128-96/1024/L2                        57       3234       1780
+enc/chacha20-poly1305/1024/L1                          4       1057       1057
+enc/chacha20-poly1305/1024/L2ffi-wire                118       5454       1729
+dec/chacha20-poly1305/1024/L1                          2       1042       1042
+dec/chacha20-poly1305/1024/L2                         55       3185       1732
+enc/aes-256-cbc-pkcs7-128/1024/L1                      3       1059       1059
+enc/aes-256-cbc-pkcs7-128/1024/L2ffi-wire            122       5648       1821
+dec/aes-256-cbc-pkcs7-128/1024/L1                      1       1040       1040
+dec/aes-256-cbc-pkcs7-128/1024/L2                     57       3281       1824
+enc/aes-256-gcm-128-96/1048576/L1                      4    1048609    1048609
+enc/aes-256-gcm-128-96/1048576/L2ffi-wire            122    1053104    1049329
+dec/aes-256-gcm-128-96/1048576/L1                      2    1048594    1048594
+dec/aes-256-gcm-128-96/1048576/L2                     57    1050786    1049332
+enc/chacha20-poly1305/1048576/L1                       4    1048609    1048609
+enc/chacha20-poly1305/1048576/L2ffi-wire             118    1053006    1049281
+dec/chacha20-poly1305/1048576/L1                       2    1048594    1048594
+dec/chacha20-poly1305/1048576/L2                      55    1050737    1049284
+enc/aes-256-cbc-pkcs7-128/1048576/L1                   3    1048611    1048611
+enc/aes-256-cbc-pkcs7-128/1048576/L2ffi-wire         122    1053200    1049373
+dec/aes-256-cbc-pkcs7-128/1048576/L1                   1    1048592    1048592
+dec/aes-256-cbc-pkcs7-128/1048576/L2                  57    1050833    1049376

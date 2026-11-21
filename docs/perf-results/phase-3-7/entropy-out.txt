@@ -1,0 +1,5 @@
+getentropy 12 B,  1 threads:    830639 ops/s
+getentropy 12 B,  2 threads:   2299704 ops/s
+getentropy 12 B,  4 threads:   1861141 ops/s
+getentropy 12 B,  8 threads:   1453012 ops/s
+getentropy 12 B, 12 threads:   1097083 ops/s

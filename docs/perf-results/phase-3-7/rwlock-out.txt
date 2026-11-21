@@ -1,0 +1,10 @@
+rwlock       1 threads:   136672403 ops/s
+rwlock       2 threads:    36984121 ops/s
+rwlock       4 threads:    12753960 ops/s
+rwlock       8 threads:     5068793 ops/s
+rwlock      12 threads:     1412682 ops/s
+rwlock+arc   1 threads:    90431570 ops/s
+rwlock+arc   2 threads:     6159936 ops/s
+rwlock+arc   4 threads:     3669991 ops/s
+rwlock+arc   8 threads:     1553023 ops/s
+rwlock+arc  12 threads:     1105714 ops/s
