@@ -1,8 +1,6 @@
-use std::any::Any;
-
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Cached, Code, Error, Secret, VersionCache};
+use crate::domain::core::{Code, Error, ProviderState};
 use crate::secret::extend_secret;
 
 /// How key bytes are encoded, recorded next to them so that the provider
@@ -90,7 +88,7 @@ impl GeneratedKey {
             private: &self.private,
             private_encoding: self.private_encoding,
             public: self.public.as_ref().map(|(b, e)| (b.as_slice(), *e)),
-            cache: None,
+            state: None,
         }
     }
 }
@@ -104,49 +102,20 @@ pub struct StoredKey<'a> {
     pub private: &'a [u8],
     pub private_encoding: Encoding,
     pub public: Option<(&'a [u8], Encoding)>,
-    /// The version's cache; none when the material is read outside an
-    /// operation (and in provider tests), so every call derives afresh.
-    cache: Option<&'a VersionCache>,
+    /// The version's provider state; none when the material is read
+    /// outside an operation (and in provider tests).
+    state: Option<&'a ProviderState>,
 }
 
 impl<'a> StoredKey<'a> {
-    /// The same key with the cache of the version it belongs to.
-    pub fn with_cache(self, cache: &'a VersionCache) -> StoredKey<'a> {
-        StoredKey { cache: Some(cache), ..self }
+    /// The same key with the provider state of the version it belongs to.
+    pub fn with_state(self, state: &'a ProviderState) -> StoredKey<'a> {
+        StoredKey { state: Some(state), ..self }
     }
 
-    /// A public value the provider derives from this key, made once per
-    /// version (`PublicCache`) if its `bytes` fit the cache budget. `make`
-    /// must derive it from this key alone, and it must be public: the cache
-    /// is ordinary memory.
-    pub fn public_value<T: Any + Send + Sync>(
-        &self,
-        bytes: usize,
-        make: impl FnOnce() -> Result<T, Error>,
-    ) -> Result<Cached<'a, T>, Error> {
-        match self.cache {
-            Some(cache) => cache.public.get_or_try_init(bytes, make),
-            None => make().map(Cached::Fresh),
-        }
-    }
-
-    /// A secret the provider derives from this key: `part` of what `make`
-    /// builds, sealed once per version (`SecretCache`) if sealed pages can
-    /// be had; otherwise built per call. `make` must derive it from this
-    /// key alone.
-    ///
-    /// # Safety
-    /// `T` keeps all its state inline (`secret::Sealed::copy_of`).
-    pub unsafe fn secret_value<S, T: Send + Sync + 'static>(
-        &self,
-        make: impl Fn() -> Result<S, Error>,
-        part: fn(&S) -> &T,
-    ) -> Result<Secret<'a, S, T>, Error> {
-        match self.cache {
-            // SAFETY: forwarded from this function's contract.
-            Some(cache) => unsafe { cache.secret.get_or_try_init(make, part) },
-            None => Ok(Secret::Owned { owner: make()?, part }),
-        }
+    /// The version's provider state, if the key came with one.
+    pub fn provider_state(&self) -> Option<&'a ProviderState> {
+        self.state
     }
 
     pub fn parse(b: &'a [u8]) -> Result<StoredKey<'a>, Error> {
@@ -163,7 +132,7 @@ impl<'a> StoredKey<'a> {
         if !r.0.is_empty() {
             return Err(Reader::err());
         }
-        Ok(StoredKey { private, private_encoding, public, cache: None })
+        Ok(StoredKey { private, private_encoding, public, state: None })
     }
 
     /// Fails unless the private half is encoded as `want`: a provider parses
@@ -187,7 +156,7 @@ impl std::fmt::Debug for StoredKey<'_> {
             .field("private", &format_args!("<{} bytes>", self.private.len()))
             .field("private_encoding", &self.private_encoding)
             .field("public", &self.public.map(|(b, e)| (b.len(), e)))
-            .field("cached", &self.cache.is_some())
+            .field("with_state", &self.state.is_some())
             .finish()
     }
 }

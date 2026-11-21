@@ -8,10 +8,11 @@
 //! version, outside the locked pages the material lives in; such a cache
 //! needs its own design (docs/improvement-plan.md, phase 7).
 //!
-//! The cache belongs to the version, never to the material: a transform
-//! that retains the material reuses its bytes under another template, and
-//! that version starts with an empty cache. It is shared by every clone of
-//! the version (and so of the key) and dropped with the last one.
+//! The cache lives in the version's `ProviderState` (derived.rs), never with
+//! the material: a transform that retains the material reuses its bytes
+//! under another template, and that version starts with an empty cache. It
+//! is shared by every clone of the version (and so of the key) and dropped
+//! with the last one.
 //!
 //! All caches together hold at most `BUDGET` bytes, so memory stays bounded
 //! however many keys a process uses. There is no eviction (it would put
@@ -22,7 +23,7 @@ use std::any::Any;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{Code, Error};
+use crate::domain::core::{Code, Error};
 
 /// The bytes all public caches may hold, process-wide: about 900 ML-DSA-87
 /// verifying keys, or every Ed25519 and ECDSA key a process will have.
@@ -75,7 +76,7 @@ struct Entry {
 }
 
 #[derive(Default)]
-pub struct PublicCache(OnceLock<Entry>);
+pub(super) struct PublicCache(OnceLock<Entry>);
 
 /// A value from a version's cache, or made for this call alone.
 pub enum Cached<'a, T> {

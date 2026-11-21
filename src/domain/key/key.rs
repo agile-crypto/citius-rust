@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Code, Error, ScopeKind, ScopeSpecification, VersionCache, new_id};
+use crate::domain::core::{Code, Error, ProviderState, ScopeKind, ScopeSpecification, new_id};
 use crate::proto::api::KeyLifecycleState as State;
 pub use crate::secret::Locking;
 use crate::secret::{AllocError, SecretBytes};
@@ -61,9 +61,8 @@ pub struct Version {
     scope_spec: ScopeSpecification,
     /// Locked, and shared by every clone of the version (and so of the key).
     material: SecretBytes,
-    /// What the provider derived from the material, once: public values,
-    /// and secrets in sealed pages.
-    cache: Arc<VersionCache>,
+    /// What the version's provider keeps with it (opaque to the domain).
+    provider_state: Arc<ProviderState>,
     provenance: Provenance,
     created_at: SystemTime,
 }
@@ -99,8 +98,8 @@ impl Version {
     ) -> Result<Self, Error> {
         let material =
             SecretBytes::new_with(&material, locking).map_err(|e| secret_error("Version::new", "the key material", e))?;
-        let cache = Arc::default();
-        Ok(Version { number, template_id, provider, scope_spec, material, cache, provenance, created_at })
+        let provider_state = Arc::default();
+        Ok(Version { number, template_id, provider, scope_spec, material, provider_state, provenance, created_at })
     }
 
     pub fn number(&self) -> u32 {
@@ -123,8 +122,8 @@ impl Version {
         &self.material
     }
 
-    pub fn cache(&self) -> &VersionCache {
-        &self.cache
+    pub fn provider_state(&self) -> &ProviderState {
+        &self.provider_state
     }
 
     pub fn provenance(&self) -> &Provenance {

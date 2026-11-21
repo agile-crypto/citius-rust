@@ -5,8 +5,7 @@ mod hash;
 mod id;
 mod operation;
 mod provider_requirements;
-mod public_cache;
-mod secret_cache;
+mod provider_state;
 mod scope;
 mod spec;
 
@@ -15,7 +14,6 @@ pub use hash::*;
 pub use id::*;
 pub use operation::*;
 pub use provider_requirements::*;
-pub use public_cache::{Cached, PublicCache};
-pub use secret_cache::{Secret, VersionCache};
+pub use provider_state::ProviderState;
 pub use scope::*;
 pub use spec::*;

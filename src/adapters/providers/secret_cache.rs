@@ -15,11 +15,11 @@
 use std::any::Any;
 use std::sync::OnceLock;
 
-use super::{Code, Error};
+use crate::domain::core::{Code, Error};
 use crate::secret::Sealed;
 
 #[derive(Default)]
-pub struct SecretCache(OnceLock<Option<Box<dyn Any + Send + Sync>>>);
+pub(super) struct SecretCache(OnceLock<Option<Box<dyn Any + Send + Sync>>>);
 
 /// A secret from a version's cache, or, where it could not be sealed, the
 /// owner it was made in for this call (`part` reads it from there).
@@ -90,13 +90,6 @@ impl std::fmt::Debug for SecretCache {
         // Never print the secret.
         f.debug_struct("SecretCache").field("sealed", &self.is_filled()).finish()
     }
-}
-
-/// What a key version keeps of what its provider derived from it.
-#[derive(Default, Debug)]
-pub struct VersionCache {
-    pub public: super::PublicCache,
-    pub secret: SecretCache,
 }
 
 #[cfg(test)]

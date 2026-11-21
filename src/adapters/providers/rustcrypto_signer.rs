@@ -16,8 +16,10 @@ use sha2::Digest;
 use zeroize::Zeroizing;
 
 use super::RustCrypto;
+use super::derived::{self, public_value};
+use super::public_cache::Cached;
 use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
-use crate::domain::core::{Cached, Code, Error, hash_output_len};
+use crate::domain::core::{Code, Error, hash_output_len};
 use crate::domain::provider::{Encoding, SignContext, Signer, StoredKey};
 use crate::proto::api::{self, HashAlgorithm, algorithm_details::Algorithm, provider_output::AlgorithmOutput};
 
@@ -259,7 +261,7 @@ macro_rules! ecdsa_verify {
     ($curve:ident, $key:expr, $prehash:expr, $sig:expr) => {{
         use $curve::ecdsa::signature::hazmat::PrehashVerifier;
         use $curve::pkcs8::DecodePublicKey;
-        let vk = $key.public_value(size_of::<$curve::ecdsa::VerifyingKey>(), || {
+        let vk = public_value($key, size_of::<$curve::ecdsa::VerifyingKey>(), || {
             $curve::ecdsa::VerifyingKey::from_public_key_der(public($key, Encoding::SpkiDer)?)
                 .map_err(|_| bad_key("ECDSA public key"))
         })?;
@@ -355,7 +357,7 @@ fn ed25519_secret(key: StoredKey<'_>) -> Result<ExpandedSecretKey, Error> {
 /// would otherwise use, must match it.
 fn ed25519_public<'a>(key: StoredKey<'a>) -> Result<Cached<'a, ed25519_dalek::VerifyingKey>, Error> {
     use ed25519_dalek::pkcs8::DecodePublicKey;
-    key.public_value(size_of::<ed25519_dalek::VerifyingKey>(), || {
+    public_value(key, size_of::<ed25519_dalek::VerifyingKey>(), || {
         let vk = ed25519_dalek::VerifyingKey::from(&ed25519_secret(key)?);
         if let Some((spki, Encoding::SpkiDer)) = key.public
             && ed25519_dalek::VerifyingKey::from_public_key_der(spki).ok() != Some(vk)
@@ -394,7 +396,8 @@ where
     // algebra.rs), no MaybeBox, no other resource; its derived Clone is the
     // bitwise copy, and its Drop only wipes its own fields.
     let sk = unsafe {
-        key.secret_value(
+        derived::secret_value(
+            key,
             || ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key")),
             ml_dsa::SigningKey::expanded_key,
         )
@@ -432,7 +435,7 @@ fn ml_dsa_verify<P: ml_dsa::MlDsaParams + 'static>(
 ) -> Result<bool, Error> {
     // Decoding expands the public matrix, most of a verification's work;
     // the decoded key is kept per version, within the cache budget.
-    let vk = key.public_value(size_of::<ml_dsa::VerifyingKey<P>>() + level.verifying_key_heap(), || {
+    let vk = public_value(key, size_of::<ml_dsa::VerifyingKey<P>>() + level.verifying_key_heap(), || {
         let public = public(key, Encoding::Raw)?;
         let encoded = ml_dsa::EncodedVerifyingKey::<P>::try_from(public).map_err(|_| bad_key("ML-DSA public key"))?;
         Ok(ml_dsa::VerifyingKey::<P>::decode(&encoded))
@@ -917,11 +920,12 @@ mod tests {
                 Locking::BestEffort,
             )
             .unwrap();
-            let stored = StoredKey::parse(v.material()).unwrap().with_cache(v.cache());
+            let stored = StoredKey::parse(v.material()).unwrap().with_state(v.provider_state());
             let (sig, _) = RustCrypto.sign(stored, &a, b"m", &SignContext::None).unwrap();
             assert!(RustCrypto.verify(stored, &a, b"m", &sig, &SignContext::None).unwrap(), "{id}");
-            assert!(format!("{:?}", v.cache()).contains("filled: true"), "{id}");
-            assert_eq!(v.cache().secret.is_filled(), id.starts_with("ml-dsa"), "{id}: only ML-DSA seals a secret");
+            let (public, secret) = derived::filled(v.provider_state());
+            assert!(public, "{id}");
+            assert_eq!(secret, id.starts_with("ml-dsa"), "{id}: only ML-DSA seals a secret");
         }
     }
 
@@ -948,10 +952,10 @@ mod tests {
                 Locking::BestEffort,
             )
             .unwrap();
-            let cached = StoredKey::parse(v.material()).unwrap().with_cache(v.cache());
+            let cached = StoredKey::parse(v.material()).unwrap().with_state(v.provider_state());
             let ctx = SignContext::Domain(b"ctx".to_vec());
             let first = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
-            assert!(v.cache().secret.is_filled(), "{id}: sealed on first use");
+            assert!(derived::filled(v.provider_state()).1, "{id}: sealed on first use");
             let again = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
             let parsed = RustCrypto.sign(k.as_stored(), &a, b"m", &ctx).unwrap().0;
             assert_eq!((&first, &again), (&parsed, &parsed), "{id}");

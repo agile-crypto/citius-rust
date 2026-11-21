@@ -98,7 +98,7 @@ impl Resolved<'_> {
 
     /// The version's material, read in place from its locked pages.
     pub(super) fn material(&self) -> Result<StoredKey<'_>, Error> {
-        Ok(StoredKey::parse(self.version().material())?.with_cache(self.version().cache()))
+        Ok(StoredKey::parse(self.version().material())?.with_state(self.version().provider_state()))
     }
 
     fn cipher(&self) -> Result<&dyn Cipher, Error> {
