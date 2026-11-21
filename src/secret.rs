@@ -19,11 +19,11 @@
 
 use std::fmt;
 use std::marker::PhantomData;
-use std::mem::{MaybeUninit, align_of, size_of};
+use std::mem::{align_of, size_of};
 use std::ops::Deref;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 
 use zeroize::Zeroize;
 
@@ -249,7 +249,7 @@ struct Region {
 }
 
 // SAFETY: a Region owns its allocation alone and nothing writes to it after
-// its owner (SecretBytes::new_with, Sealed::new) filled it, so handing it,
+// its owner (SecretBytes::new_with, Sealed::copy_of) filled it, so handing it,
 // and shared reads of it, to other threads is sound.
 unsafe impl Send for Region {}
 // SAFETY: as above: after creation the bytes are only ever read (a Sealed<T>
@@ -376,21 +376,24 @@ pub struct Sealed<T> {
 
 /// The locked memory sealed values may take, and take now.
 pub struct SealedBudget {
-    cap: OnceLock<usize>,
+    /// usize::MAX until computed. An atomic, not a OnceLock: a child forked
+    /// during another thread's first computation must not wait for it.
+    cap: AtomicUsize,
     fixed: usize,
     used: AtomicUsize,
 }
 
 /// The process's budget for sealed values: half of `RLIMIT_MEMLOCK`'s soft
 /// limit, or 64 MiB when there is no limit.
-pub static SEALED: SealedBudget = SealedBudget { cap: OnceLock::new(), fixed: 0, used: AtomicUsize::new(0) };
+pub static SEALED: SealedBudget =
+    SealedBudget { cap: AtomicUsize::new(usize::MAX), fixed: 0, used: AtomicUsize::new(0) };
 
 const UNLIMITED_SEALED_CAP: usize = 64 << 20;
 
 impl SealedBudget {
     #[cfg(test)]
     const fn fixed(cap: usize) -> SealedBudget {
-        SealedBudget { cap: OnceLock::new(), fixed: cap, used: AtomicUsize::new(0) }
+        SealedBudget { cap: AtomicUsize::new(usize::MAX), fixed: cap, used: AtomicUsize::new(0) }
     }
 
     /// The bytes (whole pages) sealed values may take.
@@ -398,7 +401,14 @@ impl SealedBudget {
         if self.fixed > 0 {
             return self.fixed;
         }
-        *self.cap.get_or_init(|| memlock_limit().map_or(UNLIMITED_SEALED_CAP, |limit| limit / 2))
+        match self.cap.load(Ordering::Relaxed) {
+            usize::MAX => {
+                let cap = memlock_limit().map_or(UNLIMITED_SEALED_CAP, |limit| limit / 2).min(usize::MAX - 1);
+                self.cap.store(cap, Ordering::Relaxed);
+                cap
+            }
+            cap => cap,
+        }
     }
 
     /// The bytes (whole pages) sealed values take now.
@@ -445,42 +455,37 @@ impl Drop for Reservation {
 }
 
 impl<T> Sealed<T> {
-    /// `value`, moved into fresh sealed pages; handed back if it cannot be
+    /// A bitwise copy of `value` in fresh sealed pages; None if it cannot be
     /// sealed (no budget left, the pages cannot be locked or kept out of
-    /// forked children).
-    ///
-    /// The bytes it occupied in this function are wiped once they are copied.
-    /// The caller's own temporaries are beyond its reach: a value built on
-    /// the stack and passed in may leave a copy there (DEVIATIONS.md).
+    /// forked children). The original stays with the caller, who drops (and
+    /// so wipes) it as usual. Copying from where the value already lives,
+    /// typically the heap box a parser built it in, puts no copy of a large
+    /// secret on the stack.
     ///
     /// # Safety
     /// `T` keeps all its state inline: it owns no heap memory, descriptor or
-    /// other resource. A forked child never runs `T`'s `Drop` (its view of
-    /// the pages is wiped or absent) and only unmaps them, which is sound
-    /// only if nothing outside the pages belongs to the value.
-    pub unsafe fn new(value: T) -> Result<Sealed<T>, T> {
+    /// other resource, and a bitwise copy of it is an independent value (as
+    /// a derived `Clone` of plain arrays is), so that both may be dropped. A
+    /// forked child never runs `T`'s `Drop` (its view of the pages is wiped
+    /// or absent) and only unmaps them, which is sound only if nothing
+    /// outside the pages belongs to the value.
+    pub unsafe fn copy_of(value: &T) -> Option<Sealed<T>> {
         // SAFETY: forwarded from this function's contract.
-        unsafe { Self::new_within(&SEALED, value) }
+        unsafe { Self::copy_within(&SEALED, value) }
     }
 
     /// # Safety
-    /// As `new`.
-    unsafe fn new_within(budget: &'static SealedBudget, value: T) -> Result<Sealed<T>, T> {
+    /// As `copy_of`.
+    unsafe fn copy_within(budget: &'static SealedBudget, value: &T) -> Option<Sealed<T>> {
         const { assert!(align_of::<T>() <= HEADER, "pages hand out HEADER-aligned memory") };
         let size = size_of::<T>().max(1);
-        let Some(total) = total_for(size) else { return Err(value) };
-        let Some(reservation) = budget.reserve(total) else { return Err(value) };
-        let Ok(region) = Region::new(size, Locking::Required) else { return Err(value) };
-        let mut slot = MaybeUninit::new(value);
+        let reservation = budget.reserve(total_for(size)?)?;
+        let region = Region::new(size, Locking::Required).ok()?;
         // SAFETY: region.ptr is HEADER-aligned (enough for T, asserted above)
         // with size_of::<T>() writable bytes, fresh, so it cannot overlap
-        // `slot`.
-        unsafe { ptr::copy_nonoverlapping(slot.as_ptr(), region.ptr.cast::<T>(), 1) };
-        // The value lives in the pages now. Wipe this frame's copy; as a
-        // MaybeUninit it is never dropped or read as a T again.
-        // SAFETY: slot's own size_of::<T>() bytes, writable.
-        unsafe { std::slice::from_raw_parts_mut(slot.as_mut_ptr().cast::<u8>(), size_of::<T>()) }.zeroize();
-        Ok(Sealed { region, _bytes: reservation, _value: PhantomData })
+        // `value`; the copy is an independent T (this function's contract).
+        unsafe { ptr::copy_nonoverlapping(value as *const T, region.ptr.cast::<T>(), 1) };
+        Some(Sealed { region, _bytes: reservation, _value: PhantomData })
     }
 }
 
@@ -488,7 +493,7 @@ impl<T> Deref for Sealed<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the pages hold the T `new` wrote, alive until drop.
+        // SAFETY: the pages hold the T `copy_of` wrote, alive until drop.
         unsafe { &*self.region.ptr.cast::<T>() }
     }
 }
@@ -496,10 +501,10 @@ impl<T> Deref for Sealed<T> {
 impl<T> Drop for Sealed<T> {
     fn drop(&mut self) {
         // In a forked child the pages are wiped or absent, and T owns nothing
-        // outside them (`new`'s contract): there is nothing to drop. `region`
+        // outside them (`copy_of`'s contract): there is nothing to drop. `region`
         // then zeroes and unmaps the pages, or unmaps the child's view.
         if std::process::id() == self.region.pid {
-            // SAFETY: the pages hold the T `new` wrote; dropped only here.
+            // SAFETY: the pages hold the T `copy_of` wrote; dropped only here.
             unsafe { ptr::drop_in_place(self.region.ptr.cast::<T>()) };
         }
     }
@@ -801,7 +806,7 @@ mod tests {
     fn a_sealed_value_lives_in_its_own_locked_pages() {
         static B: SealedBudget = SealedBudget::fixed(1 << 20);
         // SAFETY: Inline is a plain array.
-        let s = unsafe { Sealed::new_within(&B, Inline([7; 32])) }.unwrap_or_else(|_| panic!("sealed"));
+        let s = unsafe { Sealed::copy_within(&B, &Inline([7; 32])) }.expect("sealed");
         assert_eq!(s.0, [7; 32]);
         assert_eq!(&*s as *const Inline as usize % page_size(), HEADER, "at the start of its own mapping");
         assert_eq!(B.used(), page_size(), "one page taken from the budget");
@@ -814,18 +819,17 @@ mod tests {
     fn past_the_budget_a_value_is_handed_back() {
         static B: SealedBudget = SealedBudget::fixed(4096);
         // SAFETY: Inline is a plain array.
-        let first = unsafe { Sealed::new_within(&B, Inline([1; 32])) };
+        let first = unsafe { Sealed::copy_within(&B, &Inline([1; 32])) };
         if page_size() > 4096 {
-            assert!(first.is_err(), "a page larger than the whole budget");
+            assert!(first.is_none(), "a page larger than the whole budget");
             return;
         }
-        let first = first.unwrap_or_else(|_| panic!("fits"));
+        let first = first.expect("fits");
         // SAFETY: as above.
-        let second = unsafe { Sealed::new_within(&B, Inline([2; 32])) };
-        assert_eq!(second.err().map(|v| v.0), Some([2; 32]), "handed back, intact");
+        assert!(unsafe { Sealed::copy_within(&B, &Inline([2; 32])) }.is_none(), "over the budget");
         drop(first);
         // SAFETY: as above.
-        assert!(unsafe { Sealed::new_within(&B, Inline([3; 32])) }.is_ok(), "room again");
+        assert!(unsafe { Sealed::copy_within(&B, &Inline([3; 32])) }.is_some(), "room again");
     }
 
     #[test]
@@ -842,20 +846,16 @@ mod tests {
         use super::leak_check::{CANARY, leaks_during};
         static B: SealedBudget = SealedBudget::fixed(1 << 20);
         let leaks = leaks_during(|| {
-            // Made on the heap, as a provider's parse may: the box is freed
-            // after the value moved out of it, and the sealed copy is wiped
-            // by the value's own Drop.
+            // Made on the heap, as a provider's parse does: sealed by copying
+            // from the box, which the value's own Drop wipes before it is
+            // freed; the sealed copy is wiped with its pages.
             let boxed = Box::new(Inline(CANARY));
             // SAFETY: Inline is a plain array.
-            let s = unsafe { Sealed::new_within(&B, *boxed) }.unwrap_or_else(|_| panic!("sealed"));
+            let s = unsafe { Sealed::copy_within(&B, &*boxed) }.expect("sealed");
+            drop(boxed);
             assert_eq!(s.0, CANARY);
         });
-        assert_eq!(leaks, 1, "only the caller's own box, which sealing cannot reach (DEVIATIONS.md)");
-        let leaks = leaks_during(|| {
-            // SAFETY: Inline is a plain array.
-            drop(unsafe { Sealed::new_within(&B, Inline(CANARY)) });
-        });
-        assert_eq!(leaks, 0, "the sealed value never touches the heap");
+        assert_eq!(leaks, 0, "no copy reaches the allocator unwiped");
     }
 
     #[test]
@@ -915,7 +915,7 @@ mod tests {
             // A sealed value: the child drops it without running its Drop
             // (no pages to run it on) and the parent's stays intact.
             // SAFETY: Inline is a plain array.
-            let sealed = unsafe { Sealed::new(Inline([0x6b; 32])) }.unwrap_or_else(|_| panic!("sealed"));
+            let sealed = unsafe { Sealed::copy_of(&Inline([0x6b; 32])) }.expect("sealed");
             // SAFETY: the child only drops the value and exits.
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0);

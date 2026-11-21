@@ -1,4 +1,6 @@
-use std::sync::{Arc, OnceLock};
+use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::domain::core::{Code, Error};
 use crate::domain::template::*;
@@ -30,9 +32,27 @@ impl InMemoryTemplateRegistry {
     /// performance.md F8). A shared registry cannot change; a context that
     /// needs another catalog (`catalog_path`) builds its own.
     pub fn standard() -> Arc<Self> {
-        static STANDARD: OnceLock<Arc<InMemoryTemplateRegistry>> = OnceLock::new();
-        let parse = || Self::from_catalog(STANDARD_CATALOG).expect("the compiled-in catalog is valid (tested)");
-        STANDARD.get_or_init(|| Arc::new(parse())).clone()
+        // Published without a lock: a OnceLock would leave a child forked
+        // during another thread's first parse waiting forever in
+        // agc_ctx_reinit_after_fork, for an initialisation no thread of its
+        // own will finish. Two first callers may both parse; one is kept.
+        static STANDARD: AtomicPtr<InMemoryTemplateRegistry> = AtomicPtr::new(ptr::null_mut());
+        if STANDARD.load(Ordering::Acquire).is_null() {
+            let parsed = Self::from_catalog(STANDARD_CATALOG).expect("the compiled-in catalog is valid (tested)");
+            let mine = Arc::into_raw(Arc::new(parsed)).cast_mut();
+            if STANDARD.compare_exchange(ptr::null_mut(), mine, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                // SAFETY: `mine` came from Arc::into_raw just above and was
+                // not published.
+                drop(unsafe { Arc::from_raw(mine) });
+            }
+        }
+        let shared = STANDARD.load(Ordering::Acquire);
+        // SAFETY: `shared` came from Arc::into_raw and the static holds that
+        // strong count forever, so the registry is alive; this adds one.
+        unsafe {
+            Arc::increment_strong_count(shared);
+            Arc::from_raw(shared)
+        }
     }
 }
 

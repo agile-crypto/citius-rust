@@ -15,44 +15,67 @@
 use std::any::Any;
 use std::sync::OnceLock;
 
-use super::{Cached, Code, Error};
+use super::{Code, Error};
 use crate::secret::Sealed;
 
 #[derive(Default)]
 pub struct SecretCache(OnceLock<Option<Box<dyn Any + Send + Sync>>>);
 
+/// A secret from a version's cache, or, where it could not be sealed, the
+/// owner it was made in for this call (`part` reads it from there).
+pub enum Secret<'a, S, T> {
+    Sealed(&'a T),
+    Owned { owner: S, part: fn(&S) -> &T },
+}
+
+impl<S, T> std::ops::Deref for Secret<'_, S, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        match self {
+            Secret::Sealed(t) => t,
+            Secret::Owned { owner, part } => part(owner),
+        }
+    }
+}
+
 impl SecretCache {
-    /// The cached value, made by `make` and sealed on first use; made per
-    /// call when the version's value could not be sealed. `make` may run
-    /// again in the call that lost a race to fill the cache.
+    /// The cached secret, sealed on first use by copying `part` of what
+    /// `make` builds (so a large secret is never copied onto the stack);
+    /// built per call when the version's secret could not be sealed. `make`
+    /// may run twice in the call that loses a race to fill the cache.
+    ///
+    /// Whether a version's secret is sealed is decided once, at its first
+    /// use: a version that could not be sealed then (no budget, a failed
+    /// lock, even a passing one) is built per call for the rest of its life.
     ///
     /// # Safety
-    /// `T` keeps all its state inline (`Sealed::new`).
-    pub unsafe fn get_or_try_init<T: Send + Sync + 'static>(
+    /// `T` keeps all its state inline (`Sealed::copy_of`).
+    pub unsafe fn get_or_try_init<S, T: Send + Sync + 'static>(
         &self,
-        make: impl Fn() -> Result<T, Error>,
-    ) -> Result<Cached<'_, T>, Error> {
+        make: impl Fn() -> Result<S, Error>,
+        part: fn(&S) -> &T,
+    ) -> Result<Secret<'_, S, T>, Error> {
         let slot = match self.0.get() {
             Some(slot) => slot,
             None => {
-                let value = make()?;
+                let owner = make()?;
                 // SAFETY: forwarded from this function's contract.
-                match unsafe { Sealed::new(value) } {
+                match unsafe { Sealed::copy_of(part(&owner)) } {
                     // Lost a race: the other result is kept, this one is wiped.
-                    Ok(sealed) => drop(self.0.set(Some(Box::new(sealed)))),
-                    Err(value) => {
+                    Some(sealed) => drop(self.0.set(Some(Box::new(sealed)))),
+                    None => {
                         let _ = self.0.set(None);
-                        return Ok(Cached::Fresh(value));
+                        return Ok(Secret::Owned { owner, part });
                     }
                 }
                 self.0.get().expect("set above")
             }
         };
         match slot {
-            Some(sealed) => sealed.downcast_ref::<Sealed<T>>().map(|s| Cached::Shared(&**s)).ok_or_else(|| {
+            Some(sealed) => sealed.downcast_ref::<Sealed<T>>().map(|s| Secret::Sealed(&**s)).ok_or_else(|| {
                 Error::new(Code::Internal, "SecretCache", "the version's cached value has another type")
             }),
-            None => make().map(Cached::Fresh),
+            None => Ok(Secret::Owned { owner: make()?, part }),
         }
     }
 
@@ -89,13 +112,16 @@ mod tests {
         for _ in 0..3 {
             // SAFETY: Inline is a plain array.
             let v = unsafe {
-                cache.get_or_try_init(|| {
-                    made.set(made.get() + 1);
-                    Ok(Inline([9; 16]))
-                })
+                cache.get_or_try_init(
+                    || {
+                        made.set(made.get() + 1);
+                        Ok(Box::new(Inline([9; 16])))
+                    },
+                    |b| &**b,
+                )
             }
             .unwrap();
-            assert!(matches!(v, Cached::Shared(Inline([9, ..]))));
+            assert!(matches!(v, Secret::Sealed(Inline([9, ..]))));
         }
         assert_eq!(made.get(), 1);
         assert_eq!(format!("{cache:?}"), "SecretCache { sealed: true }");
@@ -104,12 +130,13 @@ mod tests {
     #[test]
     fn a_failure_caches_nothing() {
         let cache = SecretCache::default();
+        let fail = || Err::<Box<Inline>, _>(Error::new(Code::InvalidKeyMaterial, "t", "bad"));
         // SAFETY: Inline is a plain array.
-        let r = unsafe { cache.get_or_try_init::<Inline>(|| Err(Error::new(Code::InvalidKeyMaterial, "t", "bad"))) };
+        let r = unsafe { cache.get_or_try_init(fail, |b| &**b) };
         assert_eq!(r.err().unwrap().code(), Code::InvalidKeyMaterial);
         assert!(!cache.is_filled());
         // SAFETY: as above.
-        assert!(unsafe { cache.get_or_try_init(|| Ok(Inline([1; 16]))) }.is_ok());
+        assert!(unsafe { cache.get_or_try_init(|| Ok(Box::new(Inline([1; 16]))), |b| &**b) }.is_ok());
         assert!(cache.is_filled());
     }
 }

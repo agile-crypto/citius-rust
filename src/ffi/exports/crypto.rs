@@ -66,6 +66,11 @@ fn apart_from<'a>(input: &'a [u8], region: agc_buf, copy: &'a mut Option<SecretV
     if overlaps(input, region) { copy.insert(SecretVec::from(input.to_vec())) } else { input }
 }
 
+/// `apart_from` for the key name, which the request borrows too.
+fn apart_name<'a>(name: &'a str, region: agc_buf, copy: &'a mut Option<String>) -> &'a str {
+    if overlaps(name.as_bytes(), region) { copy.insert(name.to_owned()) } else { name }
+}
+
 /// The first `len` bytes of the caller's region, for the operation to write.
 ///
 /// # Safety
@@ -91,10 +96,10 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
         // SAFETY: the pointers and slices in req are NULL or valid for the
         // call (agc_crypto.h contract).
         let plaintext = unsafe { slice(r.plaintext, "plaintext") }?;
-        let mut copy = None;
+        let (mut copy, mut name) = (None, None);
         let request = EncryptRequest {
             // SAFETY: as above.
-            key_name: unsafe { required_str(r.key_name, "key_name") }?,
+            key_name: apart_name(unsafe { required_str(r.key_name, "key_name") }?, out.ciphertext, &mut name),
             plaintext: apart_from(plaintext, out.ciphertext, &mut copy),
             // SAFETY: as above.
             params: unsafe { encrypt_params(r.params) }?,
@@ -114,9 +119,9 @@ pub unsafe extern "C" fn agc_encrypt(ctx: *mut agc_ctx, req: *const agc_encrypt_
                 if short(out.ciphertext, sizes.artifact) || short(out.metadata, sizes.metadata) {
                     return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
                 }
-                // SAFETY: not short (just checked); the plaintext is apart
-                // from it (apart_from), and the request borrows no other input
-                // the encryption reads.
+                // SAFETY: not short (just checked). The request's borrowed
+                // inputs, plaintext and key name, are apart from it
+                // (apart_from, apart_name); AAD and user context are copies.
                 Ok(unsafe { region_mut(out.ciphertext, sizes.artifact) })
             })
             .and_then(|w| {
@@ -150,10 +155,10 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
             .ok_or_else(|| FfiError::invalid("metadata must begin with its encoding byte"))?;
         // SAFETY: as in agc_encrypt, the pointers in req are NULL or valid.
         let ciphertext = unsafe { slice(r.ciphertext, "ciphertext") }?;
-        let mut copy = None;
+        let (mut copy, mut name) = (None, None);
         let request = DecryptRequest {
             // SAFETY: as above.
-            key_name: unsafe { required_str(r.key_name, "key_name") }?,
+            key_name: apart_name(unsafe { required_str(r.key_name, "key_name") }?, out.plaintext, &mut name),
             ciphertext: apart_from(ciphertext, out.plaintext, &mut copy),
             metadata: metadata::decode(enc, md_in)?,
             // SAFETY: as above.
@@ -165,31 +170,30 @@ pub unsafe extern "C" fn agc_decrypt(ctx: *mut agc_ctx, req: *const agc_decrypt_
         // The metadata output is optional here: {NULL, 0} opts out (the
         // caller already holds the input metadata); it is not a size query.
         let wants_md = !(out.metadata.data.is_null() && out.metadata.cap == 0);
+        let mut md_out = None;
         let result = ctx
             .crypto
-            .decrypt_admitting(request, wants_md.then_some(enc), |sizes| {
+            .decrypt_admitting(request, wants_md.then_some(enc), |sizes, md| {
                 out.plaintext_len = sizes.artifact;
                 out.metadata_len = sizes.metadata;
                 if short(out.plaintext, sizes.artifact) || (wants_md && short(out.metadata, sizes.metadata)) {
                     return Err(FfiError::BufferTooSmall { needed: sizes.artifact.max(sizes.metadata) });
                 }
-                // SAFETY: not short (just checked); the ciphertext is apart
-                // from it (apart_from), and the request borrows no other input
-                // the decryption reads.
+                md_out = md;
+                // SAFETY: not short (just checked). The request's borrowed
+                // inputs, ciphertext and key name, are apart from it
+                // (apart_from, apart_name); AAD, metadata and user context
+                // are copies.
                 Ok(unsafe { region_mut(out.plaintext, sizes.artifact) })
             })
             .and_then(|w| {
                 // The provider wrote the plaintext only once it had decided
-                // every failure. The metadata was sized from the same inputs;
-                // should it still not fit, the plaintext is taken back.
-                if wants_md {
-                    let md = metadata::encode(&w.metadata, enc)?;
+                // every failure. The metadata was encoded before, and its
+                // region checked against exactly these bytes: this copy
+                // cannot fail, so a written plaintext always stands.
+                if let Some(md) = &md_out {
                     out.metadata_len = md.len();
-                    if let Err(e) = put(out.metadata, &md) {
-                        // SAFETY: the provider just wrote w.len bytes there.
-                        unsafe { std::ptr::write_bytes(out.plaintext.data, 0, w.len) };
-                        return Err(e);
-                    }
+                    put(out.metadata, md)?;
                 }
                 out.plaintext_len = w.len;
                 out.key_version = w.metadata.key_version;

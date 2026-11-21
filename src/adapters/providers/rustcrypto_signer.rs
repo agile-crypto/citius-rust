@@ -328,12 +328,24 @@ impl sha2::digest::FixedOutput for Sha512Digest {
 
 /// The expanded secret (scalar and nonce prefix), from the PKCS#8 seed: one
 /// SHA-512, no curve arithmetic. Wiped when dropped.
+///
+/// The seed is read in place from the locked material. `KeypairBytes` would
+/// copy it, and its wipe is dead code: the `ed25519` crate has no `zeroize`
+/// feature. RFC 8410: the PKCS#8 private key is an OCTET STRING holding the
+/// 32-byte seed as another OCTET STRING.
 fn ed25519_secret(key: StoredKey<'_>) -> Result<ExpandedSecretKey, Error> {
-    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    use pkcs8::der::Decode;
     key.check_encoding(Encoding::Pkcs8Der)?;
-    let pair =
-        ed25519_dalek::pkcs8::KeypairBytes::from_pkcs8_der(key.private).map_err(|_| bad_key("Ed25519 private key"))?;
-    Ok(ExpandedSecretKey::from(&pair.secret_key))
+    let bad = || bad_key("Ed25519 private key");
+    let info = pkcs8::PrivateKeyInfoRef::from_der(key.private).map_err(|_| bad())?;
+    if info.algorithm.oid != ed25519_dalek::pkcs8::ALGORITHM_OID || info.algorithm.parameters.is_some() {
+        return Err(bad());
+    }
+    let seed: &[u8; 32] = match info.private_key.as_bytes() {
+        [0x04, 0x20, seed @ ..] => seed.try_into().map_err(|_| bad())?,
+        _ => return Err(bad()),
+    };
+    Ok(ExpandedSecretKey::from(seed))
 }
 
 /// The public key, derived from the secret once per version. Signing must
@@ -374,16 +386,18 @@ where
     use ml_dsa::pkcs8::DecodePrivateKey;
     key.check_encoding(Encoding::Pkcs8Der)?;
     // Expanding the seed is most of a signature's work: the expanded key is
-    // kept per version, in sealed pages.
+    // kept per version, in sealed pages, copied there from the heap box the
+    // parse built it in (no copy on the stack). Without sealed pages the
+    // parsed key serves this call, as before.
     // SAFETY: ExpandedSigningKey<P> keeps all its state inline: fixed-size
     // arrays of polynomials (ml-dsa 0.1.1 signing.rs, module-lattice 0.2
-    // algebra.rs), no MaybeBox, no other resource.
+    // algebra.rs), no MaybeBox, no other resource; its derived Clone is the
+    // bitwise copy, and its Drop only wipes its own fields.
     let sk = unsafe {
-        key.secret_value(|| {
-            let full =
-                ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key"))?;
-            Ok(full.expanded_key().clone())
-        })
+        key.secret_value(
+            || ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key")),
+            ml_dsa::SigningKey::expanded_key,
+        )
     }?;
     let sig = if deterministic {
         // The context length is checked before, so this cannot fail.

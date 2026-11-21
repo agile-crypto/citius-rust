@@ -336,19 +336,30 @@ impl CryptoOrchestrator {
     /// the metadata's is measured in `enc`, or 0 when the caller does not
     /// want it back. On any failure the region `admit` returned is
     /// untouched: the provider decides every failure before it writes.
+    ///
+    /// A decryption's metadata does not depend on the plaintext, so it is
+    /// encoded here, before decrypting, and handed to `admit` with the
+    /// sizes: nothing that could fail is left for after the plaintext is
+    /// written.
     pub fn decrypt_admitting<'b, E: From<Error>>(
         &self,
         req: DecryptRequest,
         enc: Option<MetadataEncoding>,
-        admit: impl FnOnce(Sizes) -> Result<&'b mut [u8], E>,
+        admit: impl FnOnce(Sizes, Option<Vec<u8>>) -> Result<&'b mut [u8], E>,
     ) -> Result<Written, E> {
         let r = self.resolve_decrypt(&req)?;
-        let metadata = match enc {
-            Some(enc) => Self::metadata_len(r.version().number(), &req.user_context, enc)?,
-            None => 0,
+        let encoded = match enc {
+            Some(enc) => {
+                let md = Self::metadata(r.version().number(), no_output(), req.user_context.clone());
+                Some(metadata::encode(&md, enc)?)
+            }
+            None => None,
         };
-        let out =
-            admit(Sizes { artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?, metadata })?;
+        let sizes = Sizes {
+            artifact: r.cipher()?.plaintext_len_bound(r.algorithm(), req.ciphertext.len())?,
+            metadata: encoded.as_ref().map_or(0, Vec::len),
+        };
+        let out = admit(sizes, encoded)?;
         Ok(Self::decrypt_resolved(&r, req, out)?)
     }
 
@@ -602,7 +613,7 @@ pub(super) mod tests {
         assert_eq!(lookups(), 1, "encrypt");
         let e = Encrypted { ciphertext: buf[..w.len].to_vec(), metadata: w.metadata };
         let (mut out, md) = ([0u8; 64], Some(MetadataEncoding::Protobuf));
-        crypto.decrypt_admitting(decrypt("k", &e, aead()), md, |_| Ok::<_, Error>(&mut out[..])).unwrap();
+        crypto.decrypt_admitting(decrypt("k", &e, aead()), md, |_, _| Ok::<_, Error>(&mut out[..])).unwrap();
         assert_eq!(lookups(), 1, "decrypt");
     }
 }

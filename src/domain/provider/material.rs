@@ -2,7 +2,7 @@ use std::any::Any;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Cached, Code, Error, VersionCache};
+use crate::domain::core::{Cached, Code, Error, Secret, VersionCache};
 use crate::secret::extend_secret;
 
 /// How key bytes are encoded, recorded next to them so that the provider
@@ -130,20 +130,22 @@ impl<'a> StoredKey<'a> {
         }
     }
 
-    /// A secret the provider derives from this key, made once per version
-    /// and kept in sealed pages (`SecretCache`) if they can be had; else
-    /// made per call. `make` must derive it from this key alone.
+    /// A secret the provider derives from this key: `part` of what `make`
+    /// builds, sealed once per version (`SecretCache`) if sealed pages can
+    /// be had; otherwise built per call. `make` must derive it from this
+    /// key alone.
     ///
     /// # Safety
-    /// `T` keeps all its state inline (`secret::Sealed::new`).
-    pub unsafe fn secret_value<T: Send + Sync + 'static>(
+    /// `T` keeps all its state inline (`secret::Sealed::copy_of`).
+    pub unsafe fn secret_value<S, T: Send + Sync + 'static>(
         &self,
-        make: impl Fn() -> Result<T, Error>,
-    ) -> Result<Cached<'a, T>, Error> {
+        make: impl Fn() -> Result<S, Error>,
+        part: fn(&S) -> &T,
+    ) -> Result<Secret<'a, S, T>, Error> {
         match self.cache {
             // SAFETY: forwarded from this function's contract.
-            Some(cache) => unsafe { cache.secret.get_or_try_init(make) },
-            None => make().map(Cached::Fresh),
+            Some(cache) => unsafe { cache.secret.get_or_try_init(make, part) },
+            None => Ok(Secret::Owned { owner: make()?, part }),
         }
     }
 
