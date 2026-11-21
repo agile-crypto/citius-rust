@@ -10,7 +10,7 @@
 
 use aes_gcm::aead::{AeadInOut, KeyInit};
 use cipher::block_padding::{Padding, Pkcs7};
-use cipher::{BlockModeDecrypt, BlockModeEncrypt, InOutBuf, KeyIvInit, StreamCipher};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, InOutBuf, InnerIvInit, KeyIvInit, StreamCipher};
 use zeroize::Zeroizing;
 
 use super::RustCrypto;
@@ -306,11 +306,15 @@ where
 /// reach `out`. The timing difference reveals nothing the error does not.
 fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ct: &[u8], out: &mut [u8]) -> Result<usize, Error>
 where
-    C: cipher::BlockCipherDecrypt + cipher::KeyInit + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
+    C: cipher::BlockCipherDecrypt + cipher::KeyInit + Clone + cipher::BlockSizeUser<BlockSize = cipher::consts::U16>,
 {
     let malformed = || err(Code::InvalidArgument, "the ciphertext does not decrypt");
+    // One key schedule for both decryptors: a clone is a copy of the round
+    // keys, cheaper than expanding them twice (both copies wipe on drop).
+    let schedule = C::new_from_slice(key).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))?;
     let decryptor = |iv: &[u8]| {
-        cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(|_| err(Code::InvalidKeyMaterial, "wrong key length"))
+        cbc::Decryptor::<C>::inner_iv_slice_init(schedule.clone(), iv)
+            .map_err(|_| err(Code::InvalidArgument, "the metadata does not carry a 16-byte IV"))
     };
     if ct.is_empty() || !ct.len().is_multiple_of(BLOCK) {
         return Err(malformed());
