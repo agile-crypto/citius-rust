@@ -18,6 +18,10 @@
 //!                              its headers, pkg-config file and CMake
 //!                              package under DIR
 //!   cargo xtask all            everything above but install
+//!   cargo xtask bench [--quick] [--csv FILE] [--only SECTION]
+//!                              build the release library and run the C
+//!                              benchmark harness benches/c/bench.c (the
+//!                              agc_* path, docs/performance.md)
 //!
 //! The library is always built first: `cargo test` does not rebuild the
 //! cdylib, and a C test linked against a stale one tests old code.
@@ -47,8 +51,11 @@ fn main() -> ExitCode {
         "tsan" => tsan(),
         "interop" => interop(),
         "install" => install(&env::args().skip(2).collect::<Vec<_>>()),
+        "bench" => bench(&env::args().skip(2).collect::<Vec<_>>()),
         "all" => test_c().and_then(|()| miri()).and_then(|()| tsan()).and_then(|()| interop()),
-        _ => Err("usage: cargo xtask <test-c|check-symbols|memcheck|miri|tsan|interop|install --prefix DIR|all>".to_owned()),
+        _ => Err("usage: cargo xtask <test-c|check-symbols|memcheck|miri|tsan|interop|install --prefix DIR|all\
+                  |bench [--quick] [--csv FILE] [--only SECTION]>"
+            .to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -338,6 +345,40 @@ fn tsan() -> Result<(), String> {
         link,
         ..Variant::default()
     }])
+}
+
+// ---------------------------------------------------------------------------
+// The C benchmark harness
+// ---------------------------------------------------------------------------
+
+/// Builds the release library and benches/c/bench.c (-O2) against it, then
+/// runs the harness with `args`. Release, not debug: these are the numbers
+/// clients get.
+fn bench(args: &[String]) -> Result<(), String> {
+    run(
+        Command::new(env!("CARGO")).current_dir(root()).args(["build", "--release", "--package", PACKAGE]),
+        "cargo build --release",
+    )?;
+    let lib_dir = root().join("target/release");
+    link_versioned(&lib_dir)?;
+    let out_dir = root().join("target/c-bench");
+    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let exe = out_dir.join("bench");
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+    run(
+        Command::new(&cc)
+            .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread", "-I"])
+            .arg(include_dir())
+            .arg(root().join("benches/c/bench.c"))
+            .arg("-L")
+            .arg(&lib_dir)
+            .arg(format!("-l{LIB}"))
+            .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
+            .arg("-o")
+            .arg(&exe),
+        "cc bench",
+    )?;
+    run(Command::new(&exe).args(args), "bench")
 }
 
 // ---------------------------------------------------------------------------

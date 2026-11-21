@@ -1,0 +1,27 @@
+[package]
+name = "rcbase"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib"]
+
+[features]
+all = ["dep:chacha20poly1305", "dep:ed25519-dalek", "dep:p256", "dep:p384", "dep:p521", "dep:ml-dsa", "dep:sha2"]
+
+[dependencies]
+aes-gcm = "0.11.1"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+chacha20poly1305 = { version = "0.11.0", optional = true }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "alloc", "zeroize", "digest"], optional = true }
+p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"], optional = true }
+p384 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"], optional = true }
+p521 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "alloc"], optional = true }
+ml-dsa = { version = "0.1.1", features = ["pkcs8", "alloc", "zeroize", "rand_core"], optional = true }
+sha2 = { version = "0.11", optional = true }
+
+# Standalone: not part of the agilecrypto workspace.
+[workspace]
+
+[profile.release]
+panic = "unwind"

@@ -48,7 +48,7 @@ ulid = "1"
 zeroize = "1.9.2"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [build-dependencies]
 bindgen = "0.72.1"
@@ -60,7 +60,47 @@ syn = { version = "2", features = ["full"] }
 quote = "1"
 
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 syn = { version = "2", features = ["full", "visit"] }
+
+[features]
+# Fixtures for benches/ (src/bench_support.rs).
+bench = []
+
+[[bench]]
+name = "sign"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "cipher"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "tail"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "stack"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "interleave"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "baselines"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "allocs"
+harness = false
+required-features = ["bench"]
 
 [workspace]
 members = [".", "xtask"]

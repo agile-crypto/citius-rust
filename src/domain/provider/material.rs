@@ -82,7 +82,7 @@ impl GeneratedKey {
 
     /// This key as a provider operates with it (tests drive providers
     /// with freshly generated keys).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     pub fn as_stored(&self) -> StoredKey<'_> {
         StoredKey {
             private: &self.private,
