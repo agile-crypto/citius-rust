@@ -2,7 +2,7 @@ use std::any::Any;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Cached, Code, Error, PublicCache};
+use crate::domain::core::{Cached, Code, Error, VersionCache};
 use crate::secret::extend_secret;
 
 /// How key bytes are encoded, recorded next to them so that the provider
@@ -106,12 +106,12 @@ pub struct StoredKey<'a> {
     pub public: Option<(&'a [u8], Encoding)>,
     /// The version's cache; none when the material is read outside an
     /// operation (and in provider tests), so every call derives afresh.
-    cache: Option<&'a PublicCache>,
+    cache: Option<&'a VersionCache>,
 }
 
 impl<'a> StoredKey<'a> {
     /// The same key with the cache of the version it belongs to.
-    pub fn with_cache(self, cache: &'a PublicCache) -> StoredKey<'a> {
+    pub fn with_cache(self, cache: &'a VersionCache) -> StoredKey<'a> {
         StoredKey { cache: Some(cache), ..self }
     }
 
@@ -125,7 +125,24 @@ impl<'a> StoredKey<'a> {
         make: impl FnOnce() -> Result<T, Error>,
     ) -> Result<Cached<'a, T>, Error> {
         match self.cache {
-            Some(cache) => cache.get_or_try_init(bytes, make),
+            Some(cache) => cache.public.get_or_try_init(bytes, make),
+            None => make().map(Cached::Fresh),
+        }
+    }
+
+    /// A secret the provider derives from this key, made once per version
+    /// and kept in sealed pages (`SecretCache`) if they can be had; else
+    /// made per call. `make` must derive it from this key alone.
+    ///
+    /// # Safety
+    /// `T` keeps all its state inline (`secret::Sealed::new`).
+    pub unsafe fn secret_value<T: Send + Sync + 'static>(
+        &self,
+        make: impl Fn() -> Result<T, Error>,
+    ) -> Result<Cached<'a, T>, Error> {
+        match self.cache {
+            // SAFETY: forwarded from this function's contract.
+            Some(cache) => unsafe { cache.secret.get_or_try_init(make) },
             None => make().map(Cached::Fresh),
         }
     }

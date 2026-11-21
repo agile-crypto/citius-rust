@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use zeroize::Zeroizing;
 
-use crate::domain::core::{Code, Error, PublicCache, ScopeKind, ScopeSpecification, new_id};
+use crate::domain::core::{Code, Error, ScopeKind, ScopeSpecification, VersionCache, new_id};
 use crate::proto::api::KeyLifecycleState as State;
 pub use crate::secret::Locking;
 use crate::secret::{AllocError, SecretBytes};
@@ -61,8 +61,9 @@ pub struct Version {
     scope_spec: ScopeSpecification,
     /// Locked, and shared by every clone of the version (and so of the key).
     material: SecretBytes,
-    /// What the provider derived from the material, once (public values only).
-    cache: Arc<PublicCache>,
+    /// What the provider derived from the material, once: public values,
+    /// and secrets in sealed pages.
+    cache: Arc<VersionCache>,
     provenance: Provenance,
     created_at: SystemTime,
 }
@@ -122,7 +123,7 @@ impl Version {
         &self.material
     }
 
-    pub fn cache(&self) -> &PublicCache {
+    pub fn cache(&self) -> &VersionCache {
         &self.cache
     }
 

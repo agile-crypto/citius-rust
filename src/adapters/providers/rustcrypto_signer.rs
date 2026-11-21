@@ -362,7 +362,7 @@ fn ed25519_digest(digest: &[u8]) -> Sha512Digest {
     Sha512Digest(digest.try_into().expect("check_digest admits 64-byte SHA-512 digests only"))
 }
 
-fn ml_dsa_sign<P: ml_dsa::MlDsaParams>(
+fn ml_dsa_sign<P: ml_dsa::MlDsaParams + 'static>(
     key: StoredKey<'_>,
     message: &[u8],
     ctx: &[u8],
@@ -373,15 +373,24 @@ where
 {
     use ml_dsa::pkcs8::DecodePrivateKey;
     key.check_encoding(Encoding::Pkcs8Der)?;
-    let sk = ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key"))?;
+    // Expanding the seed is most of a signature's work: the expanded key is
+    // kept per version, in sealed pages.
+    // SAFETY: ExpandedSigningKey<P> keeps all its state inline: fixed-size
+    // arrays of polynomials (ml-dsa 0.1.1 signing.rs, module-lattice 0.2
+    // algebra.rs), no MaybeBox, no other resource.
+    let sk = unsafe {
+        key.secret_value(|| {
+            let full =
+                ml_dsa::SigningKey::<P>::from_pkcs8_der(key.private).map_err(|_| bad_key("ML-DSA private key"))?;
+            Ok(full.expanded_key().clone())
+        })
+    }?;
     let sig = if deterministic {
         // The context length is checked before, so this cannot fail.
-        sk.expanded_key()
-            .sign_deterministic(message, ctx)
-            .map_err(|_| Error::new(Code::Internal, OP, "ML-DSA signing failed"))?
+        sk.sign_deterministic(message, ctx).map_err(|_| Error::new(Code::Internal, OP, "ML-DSA signing failed"))?
     } else {
         // The context length is checked before; what remains is the RNG.
-        sk.expanded_key().sign_randomized(message, ctx, &mut getrandom::SysRng).map_err(|_| randomness_failed())?
+        sk.sign_randomized(message, ctx, &mut getrandom::SysRng).map_err(|_| randomness_failed())?
     };
     Ok(sig.encode().to_vec())
 }
@@ -898,6 +907,40 @@ mod tests {
             let (sig, _) = RustCrypto.sign(stored, &a, b"m", &SignContext::None).unwrap();
             assert!(RustCrypto.verify(stored, &a, b"m", &sig, &SignContext::None).unwrap(), "{id}");
             assert!(format!("{:?}", v.cache()).contains("filled: true"), "{id}");
+            assert_eq!(v.cache().secret.is_filled(), id.starts_with("ml-dsa"), "{id}: only ML-DSA seals a secret");
+        }
+    }
+
+    /// The sealed expanded key signs exactly as the key parsed per call:
+    /// deterministic ML-DSA gives the same signature either way.
+    #[test]
+    #[cfg_attr(miri, ignore = "third-party signing is too slow under Miri")]
+    fn a_sealed_ml_dsa_key_signs_as_the_parsed_one() {
+        use crate::domain::core::{Scope, ScopeSpecification};
+        use crate::domain::key::{Locking, Origin, Provenance, Version};
+        for id in ["ml-dsa-44", "ml-dsa-87"] {
+            let (k, mut a) = key(id);
+            if let Some(Algorithm::MlDsa(p)) = a.algorithm.as_mut() {
+                p.deterministic = true;
+            }
+            let v = Version::new(
+                1,
+                id.into(),
+                "rustcrypto".into(),
+                ScopeSpecification::any_of(Scope::Signature(api::SignatureScope::Standard)),
+                k.to_bytes(),
+                Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
+                std::time::SystemTime::UNIX_EPOCH,
+                Locking::BestEffort,
+            )
+            .unwrap();
+            let cached = StoredKey::parse(v.material()).unwrap().with_cache(v.cache());
+            let ctx = SignContext::Domain(b"ctx".to_vec());
+            let first = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
+            assert!(v.cache().secret.is_filled(), "{id}: sealed on first use");
+            let again = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
+            let parsed = RustCrypto.sign(k.as_stored(), &a, b"m", &ctx).unwrap().0;
+            assert_eq!((&first, &again), (&parsed, &parsed), "{id}");
         }
     }
 
