@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::crypto_orchestrator::{CryptoOrchestrator, Direction, Resolved, Sizes, no_output, non_empty, require_output};
-use crate::domain::core::{Code, Error, Operation, Scope, hash_output_len};
+use crate::domain::core::{Code, Error, Operation, hash_output_len};
 use crate::domain::crypto::metadata::{self, MetadataEncoding};
 use crate::domain::provider::SignContext;
-use crate::proto::api::{self, HashAlgorithm, SignatureScope};
+use crate::proto::api::{self, HashAlgorithm};
 
 const OP: &str = "CryptoOrchestrator";
 
@@ -90,42 +90,6 @@ pub struct Verified {
 }
 
 impl CryptoOrchestrator {
-    /// The parameters must fit the version's scope (Go:
-    /// validateSignatureScopeParams): a context exactly for the WITH_CONTEXT
-    /// scopes, and the entry point (message or digest) the scope is for.
-    fn check_sign_params(r: &Resolved, input: &SignInput, context: &SignContext) -> Result<(), Error> {
-        let scope = r.version().scope_spec().scope;
-        let (prehashed, with_context) = match scope {
-            Scope::Signature(SignatureScope::Standard) => (false, false),
-            Scope::Signature(SignatureScope::WithContext) => (false, true),
-            Scope::Signature(SignatureScope::Prehashed) => (true, false),
-            Scope::Signature(SignatureScope::PrehashedWithContext) => (true, true),
-            other => {
-                return Err(Error::new(
-                    Code::KeyOperationNotAllowed,
-                    OP,
-                    format!("a key of scope {other:?} does not sign"),
-                ));
-            }
-        };
-        let digest = matches!(input, SignInput::Digest { .. });
-        if prehashed != digest {
-            return Err(Error::new(
-                Code::KeyOperationNotAllowed,
-                OP,
-                format!("a key of scope {scope:?} signs {}", if prehashed { "digests" } else { "messages" }),
-            ));
-        }
-        if with_context != matches!(context, SignContext::Domain(_)) {
-            return Err(Error::new(
-                Code::InvalidArgument,
-                OP,
-                format!("a key of scope {scope:?} takes {} domain context", if with_context { "a" } else { "no" }),
-            ));
-        }
-        Ok(())
-    }
-
     /// `with_resolved` for signing or verification: the lookup the input
     /// implies, then the checks the version must pass for it, then `then`.
     fn with_signing<R, E: From<Error>>(
@@ -146,29 +110,14 @@ impl CryptoOrchestrator {
         })
     }
 
+    /// The checks a version must pass for this signing or verification:
+    /// its scope (`Scope::check_signing`), and for a digest the hashes it
+    /// accepts (`Version::check_digest_hash`) and the provider's own check.
     fn check_signing(r: &Resolved, input: &SignInput, context: &SignContext) -> Result<(), Error> {
-        Self::check_sign_params(r, input, context)?;
+        let digest = matches!(input, SignInput::Digest { .. });
+        r.version().scope_spec().scope.check_signing(digest, matches!(context, SignContext::Domain(_)))?;
         if let SignInput::Digest { digest, hash } = *input {
-            // The key version accepts only the hashes it recorded when it was
-            // created (Go: validateDigestHash).
-            let accepted = &r.version().scope_spec().properties.accepted_digest_hashes;
-            if accepted.is_empty() {
-                return Err(Error::new(
-                    Code::Internal,
-                    OP,
-                    format!("key version {} records no accepted digest hash", r.version().number()),
-                ));
-            }
-            if !accepted.contains(&hash) {
-                return Err(Error::new(
-                    Code::InvalidArgument,
-                    OP,
-                    format!(
-                        "key version {} does not accept digest hash {hash:?} (accepted: {accepted:?})",
-                        r.version().number()
-                    ),
-                ));
-            }
+            r.version().check_digest_hash(hash)?;
             r.signer()?.check_digest(r.algorithm(), digest, hash)?;
         }
         Ok(())
@@ -277,6 +226,8 @@ mod tests {
     use sha2::Digest;
 
     use super::*;
+    use crate::domain::core::Scope;
+    use crate::proto::api::SignatureScope;
     use crate::adapters::providers::RustCrypto;
     use crate::adapters::storage::{InMemoryKeyRepository, InMemoryPolicyRepository, InMemoryTemplateRegistry};
     use crate::app::{KeyOrchestrator, TransformSpec};

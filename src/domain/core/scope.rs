@@ -41,6 +41,50 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// Whether a key of this scope signs this way (Go:
+    /// validateSignatureScopeParams): a signature scope, the entry point it
+    /// is for (a message, or a digest for the prehashed scopes), and a
+    /// domain context exactly for the WITH_CONTEXT scopes.
+    pub fn check_signing(&self, digest: bool, with_context: bool) -> Result<(), Error> {
+        const OP: &str = "Scope::check_signing";
+        use api::SignatureScope as S;
+        let (prehashed, takes_context) = match self {
+            Scope::Signature(S::Standard) => (false, false),
+            Scope::Signature(S::WithContext) => (false, true),
+            Scope::Signature(S::Prehashed) => (true, false),
+            Scope::Signature(S::PrehashedWithContext) => (true, true),
+            other => {
+                let msg = format!("a key of scope {other:?} does not sign");
+                return Err(Error::new(Code::KeyOperationNotAllowed, OP, msg));
+            }
+        };
+        if prehashed != digest {
+            let what = if prehashed { "digests" } else { "messages" };
+            return Err(Error::new(Code::KeyOperationNotAllowed, OP, format!("a key of scope {self:?} signs {what}")));
+        }
+        if takes_context != with_context {
+            let article = if takes_context { "a" } else { "no" };
+            let msg = format!("a key of scope {self:?} takes {article} domain context");
+            return Err(Error::new(Code::InvalidArgument, OP, msg));
+        }
+        Ok(())
+    }
+
+    /// Whether a key of this scope encrypts with these parameters (Go:
+    /// validateEncryptionScopeParams): AEAD parameters for a standard AEAD
+    /// key, none for a block or stream cipher key.
+    pub fn check_encryption(&self, aead_params: bool) -> Result<(), Error> {
+        let fits = match aead_params {
+            true => *self == Scope::Aead(api::AeadScope::Standard),
+            false => matches!(self, Scope::SymmetricCipher(_)),
+        };
+        if !fits {
+            let msg = format!("the encryption parameters do not fit the key's scope {self:?}");
+            return Err(Error::new(Code::InvalidArgument, "Scope::check_encryption", msg));
+        }
+        Ok(())
+    }
+
     pub fn kind(&self) -> ScopeKind {
         match self {
             Scope::Signature(_) => ScopeKind::Signature,
@@ -365,6 +409,30 @@ fn properties_satisfy(got: &PrimitiveProperties, want: &PrimitiveProperties) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scope_decides_how_its_key_signs() {
+        use api::SignatureScope as S;
+        let code = |s: Scope, digest, ctx| s.check_signing(digest, ctx).err().map(|e| e.code());
+        assert_eq!(code(Scope::Signature(S::Standard), false, false), None);
+        assert_eq!(code(Scope::Signature(S::WithContext), false, true), None);
+        assert_eq!(code(Scope::Signature(S::Prehashed), true, false), None);
+        assert_eq!(code(Scope::Signature(S::PrehashedWithContext), true, true), None);
+        assert_eq!(code(Scope::Signature(S::Standard), true, false), Some(Code::KeyOperationNotAllowed));
+        assert_eq!(code(Scope::Signature(S::Prehashed), false, false), Some(Code::KeyOperationNotAllowed));
+        assert_eq!(code(Scope::Signature(S::Standard), false, true), Some(Code::InvalidArgument));
+        assert_eq!(code(Scope::Signature(S::WithContext), false, false), Some(Code::InvalidArgument));
+        assert_eq!(code(Scope::Aead(api::AeadScope::Standard), false, false), Some(Code::KeyOperationNotAllowed));
+    }
+
+    #[test]
+    fn a_scope_decides_its_encryption_parameters() {
+        let aead = Scope::Aead(api::AeadScope::Standard);
+        let cipher = Scope::SymmetricCipher(api::SymmetricCipherScope::Unspecified);
+        assert!(aead.check_encryption(true).is_ok() && cipher.check_encryption(false).is_ok());
+        assert_eq!(aead.check_encryption(false).unwrap_err().code(), Code::InvalidArgument);
+        assert_eq!(cipher.check_encryption(true).unwrap_err().code(), Code::InvalidArgument);
+    }
     use api::{AeadScope, NistSecurityLevel, NistStatus, SignatureScope};
 
     fn sig(s: SignatureScope) -> ScopeSpecification {

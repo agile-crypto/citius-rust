@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use zeroize::Zeroizing;
 
 use crate::domain::core::{Code, Error, ProviderState, ScopeKind, ScopeSpecification, new_id};
+use crate::proto::api::HashAlgorithm;
 use crate::proto::api::KeyLifecycleState as State;
 pub use crate::secret::Locking;
 use crate::secret::{AllocError, SecretBytes};
@@ -120,6 +121,25 @@ impl Version {
 
     pub fn material(&self) -> &[u8] {
         &self.material
+    }
+
+    /// Whether this version signs digests made with `hash`: only the hashes
+    /// it recorded when it was created (Go: validateDigestHash).
+    pub fn check_digest_hash(&self, hash: HashAlgorithm) -> Result<(), Error> {
+        const OP: &str = "Version::check_digest_hash";
+        let accepted = &self.scope_spec.properties.accepted_digest_hashes;
+        if accepted.is_empty() {
+            let msg = format!("key version {} records no accepted digest hash", self.number);
+            return Err(Error::new(Code::Internal, OP, msg));
+        }
+        if !accepted.contains(&hash) {
+            let msg = format!(
+                "key version {} does not accept digest hash {hash:?} (accepted: {accepted:?})",
+                self.number
+            );
+            return Err(Error::new(Code::InvalidArgument, OP, msg));
+        }
+        Ok(())
     }
 
     pub fn provider_state(&self) -> &ProviderState {
@@ -369,6 +389,26 @@ mod tests {
     use super::*;
     use crate::domain::core::Scope;
     use crate::proto::api::SignatureScope;
+
+    #[test]
+    fn a_version_signs_only_the_digest_hashes_it_recorded() {
+        let mut spec = ScopeSpecification::any_of(Scope::Signature(SignatureScope::Prehashed));
+        spec.properties.accepted_digest_hashes = vec![HashAlgorithm::Sha384];
+        let v = Version::new(
+            1,
+            "t".into(),
+            "p".into(),
+            spec,
+            Zeroizing::new(vec![1; 32]),
+            Provenance { extractable: false, approved_lineage: false, origin: Origin::Generated },
+            SystemTime::UNIX_EPOCH,
+            Locking::BestEffort,
+        )
+        .unwrap();
+        assert!(v.check_digest_hash(HashAlgorithm::Sha384).is_ok());
+        assert_eq!(v.check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::InvalidArgument);
+        assert_eq!(version(1).check_digest_hash(HashAlgorithm::Sha256).unwrap_err().code(), Code::Internal);
+    }
 
     #[test]
     fn a_new_key_is_active_at_version_1() {

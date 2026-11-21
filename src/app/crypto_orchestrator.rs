@@ -204,25 +204,6 @@ impl CryptoOrchestrator {
         Ok(Resolved { key, at, template, provider })
     }
 
-    /// The parameters must fit the version's scope (Go:
-    /// validateEncryptionScopeParams): AEAD parameters for a standard AEAD
-    /// key, none for a block or stream cipher key.
-    fn check_encrypt_params(r: &Resolved, params: &EncryptParams) -> Result<(), Error> {
-        let scope = r.version().scope_spec().scope;
-        let fits = match params {
-            EncryptParams::Aead { .. } => scope == Scope::Aead(api::AeadScope::Standard),
-            EncryptParams::None => matches!(scope, Scope::SymmetricCipher(_)),
-        };
-        if !fits {
-            return Err(Error::new(
-                Code::InvalidArgument,
-                "CryptoOrchestrator",
-                format!("the encryption parameters do not fit the key's scope {scope:?}"),
-            ));
-        }
-        Ok(())
-    }
-
     /// The metadata of an operation. `digest_hash` is set by digest signing
     /// only (`with_digest_hash`); UNSPECIFIED otherwise.
     pub(super) fn metadata(version: u32, output: api::ProviderOutput, user_context: BTreeMap<String, String>) -> api::OperationMetadata {
@@ -290,7 +271,7 @@ impl CryptoOrchestrator {
         non_empty(req.plaintext, "plaintext")?;
         let (op, declared) = (Operation::Encrypt, api::CryptoOperation::Encrypt);
         self.with_resolved(req.key_name, None, Direction::Originating, op, declared, |r| {
-            Self::check_encrypt_params(&r, &req.params)?;
+            r.version().scope_spec().scope.check_encryption(matches!(req.params, EncryptParams::Aead { .. }))?;
             then(r, req)
         })
     }
@@ -315,7 +296,7 @@ impl CryptoOrchestrator {
         let (op, declared) = (Operation::Decrypt, api::CryptoOperation::Decrypt);
         let version = Some(req.metadata.key_version);
         self.with_resolved(req.key_name, version, Direction::Receiving, op, declared, |r| {
-            Self::check_encrypt_params(&r, &req.params)?;
+            r.version().scope_spec().scope.check_encryption(matches!(req.params, EncryptParams::Aead { .. }))?;
             then(r, req)
         })
     }
