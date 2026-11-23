@@ -378,7 +378,10 @@ fn bench(args: &[String]) -> Result<(), String> {
             .arg(&exe),
         "cc bench",
     )?;
-    run(Command::new(&exe).args(args), "bench")
+    // `cargo xtask` runs under `cargo run`, which puts target/debug on
+    // LD_LIBRARY_PATH; on Linux that outranks the runpath above, and a debug
+    // library left there by `cargo test` would be the one measured.
+    run(Command::new(&exe).args(args).env_remove("LD_LIBRARY_PATH"), "bench")
 }
 
 // ---------------------------------------------------------------------------
