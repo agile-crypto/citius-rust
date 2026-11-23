@@ -437,7 +437,7 @@ impl SealedBudget {
     fn reserve(&'static self, bytes: usize) -> Option<Reservation> {
         let cap = self.cap();
         self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| u.checked_add(bytes).filter(|&t| t <= cap))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| u.checked_add(bytes).filter(|&t| t <= cap))
             .ok()
             .map(|_| Reservation { budget: self, bytes })
     }

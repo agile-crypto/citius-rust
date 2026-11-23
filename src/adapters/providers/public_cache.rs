@@ -48,7 +48,7 @@ impl Budget {
 
     fn reserve(&'static self, bytes: usize) -> Option<Reservation> {
         self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
                 u.checked_add(bytes).filter(|&total| total <= self.cap)
             })
             .ok()
