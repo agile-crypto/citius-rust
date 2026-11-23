@@ -12,7 +12,8 @@ where a finding stands now, read §4's table and §7.
 
 Goal: tell clients who care about performance, or who have real-time constraints, how much using
 `agc_*` (citius-c-api) through citius-rust costs them, compared with calling RustCrypto directly.
-The costs covered are time, memory, allocations and predictability.
+The costs covered are time, memory, allocations and predictability. The short version for clients,
+with the current numbers, is `docs/performance-summary.md`.
 
 Figures for presenting these results are in `docs/perf-figures/`, made by
 `benches/plots/make_figures.py` (matplotlib) from this document's tables:
