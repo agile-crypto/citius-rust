@@ -550,7 +550,13 @@ impl Signer for RustCrypto {
         let s = scheme(algorithm)?;
         check_entry(s, false)?;
         let ctx = context(s, c)?;
-        let signature = on_stack(s, MlDsaOp::Sign, || self.sign_message(s, key, message, ctx))?;
+        // A version's sealed expanded key spares the signature the expansion,
+        // the deepest part of it.
+        let op = match s {
+            Scheme::MlDsa { .. } if derived::secret_sealed(key) => MlDsaOp::SignSealed,
+            _ => MlDsaOp::Sign,
+        };
+        let signature = on_stack(s, op, || self.sign_message(s, key, message, ctx))?;
         Ok((signature, self.output_shape(algorithm)?))
     }
 
@@ -953,8 +959,11 @@ mod tests {
             );
             let cached = StoredKey::parse(v.material()).unwrap().with_state(v.provider_state());
             let ctx = SignContext::Domain(b"ctx".to_vec());
+            assert!(!derived::secret_sealed(cached), "{id}: nothing sealed before the first use");
             let first = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
             assert!(derived::filled(v.provider_state()).1, "{id}: sealed on first use");
+            assert!(derived::secret_sealed(cached), "{id}: later signatures take the sealed budget");
+            assert!(!derived::secret_sealed(k.as_stored()), "{id}: a key without a version has no seal");
             let again = RustCrypto.sign(cached, &a, b"m", &ctx).unwrap().0;
             let parsed = RustCrypto.sign(k.as_stored(), &a, b"m", &ctx).unwrap().0;
             assert_eq!((&first, &again), (&parsed, &parsed), "{id}");

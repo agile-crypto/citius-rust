@@ -22,7 +22,7 @@ use std::cell::Cell;
 /// Kept free below what an operation is expected to need: signal handlers,
 /// the libc frames of the calls the operation makes, estimation error, and
 /// the guard page some systems count into the stack size (macOS).
-const MARGIN: usize = 64 * 1024;
+pub const MARGIN: usize = 64 * 1024;
 
 /// Why `with_stack` could not run the closure.
 #[derive(Debug)]

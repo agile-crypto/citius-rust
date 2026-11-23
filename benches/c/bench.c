@@ -1074,6 +1074,15 @@ static void stack(void)
         j.fn = op_verify;
         snprintf(name, sizeof name, "verify/%s/1024", a->template_id);
         ROW(name, stack_depth(run_op_job, &j));
+        /* The rows above include each version's first use, which fills its
+         * caches (the expanded ML-DSA key, the decoded public key); these
+         * are what every later call needs. */
+        j.fn = op_sign;
+        snprintf(name, sizeof name, "sign/%s/1024/L3a (key cached)", a->template_id);
+        ROW(name, stack_depth(run_op_job, &j));
+        j.fn = op_verify;
+        snprintf(name, sizeof name, "verify/%s/1024 (key cached)", a->template_id);
+        ROW(name, stack_depth(run_op_job, &j));
         op_free(&s);
     }
     for (size_t i = 0; i < sizeof CIPHERS / sizeof *CIPHERS; i++) {

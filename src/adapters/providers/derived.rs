@@ -56,6 +56,13 @@ pub(super) unsafe fn secret_value<'a, S, T: Send + Sync + 'static>(
     }
 }
 
+/// Whether `key`'s version holds its sealed secret. Once it does, it holds it
+/// for the version's life, and an operation needs none of the stack the
+/// derivation takes (`stack_budget`, docs/performance.md F12).
+pub(super) fn secret_sealed(key: StoredKey<'_>) -> bool {
+    matches!(Derived::of(key), Ok(Some(d)) if d.secret.is_filled())
+}
+
 /// Whether a version's public value and sealed secret are cached (tests).
 #[cfg(test)]
 pub(super) fn filled(state: &crate::domain::core::ProviderState) -> (bool, bool) {
