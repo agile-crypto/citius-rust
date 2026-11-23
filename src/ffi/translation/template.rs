@@ -174,7 +174,7 @@ fn irregular_arm(a: &Algorithm, c: &mut agc_algorithm_params, p: &mut Packer, de
     }
 }
 
-fn c_guarantees(g: &api::SecurityGuarantees, p: &mut Packer) -> agc_security_guarantees {
+pub fn c_guarantees(g: &api::SecurityGuarantees, p: &mut Packer) -> agc_security_guarantees {
     let f = g.formal.unwrap_or_default();
     let pr = g.practical.unwrap_or_default();
     let b = g.bounds.clone().unwrap_or_default();

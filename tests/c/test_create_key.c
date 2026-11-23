@@ -31,6 +31,48 @@ static void creates_an_aead_key(agc_ctx *ctx)
     CHECK((const uint8_t *)resp.key_info.key_name < storage + resp.storage_used);
 }
 
+/* CreateKeyResponse.security_guarantees always; KeyMetadata.template_info
+ * when the caller passes an agc_template_info for it. */
+static void reports_guarantees_and_the_template_on_request(agc_ctx *ctx)
+{
+    uint8_t storage[256];
+    agc_key_info_response resp;
+    CHECK_RC(create(ctx, "aead-g", storage, sizeof storage, &resp), AGC_OK);
+    CHECK(resp.has_template_info == 0);
+    /* aes-128-gcm-128-96 declares them for its AEAD scope. */
+    CHECK(resp.has_security_guarantees);
+    CHECK(resp.security_guarantees.formal.ind_cca2 == AGC_TRUE);
+    CHECK(resp.security_guarantees.formal.euf_cma == AGC_UNSET);
+    CHECK(resp.security_guarantees.bounds.authentication_strength_bits == 128);
+    CHECK_STR(resp.security_guarantees.bounds.attack_success_probability, "2^-32");
+    size_t bare = resp.storage_used;
+
+    static uint8_t big[16384];
+    agc_template_info t;
+    AGC_INIT(&t);
+    agc_create_key_params p = AEAD_KEY_PARAMS("aead-t");
+    AGC_INIT(&resp);
+    resp.template_info = &t;
+    CHECK_RC(agc_create_key(ctx, &p, &resp), AGC_ERR_BUFFER_TOO_SMALL);
+    CHECK(resp.storage_used > bare); /* the template counts */
+    resp.storage = (agc_buf){big, sizeof big};
+    CHECK_RC(agc_create_key(ctx, &p, &resp), AGC_OK);
+    CHECK(resp.has_template_info && resp.has_security_guarantees);
+    CHECK_STR(t.template_id, resp.key_info.template_id);
+    CHECK(t.struct_size == sizeof t && t.scoped_capabilities_count >= 1);
+    CHECK((const uint8_t *)t.template_id >= big && (const uint8_t *)t.template_id < big + resp.storage_used);
+
+    /* A template_info without AGC_INIT is refused, and nothing is created. */
+    agc_template_info bad = {0};
+    agc_create_key_params q = AEAD_KEY_PARAMS("aead-bad");
+    AGC_INIT(&resp);
+    resp.template_info = &bad;
+    resp.storage = (agc_buf){big, sizeof big};
+    CHECK_RC(agc_create_key(ctx, &q, &resp), AGC_ERR_INVALID_ARGUMENT);
+    resp.template_info = NULL;
+    CHECK_RC(agc_create_key(ctx, &q, &resp), AGC_OK);
+}
+
 static void duplicate_name_is_rejected(agc_ctx *ctx)
 {
     uint8_t storage[256];
@@ -240,6 +282,7 @@ int main(void)
 {
     agc_ctx *ctx = open_embedded();
     creates_an_aead_key(ctx);
+    reports_guarantees_and_the_template_on_request(ctx);
     duplicate_name_is_rejected(ctx);
     no_template_is_a_crypto_error_with_reason(ctx);
     too_small_storage_creates_nothing(ctx);

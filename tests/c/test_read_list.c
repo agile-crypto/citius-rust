@@ -72,6 +72,39 @@ static int list(agc_ctx *ctx, const agc_list_keys_params *p, const char **names,
     return n;
 }
 
+/* KeyMetadata.template_info on request; CreateKey's guarantees only there. */
+static void the_template_on_request(agc_ctx *ctx)
+{
+    static uint8_t storage[16384];
+    agc_template_info t;
+    AGC_INIT(&t);
+    agc_key_info_response r;
+    AGC_INIT(&r);
+    r.storage = (agc_buf){storage, sizeof storage};
+    r.template_info = &t;
+    CHECK_RC(agc_read_key(ctx, "sig", 0, &r), AGC_OK);
+    CHECK(r.has_template_info && !r.has_security_guarantees);
+    CHECK_STR(t.template_id, "ecdsa-p256-sha256-der");
+
+    agc_list_keys_params p;
+    AGC_INIT(&p);
+    agc_key_iter *it = NULL;
+    CHECK_RC(agc_list_keys(ctx, &p, &it), AGC_OK);
+    int n = 0;
+    while (agc_key_iter_next(it, &r) == AGC_OK) {
+        CHECK(r.has_template_info);
+        CHECK_STR(t.template_id, r.key_info.template_id);
+        n++;
+    }
+    CHECK(n == 2);
+    agc_key_iter_free(it);
+
+    /* Without the pointer, nothing is written for it. */
+    r.template_info = NULL;
+    CHECK_RC(agc_read_key(ctx, "aead", 0, &r), AGC_OK);
+    CHECK(!r.has_template_info);
+}
+
 static void listing(agc_ctx *ctx)
 {
     agc_list_keys_params p;
@@ -104,6 +137,7 @@ int main(void)
     create(ctx, "sig", AGC_SCOPE_KIND_SIGNATURE);
     create(ctx, "aead", AGC_SCOPE_KIND_AEAD);
     reading(ctx);
+    the_template_on_request(ctx);
     listing(ctx);
     agc_ctx_close(ctx);
     return 0;

@@ -58,6 +58,10 @@ pub struct StrategyAssessment {
     /// What the strategy implies for the key's material and the data it
     /// protects, whether or not it is feasible (Go: SecurityNotes).
     pub security_notes: Vec<String>,
+    /// From 1 (trivial) to 5 (complex), by what the strategy leaves the key's
+    /// users to do or risk (Go: Complexity); 0 for a transform, which has no
+    /// strategy.
+    pub complexity: i32,
 }
 
 /// A migration pre-flight (Go: MigrationValidation).
@@ -82,6 +86,27 @@ const STRATEGIES: [Strategy; 5] = [
     Strategy::RekeyAndArchive,
     Strategy::RekeyAndDestroy,
 ];
+
+/// Go's strategyComplexity (citius-core service/key_migrate_validate.go),
+/// on StrategyOption's 1 (trivial) to 5 (complex) scale:
+/// - provider switch 1: the same material and public key; nothing changes
+///   for anyone using the key;
+/// - wrapped transfer 2: the same material, moved under a transport key the
+///   two providers must agree on;
+/// - extract and import 3: the same material, exposed in plaintext on the way;
+/// - rekey and archive 3: a new public key every relying party must pick up;
+///   data under the current version stays usable;
+/// - rekey and destroy 5: a new public key, and data under the current
+///   version is lost for good once it is destroyed.
+fn complexity(s: Strategy) -> i32 {
+    match s {
+        Strategy::ProviderSwitch => 1,
+        Strategy::WrappedTransfer => 2,
+        Strategy::ExtractAndImport | Strategy::RekeyAndArchive => 3,
+        Strategy::RekeyAndDestroy => 5,
+        Strategy::Unspecified => 0,
+    }
+}
 
 /// What each strategy implies, word for word as Go's strategySecurityNotes
 /// (citius-core service/key_migrate_validate.go). None for a transform.
@@ -235,6 +260,7 @@ impl KeyOrchestrator {
                     reason: format!("{s:?} is not implemented"),
                     target_instance: None,
                     security_notes: security_notes(s),
+                    complexity: complexity(s),
                 },
                 Ok(t) => StrategyAssessment {
                     strategy: s,
@@ -242,6 +268,7 @@ impl KeyOrchestrator {
                     reason: String::new(),
                     target_instance: Some(t.name().to_owned()),
                     security_notes: security_notes(s),
+                    complexity: complexity(s),
                 },
                 // Refusals become reasons; anything else is a failure to assess.
                 Err(e) if is_refusal(e.code()) => StrategyAssessment {
@@ -250,6 +277,7 @@ impl KeyOrchestrator {
                     reason: e.message().to_owned(),
                     target_instance: None,
                     security_notes: security_notes(s),
+                    complexity: complexity(s),
                 },
                 Err(e) => return Err(e),
             };
@@ -312,6 +340,7 @@ impl KeyOrchestrator {
                 reason,
                 target_instance: None,
                 security_notes: Vec::new(),
+                complexity: 0,
             }],
             recommended: Strategy::Unspecified,
             recommendation_reason,
@@ -693,6 +722,18 @@ mod tests {
         let feasible: Vec<_> = v.options.iter().filter(|o| o.feasible).map(|o| o.strategy).collect();
         assert_eq!(feasible, [Strategy::ProviderSwitch, Strategy::RekeyAndArchive]);
         assert!(v.options.iter().all(|o| o.feasible || !o.reason.is_empty()));
+        // Go's strategyComplexity, feasible or not.
+        let rated: Vec<_> = v.options.iter().map(|o| (o.strategy, o.complexity)).collect();
+        assert_eq!(
+            rated,
+            [
+                (Strategy::ProviderSwitch, 1),
+                (Strategy::ExtractAndImport, 3),
+                (Strategy::WrappedTransfer, 2),
+                (Strategy::RekeyAndArchive, 3),
+                (Strategy::RekeyAndDestroy, 5),
+            ]
+        );
         assert_eq!(v.recommended, Strategy::ProviderSwitch);
         assert_eq!(stored(&ko).current().number(), 1, "assessing changes nothing");
     }

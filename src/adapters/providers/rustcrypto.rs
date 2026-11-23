@@ -5,7 +5,9 @@ use zeroize::Zeroizing;
 
 use super::stack_budget::{self, EcCurve, MlDsaOp, ml_dsa_kib};
 use crate::domain::core::{Code, Error};
-use crate::domain::provider::{Backend, Capability, Channels, Cipher, Encoding, GeneratedKey, Signer, Transfer};
+use crate::domain::provider::{
+    Backend, Capability, Channels, Cipher, Encoding, GeneratedKey, ProviderDescription, Signer, Transfer,
+};
 use crate::proto::api::{self, algorithm_details::Algorithm};
 
 /// The software provider, built on the RustCrypto crates. Stateless: the
@@ -70,6 +72,16 @@ impl Backend for RustCrypto {
             memory_safe_language: Some(true),
             ..Default::default()
         }
+    }
+
+    /// The provider, as Go's software provider describes itself.
+    fn describe(&self) -> Option<ProviderDescription> {
+        Some(ProviderDescription {
+            name: "Rust cryptography (RustCrypto and ed25519-dalek)",
+            description: "In-process software provider: the RustCrypto crates, with ed25519-dalek for Ed25519.",
+            provider_type: api::ProviderType::Software,
+            default_implementation: self.implementation(),
+        })
     }
 
     /// Stateless: every key it generates is the payload the core stores, and

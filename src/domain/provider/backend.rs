@@ -48,6 +48,19 @@ impl Capability {
     }
 }
 
+/// How an in-process backend describes the provider it is an instance of
+/// (Go: `provider.Describer`): what a remote provider's GetInfo reports.
+/// Every instance of one kind describes it alike; `default_implementation`
+/// holds what is true of all of them, `Backend::implementation` what is true
+/// of one.
+#[derive(Debug, Clone)]
+pub struct ProviderDescription {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub provider_type: api::ProviderType,
+    pub default_implementation: api::ImplementationProperties,
+}
+
 /// The contract every crypto provider implements (Go: `provider.Backend`).
 /// Providers are shared by every thread of a context.
 ///
@@ -71,6 +84,13 @@ pub trait Backend: Send + Sync {
     /// What the provider can substantiate about itself. It must not claim
     /// certifications or properties a real audit would contradict.
     fn implementation(&self) -> api::ImplementationProperties;
+
+    /// The provider this backend is an instance of, if it describes it (Go:
+    /// an optional `Describer`). Without one, the discovery API reports the
+    /// provider by its kind alone.
+    fn describe(&self) -> Option<ProviderDescription> {
+        None
+    }
 
     /// New key material for the algorithm a template describes.
     fn generate_key(&self, algorithm: &api::AlgorithmDetails) -> Result<GeneratedKey, Error>;

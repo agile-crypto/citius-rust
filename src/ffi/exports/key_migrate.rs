@@ -7,7 +7,10 @@ use crate::bindings::*;
 use crate::ffi::error::FfiError;
 use crate::ffi::exports::core::context;
 use crate::ffi::guard::guard;
-use crate::ffi::translation::{Packer, c_impl_props, c_key_info, optional_str, pack, required_str, scope_spec, strs};
+use crate::ffi::translation::{
+    Packer, c_impl_props, c_key_info, c_template_info, optional_str, pack, required_str, scope_spec, strs,
+    wants_template, write_template,
+};
 use crate::ffi::versioned;
 use crate::proto::api;
 
@@ -24,8 +27,12 @@ pub unsafe extern "C" fn agc_migrate_key(
         let p = unsafe { versioned::read(params, "params") }?;
         // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
         let mut out = unsafe { versioned::read(resp, "resp") }?;
+        // SAFETY: template_info is NULL or the caller's struct (agc_key_types.h).
+        let wants_tmpl = unsafe { wants_template(out.template_info) }? && out.want_key_info != 0;
         // SAFETY: the pointers in params are NULL or valid (agc_key.h contract).
         let spec = unsafe { migrate_spec(&p) }?;
+        let template_of =
+            |r: &MigrationResult| if wants_tmpl { ctx.discovery.get_template(&r.key.template_id).ok() } else { None };
 
         // The records the caller asked for are size-checked before the key
         // moves (agc_key.h): on BUFFER_TOO_SMALL no key has been touched.
@@ -35,7 +42,7 @@ pub unsafe extern "C" fn agc_migrate_key(
         let mut needed = None;
         let migrated = ctx.keys.migrate_key_admitting(spec, |r: &MigrationResult| {
             let mut m = Packer::measuring();
-            layout_migration(r, want_info, want_report, wants_props, &mut m);
+            layout_migration(r, want_info, want_report, wants_props, template_of(r).as_ref(), &mut m);
             let n = m.used();
             if n > 0 && (storage.data.is_null() || storage.cap < n) {
                 needed = Some(n);
@@ -44,7 +51,7 @@ pub unsafe extern "C" fn agc_migrate_key(
             Ok(())
         });
         let result = match migrated {
-            Ok(r) => fill_migrate_response(&mut out, &r),
+            Ok(r) => fill_migrate_response(&mut out, &r, template_of(&r).as_ref()),
             Err(e) => {
                 if let Some(n) = needed {
                     out.storage_used = n;
@@ -95,17 +102,27 @@ fn strategy(v: agc_migration_strategy, what: &str) -> Result<api::MigrationStrat
         .ok_or_else(|| FfiError::invalid(format!("{what} {v} is not a known strategy")))
 }
 
-/// Lays out the records a migration returns: the key's record and the
-/// report, as requested. Returns them, and the implementation properties to
-/// write through the caller's pointer.
+/// The records a migration returns, as requested, and what goes through the
+/// caller's pointers: the implementation properties and the template.
+struct MigrationRecords {
+    info: Option<agc_key_info>,
+    report: Option<agc_migration_report>,
+    props: Option<agc_impl_props>,
+    template: Option<agc_template_info>,
+}
+
+/// Lays out the records a migration returns: the key's record (with its
+/// template, when given) and the report, as requested.
 fn layout_migration(
     r: &MigrationResult,
     want_info: bool,
     want_report: bool,
     wants_props: bool,
+    template: Option<&api::TemplateInfo>,
     p: &mut Packer,
-) -> (Option<agc_key_info>, Option<agc_migration_report>, Option<agc_impl_props>) {
+) -> MigrationRecords {
     let info = want_info.then(|| c_key_info(&r.key, p));
+    let template = template.filter(|_| want_info).map(|t| c_template_info(t, p));
     let props = (want_report && wants_props).then(|| c_impl_props(&r.target_implementation, p));
     let report = want_report.then(|| {
         let archived = r.strategy == api::MigrationStrategy::RekeyAndArchive;
@@ -132,18 +149,26 @@ fn layout_migration(
             archived_expiration: agc_timestamp { seconds: 0, nanos: 0, present: 0 },
         }
     });
-    (info, report, props)
+    MigrationRecords { info, report, props, template }
 }
 
-fn fill_migrate_response(out: &mut agc_migrate_key_response, r: &MigrationResult) -> Result<(), FfiError> {
+/// Fills `out` for migration `r`; `template` is the key's, when the caller
+/// asked for it (its `template_info` passed `wants_template`).
+fn fill_migrate_response(
+    out: &mut agc_migrate_key_response,
+    r: &MigrationResult,
+    template: Option<&api::TemplateInfo>,
+) -> Result<(), FfiError> {
     let (want_info, want_report) = (out.want_key_info != 0, out.want_report != 0);
     let props_out = out.report.target_implementation_properties;
+    out.has_template_info = 0;
     if !want_info && !want_report {
         out.storage_used = 0;
         return Ok(());
     }
-    let (info, report, props) =
-        pack(out.storage, &mut out.storage_used, |p| layout_migration(r, want_info, want_report, !props_out.is_null(), p))?;
+    let MigrationRecords { info, report, props, template } = pack(out.storage, &mut out.storage_used, |p| {
+        layout_migration(r, want_info, want_report, !props_out.is_null(), template, p)
+    })?;
     if let Some(info) = info {
         out.key_info = info;
     }
@@ -156,6 +181,9 @@ fn fill_migrate_response(out: &mut agc_migrate_key_response, r: &MigrationResult
         // receive them (agc_key_types.h); the strings point into storage.
         unsafe { props_out.write(props) };
     }
+    // SAFETY: template_info passed wants_template in agc_migrate_key, or the
+    // template is None.
+    out.has_template_info = unsafe { write_template(out.template_info, template) };
     Ok(())
 }
 
@@ -269,9 +297,7 @@ fn c_option(o: &StrategyAssessment, p: &mut Packer) -> agc_strategy_option {
         infeasibility_reason: p.str(&o.reason),
         security_notes,
         security_notes_count,
-        // The proto defines a 1-5 scale, which nothing here can substantiate
-        // (Go does not set it either): 0, "not assessed".
-        complexity_level: 0,
+        complexity_level: o.complexity,
     }
 }
 
@@ -348,12 +374,45 @@ mod tests {
     }
 
     #[test]
+    fn the_template_is_written_with_the_record_when_asked_for() {
+        use crate::proto::api::{AeadScopeSpec, scope_specification::ScopeSpec};
+        let template = api::TemplateInfo {
+            template_id: "chacha20-poly1305".into(),
+            scoped_capabilities: vec![api::ScopedCapabilities {
+                scope: Some(api::ScopeSpecification {
+                    scope_spec: Some(ScopeSpec::Aead(AeadScopeSpec {
+                        scope: AeadScope::Standard as i32,
+                        ..Default::default()
+                    })),
+                }),
+                operations: vec![api::CryptoOperation::Encrypt as i32],
+                ..Default::default()
+            }],
+            algorithm: Some(Default::default()),
+            ..Default::default()
+        };
+        let mut storage = [0u8; 4096];
+        // SAFETY: integers and raw pointers only; all zeros, then the size, is AGC_INIT.
+        let mut t: agc_template_info = unsafe { std::mem::zeroed() };
+        t.struct_size = size_of::<agc_template_info>();
+        let mut r = response(&mut storage, ptr::null_mut());
+        r.template_info = &raw mut t;
+        fill_migrate_response(&mut r, &result(), Some(&template)).unwrap();
+        assert_eq!((r.has_template_info, s(t.template_id), t.scoped_capabilities_count), (1, "chacha20-poly1305", 1));
+
+        // Without the record, there is no template either.
+        r.want_key_info = 0;
+        fill_migrate_response(&mut r, &result(), Some(&template)).unwrap();
+        assert_eq!(r.has_template_info, 0);
+    }
+
+    #[test]
     fn the_report_and_record_are_written_as_requested() {
         let mut storage = [0u8; 1024];
         // SAFETY: integers and raw pointers only.
         let mut props: agc_impl_props = unsafe { std::mem::zeroed() };
         let mut r = response(&mut storage, &mut props);
-        fill_migrate_response(&mut r, &result()).unwrap();
+        fill_migrate_response(&mut r, &result(), None).unwrap();
 
         assert_eq!((s(r.key_info.key_name), r.key_info.version, r.key_info.extractable), ("k", 2, 0));
         let rep = &r.report;
@@ -373,7 +432,7 @@ mod tests {
         let mut storage = [0u8; 1024];
         let mut r = response(&mut storage, ptr::null_mut());
         r.want_key_info = 0;
-        fill_migrate_response(&mut r, &result()).unwrap();
+        fill_migrate_response(&mut r, &result(), None).unwrap();
         assert!(r.key_info.key_name.is_null());
         assert_eq!(r.report.has_target_implementation_properties, 0);
 
@@ -381,7 +440,7 @@ mod tests {
         none.want_key_info = 0;
         none.want_report = 0;
         none.storage = agc_buf { data: ptr::null_mut(), cap: 0 };
-        fill_migrate_response(&mut none, &result()).unwrap();
+        fill_migrate_response(&mut none, &result(), None).unwrap();
         assert_eq!(none.storage_used, 0, "a bare migration needs no storage");
     }
 
@@ -393,6 +452,7 @@ mod tests {
             reason: "no".into(),
             target_instance: None,
             security_notes: vec!["first".into(), "second".into()],
+            complexity: 5,
         };
         let mut storage = [0u8; 256];
         let mut used = 0;
@@ -401,6 +461,7 @@ mod tests {
         // SAFETY: security_notes points at two string pointers in storage.
         let notes = unsafe { std::slice::from_raw_parts(c.security_notes, 2) };
         assert_eq!((s(notes[0]), s(notes[1]), s(c.infeasibility_reason)), ("first", "second", "no"));
+        assert_eq!(c.complexity_level, 5);
 
         let none = StrategyAssessment { security_notes: Vec::new(), ..o };
         let c = pack(agc_buf { data: storage.as_mut_ptr(), cap: storage.len() }, &mut used, |p| c_option(&none, p)).unwrap();
@@ -411,7 +472,7 @@ mod tests {
     fn a_small_region_writes_only_the_size() {
         let mut storage = [0xAAu8; 16];
         let mut r = response(&mut storage, ptr::null_mut());
-        assert!(matches!(fill_migrate_response(&mut r, &result()), Err(FfiError::BufferTooSmall { .. })));
+        assert!(matches!(fill_migrate_response(&mut r, &result(), None), Err(FfiError::BufferTooSmall { .. })));
         assert!(r.storage_used > 16);
         assert!(r.key_info.key_name.is_null() && r.report.source_instance_id.is_null());
         assert!(storage.iter().all(|&b| b == 0xAA));

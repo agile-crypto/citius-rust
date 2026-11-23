@@ -1,5 +1,6 @@
 //! agc_key.h — KeyManagementService.
 
+use std::collections::BTreeMap;
 use std::ffi::c_char;
 
 use crate::app::{KeyFilter, KeyMetadata, TransformSpec};
@@ -7,9 +8,13 @@ use crate::bindings::*;
 use crate::ffi::context::Context;
 use crate::ffi::error::FfiError;
 use crate::ffi::guard::{guard, guard_value};
-use crate::ffi::translation::{fill_key_info_response, key_info_size, optional_str, required_str, scope_spec, spec_from_params};
+use crate::ffi::translation::{
+    KeyExtras, fill_key_info_response, key_info_size, optional_str, required_str, scope_spec, spec_from_params,
+    wants_template,
+};
 use crate::ffi::{exports::core::{clear_handle, context}, versioned};
 use crate::domain::core::KeyLifecycleState;
+use crate::proto::api;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agc_create_key(
@@ -24,10 +29,13 @@ pub unsafe extern "C" fn agc_create_key(
         let params = unsafe { versioned::read(params, "params") }?;
         // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
         let mut out = unsafe { versioned::read(resp, "resp") }?;
+        // SAFETY: template_info is NULL or the caller's struct (agc_key_types.h).
+        let template = unsafe { wants_template(out.template_info) }?;
 
         // SAFETY: the pointers inside params are NULL or valid (agc_key.h contract).
         let spec = unsafe { spec_from_params(&params, ctx.default_policy.as_deref()) }?;
-        let result = admitted(&mut out, |admit| ctx.keys.create_key_admitting(spec, admit));
+        let with = |k: &KeyMetadata| extras(ctx, k, template, true);
+        let result = admitted(&mut out, &with, |admit| ctx.keys.create_key_admitting(spec, admit));
         // SAFETY: resp passed versioned::read above, so its struct_size is valid.
         unsafe { versioned::write_back(resp, &out) };
         result
@@ -47,6 +55,8 @@ pub unsafe extern "C" fn agc_transform_key(
         let p = unsafe { versioned::read(params, "params") }?;
         // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
         let mut out = unsafe { versioned::read(resp, "resp") }?;
+        // SAFETY: template_info is NULL or the caller's struct (agc_key_types.h).
+        let template = unsafe { wants_template(out.template_info) }?;
         let spec = TransformSpec {
             // SAFETY: the strings in params are NULL or valid C strings (agc_key.h contract).
             key_name: unsafe { required_str(p.key_name, "key_name") }?.to_owned(),
@@ -60,7 +70,8 @@ pub unsafe extern "C" fn agc_transform_key(
             // SAFETY: as for key_name.
             template_id: unsafe { optional_str(p.template_id, "template_id") }?.map(str::to_owned),
         };
-        let result = admitted(&mut out, |admit| ctx.keys.transform_key_admitting(spec, admit));
+        let with = |k: &KeyMetadata| extras(ctx, k, template, false);
+        let result = admitted(&mut out, &with, |admit| ctx.keys.transform_key_admitting(spec, admit));
         // SAFETY: resp passed versioned::read above.
         unsafe { versioned::write_back(resp, &out) };
         result
@@ -70,15 +81,17 @@ pub unsafe extern "C" fn agc_transform_key(
 /// Runs a mutating key operation under the STORAGE CONTRACT for mutations:
 /// a region too small for the resulting record fails before anything is
 /// stored, with the exact size needed (the record is complete, generated but
-/// not stored, when it is checked). Then fills `out`.
+/// not stored, when it is checked). Then fills `out`, with what `with` adds
+/// to the record.
 fn admitted(
     out: &mut agc_key_info_response,
+    with: &dyn Fn(&KeyMetadata) -> KeyExtras,
     run: impl FnOnce(&mut dyn FnMut(&KeyMetadata) -> Result<(), FfiError>) -> Result<KeyMetadata, FfiError>,
 ) -> Result<(), FfiError> {
     let storage = out.storage;
     let mut needed = None;
     let mut admit = |k: &KeyMetadata| {
-        let n = key_info_size(k);
+        let n = key_info_size(k, &with(k));
         if storage.data.is_null() || storage.cap < n {
             needed = Some(n);
             return Err(FfiError::BufferTooSmall { needed: n });
@@ -86,13 +99,27 @@ fn admitted(
         Ok(())
     };
     match run(&mut admit) {
-        Ok(key) => fill_key_info_response(out, &key),
+        Ok(key) => fill_key_info_response(out, &key, &with(&key)),
         Err(e) => {
             if let Some(n) = needed {
                 out.storage_used = n;
             }
             Err(e)
         }
+    }
+}
+
+/// What a key response adds to the record of `k` (see `KeyExtras`): the
+/// version's template when the caller asked for it, and for a new key what
+/// its template guarantees for the key's scope (CreateKeyResponse).
+fn extras(ctx: &Context, k: &KeyMetadata, template: bool, guarantees: bool) -> KeyExtras {
+    KeyExtras {
+        template: if template { ctx.discovery.get_template(&k.template_id).ok() } else { None },
+        guarantees: if guarantees {
+            ctx.discovery.security_guarantees(&k.template_id, &k.scope_spec.scope)
+        } else {
+            None
+        },
     }
 }
 
@@ -110,9 +137,11 @@ pub unsafe extern "C" fn agc_read_key(
         let name = unsafe { required_str(key_name, "key_name") }?;
         // SAFETY: resp is NULL or the caller's struct with struct_size accessible bytes.
         let mut out = unsafe { versioned::read(resp, "resp") }?;
+        // SAFETY: template_info is NULL or the caller's struct (agc_key_types.h).
+        let template = unsafe { wants_template(out.template_info) }?;
         // Versions start at 1, so 0 is "the current one" (agc_key.h).
         let key = ctx.keys.read_key(name, (version != 0).then_some(version))?;
-        let result = fill_key_info_response(&mut out, &key);
+        let result = fill_key_info_response(&mut out, &key, &extras(ctx, &key, template, false));
         // SAFETY: resp passed versioned::read above.
         unsafe { versioned::write_back(resp, &out) };
         result
@@ -120,10 +149,12 @@ pub unsafe extern "C" fn agc_read_key(
 }
 
 /// What an `agc_key_iter*` points to: a snapshot of the matching keys'
-/// metadata (never their material) and a cursor. Like the policy iterator it
-/// does not refer to the context; `page_size` has nothing to page in process.
+/// metadata (never their material), of their templates, and a cursor. Like
+/// the policy iterator it does not refer to the context; `page_size` has
+/// nothing to page in process.
 struct KeyIter {
     keys: Vec<KeyMetadata>,
+    templates: BTreeMap<String, api::TemplateInfo>,
     next: usize,
 }
 
@@ -166,7 +197,12 @@ pub unsafe extern "C" fn agc_list_keys(
             policy: unsafe { optional_str(p.policy, "policy") }?.map(str::to_owned),
             state,
         };
-        let it = Box::new(KeyIter { keys: ctx.keys.list_keys(&filter)?, next: 0 });
+        let keys = ctx.keys.list_keys(&filter)?;
+        let templates = keys
+            .iter()
+            .filter_map(|k| Some((k.template_id.clone(), ctx.discovery.get_template(&k.template_id).ok()?)))
+            .collect();
+        let it = Box::new(KeyIter { keys, templates, next: 0 });
         // SAFETY: out_iter is non-null (checked) and points to the caller's variable.
         unsafe { out_iter.write(Box::into_raw(it).cast()) };
         Ok(())
@@ -181,10 +217,16 @@ pub unsafe extern "C" fn agc_key_iter_next(it: *mut agc_key_iter, out: *mut agc_
         let it = unsafe { it.cast::<KeyIter>().as_mut() }.ok_or_else(|| FfiError::invalid("it must not be NULL"))?;
         // SAFETY: out is NULL or the caller's struct with struct_size accessible bytes.
         let mut resp = unsafe { versioned::read(out, "out") }?;
+        // SAFETY: template_info is NULL or the caller's struct (agc_key_types.h).
+        let template = unsafe { wants_template(resp.template_info) }?;
         let Some(key) = it.keys.get(it.next) else {
             return Err(FfiError::IteratorExhausted);
         };
-        let result = fill_key_info_response(&mut resp, key);
+        let extras = KeyExtras {
+            template: if template { it.templates.get(&key.template_id).cloned() } else { None },
+            guarantees: None,
+        };
+        let result = fill_key_info_response(&mut resp, key, &extras);
         // SAFETY: out passed versioned::read above.
         unsafe { versioned::write_back(out, &resp) };
         // On BUFFER_TOO_SMALL the cursor stays, so the caller can retry.

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::domain::core::{Code, Error, ProviderRequirements, Scope, ScopeSpecification, TemplateStatus};
-use crate::domain::provider::{Backend, Candidate, ProviderRegistry};
+use crate::domain::provider::{Backend, Candidate, ProviderDescription, ProviderRegistry};
 use crate::domain::template::{Template, TemplateRegistry};
 use crate::proto::api;
 
@@ -49,6 +49,12 @@ impl ProviderView {
             }
         }
         served.into_iter().collect()
+    }
+
+    /// The first description an instance gives of this provider (Go:
+    /// `describedBy`); every instance describes its provider alike.
+    pub fn description(&self) -> Option<ProviderDescription> {
+        self.instances.iter().find_map(|b| b.describe())
     }
 }
 
@@ -117,6 +123,13 @@ impl Discovery {
             .get(id)
             .map(|t| t.info().clone())
             .ok_or_else(|| Error::new(Code::TemplateNotFound, OP, format!("template not found: {id}")))
+    }
+
+    /// What template `id` guarantees for `scope` (CreateKeyResponse's
+    /// security_guarantees; see `Template::security_guarantees_for`). None
+    /// when it declares none, or is not in the catalog.
+    pub fn security_guarantees(&self, id: &str, scope: &Scope) -> Option<api::SecurityGuarantees> {
+        self.templates.get(id)?.security_guarantees_for(scope).cloned()
     }
 
     /// Every scope some template offers, in Go's scope order, with the

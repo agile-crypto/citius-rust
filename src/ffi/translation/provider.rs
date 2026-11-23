@@ -7,10 +7,11 @@ use super::{Packer, c_impl_props};
 use crate::app::{InstanceView, Match, ProviderView};
 use crate::bindings::*;
 
-/// Go's `providerInfo` sets the id, the display name (the id again) and the
-/// template support, each entry noting the instances that serve it; it sets
-/// no type, description, capabilities, configuration schema or default
-/// implementation; every entry is enabled (`disabled` 0).
+/// Go's `providerInfo`: the id, the template support (each entry noting the
+/// instances that serve it, enabled, with no implementation override), and
+/// what the provider's description says: its name as the display name (else
+/// the id), its description, type and default implementation. No
+/// capabilities or configuration schema.
 pub fn c_provider_info(v: &ProviderView, p: &mut Packer) -> agc_provider_info {
     let support = v.template_support();
     let slot = p.reserve_array::<agc_provider_template_support>(support.len());
@@ -25,17 +26,23 @@ pub fn c_provider_info(v: &ProviderView, p: &mut Packer) -> agc_provider_info {
         })
         .collect();
     p.fill_array(slot, &entries);
+    let desc = v.description();
     agc_provider_info {
         struct_size: size_of::<agc_provider_info>(),
         provider_id: p.str(&v.id),
-        display_name: p.str(&v.id),
-        description: p.str(""),
-        provider_type: agc_provider_type_AGC_PROVIDER_TYPE_UNSPECIFIED,
+        display_name: p.str(desc.as_ref().map_or(v.id.as_str(), |d| if d.name.is_empty() { &v.id } else { d.name })),
+        description: p.str(desc.as_ref().map_or("", |d| d.description)),
+        provider_type: desc
+            .as_ref()
+            .map_or(agc_provider_type_AGC_PROVIDER_TYPE_UNSPECIFIED, |d| d.provider_type as u32),
         capabilities: agc_kv_list { items: ptr::null(), count: 0 },
         configuration_schema: ptr::null(),
         configuration_schema_count: 0,
-        has_default_implementation: 0,
-        default_implementation: c_impl_props(&Default::default(), p),
+        has_default_implementation: i32::from(desc.is_some()),
+        default_implementation: c_impl_props(
+            desc.as_ref().map_or(&Default::default(), |d| &d.default_implementation),
+            p,
+        ),
         template_support: slot.cast_const(),
         template_support_count: entries.len(),
     }

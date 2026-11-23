@@ -135,6 +135,17 @@ impl Template {
         self.capabilities.iter().any(|c| &c.spec.scope == scope && c.operations.contains(&operation))
     }
 
+    /// The security guarantees the template gives for `scope` (Go:
+    /// `template.SecurityGuaranteesFor`): those its scoped capability for the
+    /// scope declares, or else the template's own, the fallback the proto
+    /// defines. None when neither declares any, or when the template does not
+    /// serve the scope.
+    pub fn security_guarantees_for(&self, scope: &Scope) -> Option<&api::SecurityGuarantees> {
+        // `capabilities` is parsed from `info.scoped_capabilities`, one for one.
+        let i = self.capabilities.iter().position(|c| &c.spec.scope == scope)?;
+        self.info.scoped_capabilities[i].security_guarantees.as_ref().or(self.info.security_guarantees.as_ref())
+    }
+
     pub fn info(&self) -> &api::TemplateInfo {
         &self.info
     }
@@ -214,6 +225,27 @@ mod tests {
         assert!(t(TemplateStatus::Active) && t(TemplateStatus::Acceptable));
         assert!(!t(TemplateStatus::Deprecated) && !t(TemplateStatus::Forbidden));
         assert!(!t(TemplateStatus::Experimental) && !t(TemplateStatus::Unspecified));
+    }
+
+    #[test]
+    fn security_guarantees_are_the_scope_s_else_the_template_s() {
+        let standard = Scope::Signature(SignatureScope::Standard);
+        let claim = |euf| api::SecurityGuarantees {
+            formal: Some(api::FormalSecurityNotions { euf_cma: Some(euf), ..Default::default() }),
+            ..Default::default()
+        };
+        let mut info = template("t", standard, TemplateStatus::Active).info().clone();
+        let t = Template::new(info.clone()).unwrap();
+        assert_eq!(t.security_guarantees_for(&standard), None, "neither declares any");
+
+        info.security_guarantees = Some(claim(false));
+        let t = Template::new(info.clone()).unwrap();
+        assert_eq!(t.security_guarantees_for(&standard), Some(&claim(false)), "the template's own");
+        assert_eq!(t.security_guarantees_for(&Scope::Signature(SignatureScope::Prehashed)), None, "scope not served");
+
+        info.scoped_capabilities[0].security_guarantees = Some(claim(true));
+        let t = Template::new(info).unwrap();
+        assert_eq!(t.security_guarantees_for(&standard), Some(&claim(true)), "the scope's override the template's");
     }
 
     #[test]

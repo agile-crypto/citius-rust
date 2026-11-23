@@ -8,7 +8,8 @@ use crate::domain::core::{Scope, ScopeKind, ScopeSpecification, SecurityProperti
 use crate::ffi::error::FfiError;
 use crate::proto::api;
 
-use super::strs;
+use super::{c_guarantees, c_template_info, strs};
+use crate::ffi::versioned;
 
 /// Lays out a record's variable-length data (strings, byte strings, arrays)
 /// in the caller's storage region, and hands back pointers into it, which
@@ -376,19 +377,88 @@ pub fn c_key_info(k: &KeyMetadata, p: &mut Packer) -> agc_key_info {
     }
 }
 
-/// Writes `key` into `resp` under the STORAGE CONTRACT (see `pack`).
+/// What a key response carries besides the key's record: the version's
+/// template, when the caller asked for it (KeyMetadata.template_info), and
+/// CreateKey's security guarantees (agc_key_info_response).
+#[derive(Debug, Default)]
+pub struct KeyExtras {
+    pub template: Option<api::TemplateInfo>,
+    pub guarantees: Option<api::SecurityGuarantees>,
+}
+
+/// The records of a key response, laid out in its one region.
+pub struct KeyRecords {
+    pub info: agc_key_info,
+    pub template: Option<agc_template_info>,
+    pub guarantees: Option<agc_security_guarantees>,
+}
+
+pub fn c_key_records(k: &KeyMetadata, x: &KeyExtras, p: &mut Packer) -> KeyRecords {
+    KeyRecords {
+        info: c_key_info(k, p),
+        template: x.template.as_ref().map(|t| c_template_info(t, p)),
+        guarantees: x.guarantees.as_ref().map(|g| c_guarantees(g, p)),
+    }
+}
+
+/// Writes `key` and `extras` into `resp` under the STORAGE CONTRACT (see
+/// `pack`).
 ///
-/// `resp` is this library's copy of the caller's struct (see `versioned`).
-pub fn fill_key_info_response(resp: &mut agc_key_info_response, key: &KeyMetadata) -> Result<(), FfiError> {
-    resp.key_info = pack(resp.storage, &mut resp.storage_used, |p| c_key_info(key, p))?;
+/// `resp` is this library's copy of the caller's struct (see `versioned`),
+/// and its `template_info` passed `wants_template`.
+pub fn fill_key_info_response(
+    resp: &mut agc_key_info_response,
+    key: &KeyMetadata,
+    extras: &KeyExtras,
+) -> Result<(), FfiError> {
+    let r = pack(resp.storage, &mut resp.storage_used, |p| c_key_records(key, extras, p))?;
+    resp.key_info = r.info;
+    resp.has_security_guarantees = i32::from(r.guarantees.is_some());
+    // SAFETY: integers and raw pointers only, for which all zeros is valid:
+    // "no claim", as AGC_INIT leaves it.
+    resp.security_guarantees = r.guarantees.unwrap_or_else(|| unsafe { std::mem::zeroed() });
+    // SAFETY: template_info passed wants_template (see above).
+    resp.has_template_info = unsafe { write_template(resp.template_info, r.template) };
     Ok(())
 }
 
-/// The storage `fill_key_info_response` needs for `key`.
-pub fn key_info_size(key: &KeyMetadata) -> usize {
+/// The storage `fill_key_info_response` needs for `key` and `extras`.
+pub fn key_info_size(key: &KeyMetadata, extras: &KeyExtras) -> usize {
     let mut m = Packer::measuring();
-    c_key_info(key, &mut m);
+    c_key_records(key, extras, &mut m);
     m.pos
+}
+
+/// Checks a key response's `template_info`: NULL, or the caller's
+/// agc_template_info, AGC_INIT'ed. Returns whether the caller asked for the
+/// template, so a bad pointer fails before any work.
+///
+/// # Safety
+/// `p` is NULL or points to the caller's agc_template_info with
+/// `struct_size` accessible bytes.
+pub unsafe fn wants_template(p: *mut agc_template_info) -> Result<bool, FfiError> {
+    if p.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: as the caller guarantees.
+    unsafe { versioned::read(p.cast_const(), "template_info") }?;
+    Ok(true)
+}
+
+/// Writes `t` through the caller's `template_info`, when there are both;
+/// returns the matching `has_template_info`.
+///
+/// # Safety
+/// `p` is NULL or passed `wants_template`.
+pub unsafe fn write_template(p: *mut agc_template_info, t: Option<agc_template_info>) -> i32 {
+    match t {
+        Some(t) if !p.is_null() => {
+            // SAFETY: p passed versioned::read in wants_template.
+            unsafe { versioned::write_back(p, &t) };
+            1
+        }
+        _ => 0,
+    }
 }
 
 /// Writes `policy` into `resp` under the STORAGE CONTRACT.
@@ -475,7 +545,7 @@ mod tests {
     fn fills_every_field() {
         let mut storage = [0u8; 512];
         let mut resp = response(&mut storage);
-        fill_key_info_response(&mut resp, &metadata()).unwrap();
+        fill_key_info_response(&mut resp, &metadata(), &KeyExtras::default()).unwrap();
 
         let i = &resp.key_info;
         assert_eq!((read(i.key_name), read(i.key_id), read(i.template_id)), ("my-key", "key-0", "ed25519ph"));
@@ -570,7 +640,7 @@ mod tests {
         let mut storage = [0u8; 512];
         let mut resp = response(&mut storage);
         let k = metadata();
-        fill_key_info_response(&mut resp, &k).unwrap();
+        fill_key_info_response(&mut resp, &k, &KeyExtras::default()).unwrap();
         // SAFETY: the record points into `storage`, which is alive.
         assert_eq!(unsafe { scope_spec(&resp.key_info.scope_spec) }.unwrap(), k.scope_spec);
 
@@ -585,12 +655,12 @@ mod tests {
     #[test]
     fn the_measured_size_is_enough_and_one_byte_less_is_not() {
         let k = metadata();
-        let needed = key_info_size(&k);
+        let needed = key_info_size(&k, &KeyExtras::default());
         let mut exact = vec![0u8; needed];
-        fill_key_info_response(&mut response(&mut exact), &k).unwrap();
+        fill_key_info_response(&mut response(&mut exact), &k, &KeyExtras::default()).unwrap();
         let mut short = vec![0xAAu8; needed - 1];
         let mut resp = response(&mut short);
-        let r = fill_key_info_response(&mut resp, &k);
+        let r = fill_key_info_response(&mut resp, &k, &KeyExtras::default());
         assert!(matches!(r, Err(FfiError::BufferTooSmall { needed: n }) if n == needed));
         // STORAGE CONTRACT: nothing else written.
         assert!(resp.key_info.key_name.is_null());
@@ -601,18 +671,18 @@ mod tests {
     fn null_storage_is_a_size_query() {
         let mut resp = response(&mut []);
         resp.storage = agc_buf { data: ptr::null_mut(), cap: 0 };
-        let r = fill_key_info_response(&mut resp, &metadata());
+        let r = fill_key_info_response(&mut resp, &metadata(), &KeyExtras::default());
         assert!(matches!(r, Err(FfiError::BufferTooSmall { .. })));
-        assert_eq!(resp.storage_used, key_info_size(&metadata()));
+        assert_eq!(resp.storage_used, key_info_size(&metadata(), &KeyExtras::default()));
     }
 
     #[test]
     fn arrays_are_aligned_whatever_the_region_alignment() {
         // An odd start for the region forces padding before the kv array.
         let k = metadata();
-        let mut storage = vec![0u8; key_info_size(&k) + 1];
+        let mut storage = vec![0u8; key_info_size(&k, &KeyExtras::default()) + 1];
         let mut resp = response(&mut storage[1..]);
-        fill_key_info_response(&mut resp, &k).unwrap();
+        fill_key_info_response(&mut resp, &k, &KeyExtras::default()).unwrap();
         // SAFETY: reading the union member kind selects.
         let kvs = unsafe { resp.key_info.scope_spec.u.signature.additional_properties };
         assert_eq!(kvs.items as usize % align_of::<agc_kv>(), 0);

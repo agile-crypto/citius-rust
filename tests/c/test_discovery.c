@@ -160,6 +160,13 @@ static void providers(agc_ctx *ctx)
 
     CHECK_RC(agc_get_provider(ctx, "software", &pr), AGC_OK);
     CHECK_STR(pr.provider.template_support[0].notes, "instances: rustcrypto");
+    /* The provider as its instances describe it (Go: provider.Describer). */
+    CHECK_STR(pr.provider.display_name, "Rust cryptography (RustCrypto and ed25519-dalek)");
+    CHECK(strlen(pr.provider.description) > 0);
+    CHECK(pr.provider.provider_type == AGC_PROVIDER_TYPE_SOFTWARE);
+    CHECK(pr.provider.has_default_implementation);
+    CHECK_STR(pr.provider.default_implementation.implementation_language, "rust");
+    CHECK(pr.provider.default_implementation.memory_safe_language == AGC_TRUE);
     CHECK_RC(agc_get_provider(ctx, "hsm", &pr), AGC_ERR_CRYPTO_PROVIDER_NOT_FOUND);
 
     /* Requirements filter: nothing is FIPS certified here. */
