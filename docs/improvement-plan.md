@@ -15,11 +15,13 @@ hold.
 | Phases | Branch | State |
 |---|---|---|
 | 0–2 | merged into `main` (9bb1d53), pushed to the public repository | done |
-| 3–7 | `improve/key-caches`, on `main` | done, reviewed, not merged |
-| deferred F7 stage 2 (arc-swap) | `improve/read-mostly`, on `improve/key-caches` | done, not merged |
+| 3–7 | merged into `main` | done, reviewed |
+| deferred F7 stage 2 (arc-swap) | merged into `main` | done |
 | deferred F5 (userspace randomness on macOS) | none | open: needs the security review this plan asks for |
+| deferred: fork detection without `getpid`, binary size (F11) | none | open: only if clients ask |
 
-Results: `docs/perf-results/phase-0-2/` and `docs/perf-results/phase-3-7/`; summary in
+Results: `docs/perf-results/phase-0-2/`, `docs/perf-results/phase-3-7/` and (Linux)
+`docs/perf-results/phase-3-7-linux/`; summary in
 `docs/performance.md` §7.
 
 How the work differs from this plan:

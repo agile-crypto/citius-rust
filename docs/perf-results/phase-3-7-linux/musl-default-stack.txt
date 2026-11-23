@@ -1,0 +1,26 @@
+== wt-linux-before
+ed25519 create: exit=0 create ed25519 on a default thread: AGC_OK 
+ecdsa-p256-sha256-der create: exit=0 create ecdsa-p256-sha256-der on a default thread: AGC_OK 
+ecdsa-p521-sha512-der create: exit=0 create ecdsa-p521-sha512-der on a default thread: AGC_OK 
+ml-dsa-44 create: exit=0 create ml-dsa-44 on a default thread: AGC_OK 
+ml-dsa-65 create: exit=0 create ml-dsa-65 on a default thread: AGC_OK 
+ml-dsa-87 create: exit=0 create ml-dsa-87 on a default thread: AGC_OK 
+ed25519 sign: exit=0 create ed25519 on a default thread: AGC_OK 200x sign ed25519 on a default thread: AGC_OK 
+ecdsa-p256-sha256-der sign: exit=0 create ecdsa-p256-sha256-der on a default thread: AGC_OK 200x sign ecdsa-p256-sha256-der on a default thread: AGC_OK 
+ecdsa-p521-sha512-der sign: exit=0 create ecdsa-p521-sha512-der on a default thread: AGC_OK 200x sign ecdsa-p521-sha512-der on a default thread: AGC_OK 
+ml-dsa-44 sign: exit=0 create ml-dsa-44 on a default thread: AGC_OK 200x sign ml-dsa-44 on a default thread: AGC_OK 
+ml-dsa-65 sign: exit=0 create ml-dsa-65 on a default thread: AGC_OK 200x sign ml-dsa-65 on a default thread: AGC_OK 
+ml-dsa-87 sign: exit=0 create ml-dsa-87 on a default thread: AGC_OK 200x sign ml-dsa-87 on a default thread: AGC_OK 
+== citius-rust
+ed25519 create: exit=0 create ed25519 on a default thread: AGC_OK 
+ecdsa-p256-sha256-der create: exit=0 create ecdsa-p256-sha256-der on a default thread: AGC_OK 
+ecdsa-p521-sha512-der create: exit=0 create ecdsa-p521-sha512-der on a default thread: AGC_OK 
+ml-dsa-44 create: exit=0 create ml-dsa-44 on a default thread: AGC_OK 
+ml-dsa-65 create: exit=0 create ml-dsa-65 on a default thread: AGC_OK 
+ml-dsa-87 create: exit=0 create ml-dsa-87 on a default thread: AGC_OK 
+ed25519 sign: exit=0 create ed25519 on a default thread: AGC_OK 200x sign ed25519 on a default thread: AGC_OK 
+ecdsa-p256-sha256-der sign: exit=0 create ecdsa-p256-sha256-der on a default thread: AGC_OK 200x sign ecdsa-p256-sha256-der on a default thread: AGC_OK 
+ecdsa-p521-sha512-der sign: exit=0 create ecdsa-p521-sha512-der on a default thread: AGC_OK 200x sign ecdsa-p521-sha512-der on a default thread: AGC_OK 
+ml-dsa-44 sign: exit=0 create ml-dsa-44 on a default thread: AGC_OK 200x sign ml-dsa-44 on a default thread: AGC_OK 
+ml-dsa-65 sign: exit=0 create ml-dsa-65 on a default thread: AGC_OK 200x sign ml-dsa-65 on a default thread: AGC_OK 
+ml-dsa-87 sign: exit=0 create ml-dsa-87 on a default thread: AGC_OK 200x sign ml-dsa-87 on a default thread: AGC_OK 

@@ -1,0 +1,72 @@
+# macOS arm64 (M4 Pro), improve/ml-dsa-stack: cargo xtask bench --only stack
+== stack high-water mark (bytes, net of an empty thread) ==
+empty thread start-up: 272 bytes (subtracted below)
+operation                                         bytes      KiB
+agc_ctx_open + 12 policies                        15920     15.5
+create_key/ed25519 (first use)                     9728      9.5
+create_key/ed25519 (again)                         9728      9.5
+sign/ed25519/1024/L3a                              8720      8.5
+verify/ed25519/1024                               12064     11.8
+sign/ed25519/1024/L3a (key cached)                 8720      8.5
+verify/ed25519/1024 (key cached)                  12064     11.8
+create_key/ecdsa-p256-sha256-der (first use)      34192     33.4
+create_key/ecdsa-p256-sha256-der (again)           7764      7.6
+sign/ecdsa-p256-sha256-der/1024/L3a                9408      9.2
+verify/ecdsa-p256-sha256-der/1024                 14240     13.9
+sign/ecdsa-p256-sha256-der/1024/L3a (key cached)       9408      9.2
+verify/ecdsa-p256-sha256-der/1024 (key cached)      14240     13.9
+create_key/ecdsa-p384-sha384-der (first use)      67520     65.9
+create_key/ecdsa-p384-sha384-der (again)           8064      7.9
+sign/ecdsa-p384-sha384-der/1024/L3a               11488     11.2
+verify/ecdsa-p384-sha384-der/1024                 18416     18.0
+sign/ecdsa-p384-sha384-der/1024/L3a (key cached)      11488     11.2
+verify/ecdsa-p384-sha384-der/1024 (key cached)      18416     18.0
+create_key/ecdsa-p521-sha512-der (first use)     127800    124.8
+create_key/ecdsa-p521-sha512-der (again)           9000      8.8
+sign/ecdsa-p521-sha512-der/1024/L3a               11744     11.5
+verify/ecdsa-p521-sha512-der/1024                 24376     23.8
+sign/ecdsa-p521-sha512-der/1024/L3a (key cached)      11744     11.5
+verify/ecdsa-p521-sha512-der/1024 (key cached)      24376     23.8
+create_key/ml-dsa-44 (first use)                 274000    267.6
+create_key/ml-dsa-44 (again)                     274000    267.6
+sign/ml-dsa-44/1024/L3a                           74704     73.0
+verify/ml-dsa-44/1024                             76064     74.3
+sign/ml-dsa-44/1024/L3a (key cached)              74704     73.0
+verify/ml-dsa-44/1024 (key cached)                59408     58.0
+create_key/ml-dsa-65 (first use)                 329040    321.3
+create_key/ml-dsa-65 (again)                     329040    321.3
+sign/ml-dsa-65/1024/L3a                          101264     98.9
+verify/ml-dsa-65/1024                            114672    112.0
+sign/ml-dsa-65/1024/L3a (key cached)             101264     98.9
+verify/ml-dsa-65/1024 (key cached)                66736     65.2
+create_key/ml-dsa-87 (first use)                 637520    622.6
+create_key/ml-dsa-87 (again)                     637520    622.6
+sign/ml-dsa-87/1024/L3a                          131760    128.7
+verify/ml-dsa-87/1024                            183968    179.7
+sign/ml-dsa-87/1024/L3a (key cached)             131760    128.7
+verify/ml-dsa-87/1024 (key cached)                85232     83.2
+create_key/aes-128-gcm-128-96                      7480      7.3
+enc/aes-128-gcm-128-96/32/L3a                      6592      6.4
+dec/aes-128-gcm-128-96/32/L3a                      6656      6.5
+enc/aes-128-gcm-128-96/1048576/L3a                 6592      6.4
+dec/aes-128-gcm-128-96/1048576/L3a                 6688      6.5
+create_key/aes-256-gcm-128-96                      7480      7.3
+enc/aes-256-gcm-128-96/32/L3a                      7216      7.0
+dec/aes-256-gcm-128-96/32/L3a                      7280      7.1
+enc/aes-256-gcm-128-96/1048576/L3a                 7216      7.0
+dec/aes-256-gcm-128-96/1048576/L3a                 7280      7.1
+create_key/chacha20-poly1305                       7480      7.3
+enc/chacha20-poly1305/32/L3a                       4992      4.9
+dec/chacha20-poly1305/32/L3a                       5056      4.9
+enc/chacha20-poly1305/1048576/L3a                  5488      5.4
+dec/chacha20-poly1305/1048576/L3a                  5552      5.4
+create_key/aes-256-cbc-pkcs7-128                   7480      7.3
+enc/aes-256-cbc-pkcs7-128/32/L3a                   6080      5.9
+dec/aes-256-cbc-pkcs7-128/32/L3a                  10096      9.9
+enc/aes-256-cbc-pkcs7-128/1048576/L3a              6080      5.9
+dec/aes-256-cbc-pkcs7-128/1048576/L3a             10368     10.1
+create_key/aes-256-ctr                             7480      7.3
+enc/aes-256-ctr/32/L3a                             5520      5.4
+dec/aes-256-ctr/32/L3a                             5616      5.5
+enc/aes-256-ctr/1048576/L3a                        5680      5.5
+dec/aes-256-ctr/1048576/L3a                        5776      5.6

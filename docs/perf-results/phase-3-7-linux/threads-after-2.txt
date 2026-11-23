@@ -1,0 +1,62 @@
+== threads: one context, a shared key vs one key per thread ==
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+threads/sign/ed25519/1024/shared-key/1T         43849     22.12     22.62     22.79     27.00     35.75    125.13     22.77
+                                                43849 ops/s (43849 per thread), 1.00x of 1 thread
+threads/sign/ed25519/1024/shared-key/2T         86533     22.42     23.00     23.17     28.08     36.21    119.54     23.07
+                                                86533 ops/s (43266 per thread), 1.97x of 1 thread
+threads/sign/ed25519/1024/shared-key/4T        171429     22.29     23.08     23.17     31.33     39.12    150.21     23.29
+                                               171429 ops/s (42857 per thread), 3.91x of 1 thread
+threads/sign/ed25519/1024/shared-key/8T        314156     22.83     25.04     26.17     41.88     51.13   1997.15     25.32
+                                               314156 ops/s (39270 per thread), 7.16x of 1 thread
+threads/sign/ed25519/1024/shared-key/12T       313528     22.29     25.13     26.00     43.54   3045.54  12033.25     38.11
+                                               313528 ops/s (26127 per thread), 7.15x of 1 thread
+threads/sign/ed25519/1024/own-key/1T            44248     22.12     22.38     22.50     27.13     35.50     55.96     22.56
+                                                44248 ops/s (44248 per thread), 1.01x of 1 thread
+threads/sign/ed25519/1024/own-key/2T            87359     22.42     22.71     22.83     27.38     34.12    116.75     22.85
+                                                87359 ops/s (43680 per thread), 1.99x of 1 thread
+threads/sign/ed25519/1024/own-key/4T           171351     22.29     23.12     23.21     30.67     38.38    215.88     23.30
+                                               171351 ops/s (42838 per thread), 3.91x of 1 thread
+threads/sign/ed25519/1024/own-key/8T           312493     22.88     25.25     26.25     41.54     52.38    201.84     25.49
+                                               312493 ops/s (39062 per thread), 7.13x of 1 thread
+threads/sign/ed25519/1024/own-key/12T          312198     22.88     25.25     25.92     42.92   3044.79   6040.28     38.31
+                                               312198 ops/s (26016 per thread), 7.12x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/1T       872602      0.92      1.08      1.12      1.29      4.88     95.13      1.11
+                                               872602 ops/s (872602 per thread), 1.00x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/2T      1704003      1.00      1.12      1.17      1.29      5.21     43.71      1.13
+                                              1704003 ops/s (852002 per thread), 1.95x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/4T      3371897      1.00      1.12      1.17      1.33      5.88    122.25      1.15
+                                              3371897 ops/s (842974 per thread), 3.86x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/8T      6405010      1.00      1.17      1.25      1.38      9.25   1682.10      1.19
+                                              6405010 ops/s (800626 per thread), 7.34x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/12T     6400602      1.00      1.17      1.25      1.38      9.92   5012.64      1.79
+                                              6400602 ops/s (533384 per thread), 7.34x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/1T          868750      0.92      1.08      1.12      1.33      4.88     47.21      1.12
+                                               868750 ops/s (868750 per thread), 1.00x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/2T         1710981      0.96      1.12      1.17      1.33      5.33     60.04      1.14
+                                              1710981 ops/s (855490 per thread), 1.96x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/4T         3380331      1.00      1.12      1.17      1.33      5.62     74.79      1.15
+                                              3380331 ops/s (845083 per thread), 3.87x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/8T         6394332      1.00      1.17      1.25      1.38      9.25   1733.73      1.19
+                                              6394332 ops/s (799292 per thread), 7.33x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/12T        6389641      1.00      1.17      1.25      1.38      9.96   6017.15      1.79
+                                              6389641 ops/s (532470 per thread), 7.32x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/1T      1301999      0.62      0.71      0.75      0.92      1.12     37.54      0.74
+                                              1301999 ops/s (1301999 per thread), 1.00x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/2T      2580179      0.62      0.75      0.75      0.92      0.96     22.67      0.74
+                                              2580179 ops/s (1290090 per thread), 1.98x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/4T      4965525      0.67      0.75      0.79      0.92      1.04     97.46      0.77
+                                              4965525 ops/s (1241381 per thread), 3.81x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/8T      9171241      0.62      0.75      0.92      1.00      1.58   1886.98      0.81
+                                              9171241 ops/s (1146405 per thread), 7.04x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/12T     9253870      0.62      0.75      0.88      0.96      1.54   6015.68      1.19
+                                              9253870 ops/s (771156 per thread), 7.11x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/1T         1299320      0.62      0.71      0.75      0.92      1.08     31.54      0.74
+                                              1299320 ops/s (1299320 per thread), 1.00x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/2T         2526607      0.62      0.75      0.75      0.92      0.96     22.42      0.75
+                                              2526607 ops/s (1263304 per thread), 1.94x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/4T         4981161      0.62      0.75      0.79      0.92      1.00     61.58      0.76
+                                              4981161 ops/s (1245290 per thread), 3.83x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/8T         9018684      0.62      0.79      0.88      1.04      1.79   3000.40      0.82
+                                              9018684 ops/s (1127336 per thread), 6.93x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/12T        9496125      0.62      0.75      0.83      0.96      1.75   9009.45      1.18
+                                              9496125 ops/s (791344 per thread), 7.29x of 1 thread

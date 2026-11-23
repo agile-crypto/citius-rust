@@ -1,0 +1,270 @@
+# Debian GNU/Linux 12 (bookworm), glibc 2.36, kernel 6.8.0-117-generic, rustc 1.100.0
+# ulimit -l: 8192 KiB, page size: 4096
+== memory per context, step by step (KiB; deltas) ==
+step                                       resident  footprint       heap   faults
+(absolute at start)                          1784.0        0.0        0.0
+first trivial agc_* call                     +256.0       +0.0       +0.0        0
+agc_ctx_open #1                             +1668.0       +0.0       +0.0        0
+12 policies                                   +64.0       +0.0       +0.0        0
+first key (AES-256-GCM)                       +68.0       +0.0       +0.0        0
+first encrypt (+ harness buffers)            +128.0       +0.0       +0.0        0
+agc_ctx_open #2 (while #1 is open)           +220.0       +0.0       +0.0        0
+agc_ctx_open #3..#10                        +1656.0       +0.0       +0.0        0
+close #2..#10                                 -32.0       +0.0       +0.0        0
+close #1                                       -4.0       +0.0       +0.0        0
+== resident memory ==
+RLIMIT_MEMLOCK: 8192 KiB
+page size: 4096 bytes
+context (open + 12 policies): +0.0 KiB
+locked before keys: 0 KiB
+1000 keys aes-256-gcm-128-96         +4412.0 KiB  = 4.41 KiB per key
+locked memory now: 4000 KiB (4.00 KiB per key so far)
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/aes-256-gcm-128-96             1000      3.29      4.04      4.79     13.50     87.33     87.33      4.45
+1000 keys ed25519                    +4540.0 KiB  = 4.54 KiB per key
+locked memory now: 8000 KiB (4.00 KiB per key so far)
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/ed25519                        1000     22.71     25.54     29.00     38.92    413.70    413.70     26.88
+1000 keys ml-dsa-65                  +4508.0 KiB  = 4.51 KiB per key
+locked memory now: 8192 KiB (2.73 KiB per key so far)
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/memory/ml-dsa-65                      1000    113.58    127.75    133.66    142.75    833.52    833.52    127.56
+== first calls (cold process) ==
+agc_ctx_open + 12 policies           262.4 µs
+first agc_create_key (ed25519)        35.7 µs
+first size query + sign               94.2 µs
+second sign                           49.3 µs
+== latency per call, one thread, in-memory store (WIRE_V1 metadata) ==
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+sign/ed25519/1024/L3a                           20529     41.96     47.21     55.62     71.87    115.79    169.96     48.68
+sign/ed25519/1024/L3b                           20841     42.33     47.54     48.96     55.66     63.37     83.79     47.95
+verify/ed25519/1024                             36657     24.12     27.12     27.29     33.17     39.62    124.91     27.24
+sign/ecdsa-p256-sha256-der/1024/L3a              7978    112.25    126.54    129.16    141.21    165.46    225.75    125.31
+sign/ecdsa-p256-sha256-der/1024/L3b              7934    113.21    127.12    127.66    139.16    163.79    504.16    126.01
+verify/ecdsa-p256-sha256-der/1024                6918    132.62    146.29    151.96    160.71    179.16    192.25    144.51
+sign/ecdsa-p384-sha384-der/1024/L3a              2976    298.37    333.95    348.03    370.99    415.99    442.20    336.06
+sign/ecdsa-p384-sha384-der/1024/L3b              2965    299.62    338.07    342.74    353.20    377.78    381.57    337.31
+verify/ecdsa-p384-sha384-der/1024                2390    376.99    417.24    429.03    449.03    476.03    544.61    418.41
+sign/ecdsa-p521-sha512-der/1024/L3a              3037    295.74    330.20    335.07    348.91    371.95    414.45    329.31
+sign/ecdsa-p521-sha512-der/1024/L3b              3298    270.33    302.37    308.95    323.62    367.82    422.32    303.19
+verify/ecdsa-p521-sha512-der/1024                2780    321.16    359.07    366.20    381.87    426.11    446.49    359.68
+sign/ml-dsa-44/1024/L3a                          4987     97.75    164.79    331.37    575.57    824.52   1021.56    200.48
+sign/ml-dsa-44/1024/L3b                          4935     98.50    166.00    338.82    561.57    723.36    807.69    202.60
+verify/ml-dsa-44/1024                           23232     38.42     43.17     43.62     52.17     58.71     81.29     43.00
+sign/ml-dsa-65/1024/L3a                          2997    153.16    289.83    551.40    983.39   1588.50   1885.37    333.74
+sign/ml-dsa-65/1024/L3b                          2912    153.20    292.33    582.65   1021.22   1454.55   1911.58    343.40
+verify/ml-dsa-65/1024                           14709     60.91     68.46     69.16     76.66     90.50    178.37     67.94
+sign/ml-dsa-87/1024/L3a                          2402    226.45    365.87    655.77   1100.97   1445.21   1688.71    416.31
+sign/ml-dsa-87/1024/L3b                          2379    226.91    367.37    658.94   1153.51   1702.37   1916.41    420.33
+verify/ml-dsa-87/1024                            9026     99.29    111.45    116.00    129.12    144.91    187.58    110.76
+enc/aes-128-gcm-128-96/32/L3a                  458458      1.79      2.12      2.17      2.62      6.42     43.50      2.14
+enc/aes-128-gcm-128-96/32/L3b                  319372      2.58      3.08      3.17      3.38      9.29     41.17      3.10
+dec/aes-128-gcm-128-96/32/L3a                  520550      1.58      1.88      1.92      2.04      5.75     34.71      1.89
+dec/aes-128-gcm-128-96/32/L3b                  341357      2.46      2.88      2.96      3.12      9.42     51.25      2.89
+enc/aes-128-gcm-128-96/1024/L3a                385902      2.17      2.54      2.62      2.75      8.38     39.62      2.56
+enc/aes-128-gcm-128-96/1024/L3b                279313      3.00      3.54      3.62      3.79     10.21     44.04      3.55
+dec/aes-128-gcm-128-96/1024/L3a                385107      2.17      2.54      2.62      2.75      7.88     61.62      2.56
+dec/aes-128-gcm-128-96/1024/L3b                276187      3.08      3.58      3.62      3.83     10.42     41.25      3.59
+enc/aes-128-gcm-128-96/16384/L3a               119304      7.00      8.25      8.58     12.04     31.58     55.79      8.35
+enc/aes-128-gcm-128-96/16384/L3b               109030      7.88      9.17      9.33     12.62     17.42     92.41      9.14
+dec/aes-128-gcm-128-96/16384/L3a                85193     10.50     11.92     12.04     15.08     21.58     65.50     11.70
+dec/aes-128-gcm-128-96/16384/L3b                78410     11.37     12.96     13.08     16.54     22.46     95.95     12.72
+enc/aes-128-gcm-128-96/1048576/L3a               2540    347.53    395.95    402.11    412.70    423.86    427.78    393.79
+enc/aes-128-gcm-128-96/1048576/L3b               2539    348.62    396.40    402.99    416.74    450.53    469.07    393.86
+dec/aes-128-gcm-128-96/1048576/L3a               1525    592.07    653.19    683.27    713.48    753.98    758.77    655.76
+dec/aes-128-gcm-128-96/1048576/L3b               1511    587.90    665.60    675.19    762.85    836.98    843.56    661.79
+enc/aes-256-gcm-128-96/32/L3a                  442496      1.87      2.21      2.29      2.42      6.58     96.91      2.23
+enc/aes-256-gcm-128-96/32/L3b                  309483      2.71      3.17      3.25      3.42      9.50     73.46      3.20
+dec/aes-256-gcm-128-96/32/L3a                  491997      1.67      2.00      2.04      2.17      5.87     34.37      2.00
+dec/aes-256-gcm-128-96/32/L3b                  327009      2.54      3.00      3.08      3.25      8.71     41.75      3.02
+enc/aes-256-gcm-128-96/1024/L3a                369564      2.25      2.67      2.71      2.88      7.75     45.87      2.67
+enc/aes-256-gcm-128-96/1024/L3b                270405      3.08      3.62      3.75      3.92     10.12     44.83      3.66
+dec/aes-256-gcm-128-96/1024/L3a                367089      2.29      2.67      2.75      3.04      6.96     39.25      2.69
+dec/aes-256-gcm-128-96/1024/L3b                265072      3.17      3.71      3.79      4.00     10.46     44.04      3.74
+enc/aes-256-gcm-128-96/16384/L3a               116735      7.42      8.50      8.79     11.04     16.88     42.83      8.54
+enc/aes-256-gcm-128-96/16384/L3b               105198      8.29      9.50      9.67     12.04     18.21     59.50      9.47
+dec/aes-256-gcm-128-96/16384/L3a                84326     10.58     12.00     12.17     15.79     20.38     50.12     11.83
+dec/aes-256-gcm-128-96/16384/L3b                77173     11.50     13.08     13.29     16.92     22.33     85.00     12.93
+enc/aes-256-gcm-128-96/1048576/L3a               2427    362.41    410.61    425.49    463.53    490.19    515.44    412.03
+enc/aes-256-gcm-128-96/1048576/L3b               2414    364.82    415.15    422.44    442.99    465.03    472.32    414.24
+dec/aes-256-gcm-128-96/1048576/L3a               1534    589.86    651.27    672.44    705.14    738.35    756.10    652.23
+dec/aes-256-gcm-128-96/1048576/L3b               1554    590.15    646.14    657.10    680.06    711.27    755.52    643.57
+enc/chacha20-poly1305/32/L3a                   445380      1.83      2.21      2.25      2.42      6.62     43.96      2.21
+enc/chacha20-poly1305/32/L3b                   311210      2.67      3.17      3.25      4.00     13.33     86.91      3.18
+dec/chacha20-poly1305/32/L3a                   461402      1.71      2.04      2.58      2.71     13.79     88.41      2.13
+dec/chacha20-poly1305/32/L3b                   322138      2.58      3.04      3.12      3.79     11.17    167.41      3.07
+enc/chacha20-poly1305/1024/L3a                 314500      2.67      3.12      3.21      3.96      9.96    109.45      3.15
+enc/chacha20-poly1305/1024/L3b                 241757      3.50      4.08      4.17      5.17     13.71     47.62      4.10
+dec/chacha20-poly1305/1024/L3a                 316276      2.67      3.12      3.17      3.88      9.87    141.58      3.13
+dec/chacha20-poly1305/1024/L3b                 237543      3.58      4.17      4.25      5.25     11.08     65.91      4.18
+enc/chacha20-poly1305/16384/L3a                 59792     14.92     16.87     17.08     21.04     27.91    156.00     16.69
+enc/chacha20-poly1305/16384/L3b                 56590     15.67     17.79     18.00     21.92     30.54    153.29     17.64
+dec/chacha20-poly1305/16384/L3a                 49496     18.25     20.54     20.67     24.54     35.00     61.83     20.17
+dec/chacha20-poly1305/16384/L3b                 45759     19.21     21.83     22.29     27.62     34.25     92.25     21.82
+enc/chacha20-poly1305/1048576/L3a                1045    859.59    958.59    978.72   1015.30   1029.13   1042.59    957.22
+enc/chacha20-poly1305/1048576/L3b                1068    854.22    940.09    949.47    981.96   1011.05   1013.21    936.36
+dec/chacha20-poly1305/1048576/L3a                 850   1088.21   1182.46   1202.62   1242.45   1315.62   1315.62   1177.08
+dec/chacha20-poly1305/1048576/L3b                 848   1089.92   1184.83   1204.79   1263.54   1329.74   1329.74   1180.04
+enc/aes-256-cbc-pkcs7-128/32/L3a               452018      1.83      2.17      2.21      2.38      6.17     50.75      2.18
+enc/aes-256-cbc-pkcs7-128/32/L3b               315741      2.62      3.12      3.21      3.33      9.54     37.96      3.13
+dec/aes-256-cbc-pkcs7-128/32/L3a               505878      1.62      1.92      1.96      2.12      5.79     37.04      1.94
+dec/aes-256-cbc-pkcs7-128/32/L3b               334442      2.50      2.92      3.00      3.33      9.33    130.75      2.96
+enc/aes-256-cbc-pkcs7-128/1024/L3a             304030      2.79      3.29      3.33      3.54      9.46     37.54      3.26
+enc/aes-256-cbc-pkcs7-128/1024/L3b             234407      3.62      4.25      4.33      4.50     11.29     36.08      4.23
+dec/aes-256-cbc-pkcs7-128/1024/L3a             401850      2.08      2.46      2.50      2.62      7.08     41.54      2.46
+dec/aes-256-cbc-pkcs7-128/1024/L3b             284868      2.96      3.46      3.50      3.71      8.87     30.75      3.48
+enc/aes-256-cbc-pkcs7-128/16384/L3a             53789     17.83     18.25     18.96     24.50     31.96    127.50     18.56
+enc/aes-256-cbc-pkcs7-128/16384/L3b             49106     18.67     19.37     21.96     27.25     34.04     68.04     20.33
+dec/aes-256-cbc-pkcs7-128/16384/L3a            100689      8.62      9.92     10.00     13.58     20.00     36.71      9.90
+dec/aes-256-cbc-pkcs7-128/16384/L3b             92429      9.54     10.83     10.96     14.58     19.17     49.04     10.79
+enc/aes-256-cbc-pkcs7-128/1048576/L3a             940   1049.25   1058.92   1084.54   1156.70   1204.45   1204.45   1064.03
+enc/aes-256-cbc-pkcs7-128/1048576/L3b             943   1050.00   1055.75   1070.92   1160.58   1282.91   1282.91   1060.75
+dec/aes-256-cbc-pkcs7-128/1048576/L3a            1938    468.90    515.40    529.90    544.89    558.19    566.69    515.96
+dec/aes-256-cbc-pkcs7-128/1048576/L3b            1943    470.06    515.36    522.19    535.40    575.19    600.94    514.63
+enc/aes-256-ctr/32/L3a                         484614      1.67      2.00      2.08      2.21      6.08     42.83      2.03
+enc/aes-256-ctr/32/L3b                         336131      2.46      2.92      3.00      3.21      9.50     86.25      2.94
+dec/aes-256-ctr/32/L3a                         534883      1.54      1.83      1.88      2.04      6.21     34.79      1.83
+dec/aes-256-ctr/32/L3b                         353737      2.33      2.79      2.83      3.00      8.83     43.04      2.79
+enc/aes-256-ctr/1024/L3a                       438116      1.88      2.25      2.29      2.46      6.33     37.96      2.25
+enc/aes-256-ctr/1024/L3b                       311785      2.67      3.17      3.21      3.38      9.67     48.50      3.17
+dec/aes-256-ctr/1024/L3a                       429510      1.96      2.29      2.33      2.46      6.71     42.96      2.30
+dec/aes-256-ctr/1024/L3b                       299596      2.79      3.25      3.38      4.08     10.04     89.00      3.30
+enc/aes-256-ctr/16384/L3a                      179340      4.67      5.50      5.62      6.50     12.12     42.50      5.54
+enc/aes-256-ctr/16384/L3b                      154099      5.50      6.38      6.54      8.04     16.33     56.33      6.45
+dec/aes-256-ctr/16384/L3a                      109614      8.04      9.17      9.25     12.83     18.16     40.00      9.09
+dec/aes-256-ctr/16384/L3b                       98640      8.87     10.17     10.29     13.87     19.25    103.54     10.11
+enc/aes-256-ctr/1048576/L3a                      4345    204.83    228.95    234.82    248.91    281.03    323.61    230.12
+enc/aes-256-ctr/1048576/L3b                      4329    205.58    229.87    235.82    250.53    270.24    282.03    230.99
+dec/aes-256-ctr/1048576/L3a                      2076    436.44    481.73    492.90    526.14    561.77    593.31    481.67
+dec/aes-256-ctr/1048576/L3b                      2075    437.94    481.90    492.48    527.06    577.06    612.52    482.00
+== threads: one context, a shared key vs one key per thread ==
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+threads/sign/ed25519/1024/shared-key/1T         21320     41.21     46.25     49.25     58.00     70.41    137.29     46.85
+                                                21320 ops/s (21320 per thread), 1.00x of 1 thread
+threads/sign/ed25519/1024/shared-key/2T         42213     41.46     46.91     47.75     55.21     64.50    144.20     47.33
+                                                42213 ops/s (21106 per thread), 1.98x of 1 thread
+threads/sign/ed25519/1024/shared-key/4T         82867     41.54     47.79     49.00     57.29     67.96    289.32     48.22
+                                                82867 ops/s (20717 per thread), 3.89x of 1 thread
+threads/sign/ed25519/1024/shared-key/8T        159345     46.79     48.79     50.00     70.66    180.24   1787.63     50.13
+                                               159345 ops/s (19918 per thread), 7.47x of 1 thread
+threads/sign/ed25519/1024/shared-key/12T       160766     46.75     49.08     50.54     72.83   3070.12   6075.50     74.54
+                                               160766 ops/s (13397 per thread), 7.54x of 1 thread
+threads/sign/ed25519/1024/own-key/1T            21424     41.46     46.29     46.62     53.50     62.79     80.58     46.63
+                                                21424 ops/s (21424 per thread), 1.00x of 1 thread
+threads/sign/ed25519/1024/own-key/2T            42059     41.46     46.91     47.91     55.96     73.75    185.53     47.51
+                                                42059 ops/s (21030 per thread), 1.97x of 1 thread
+threads/sign/ed25519/1024/own-key/4T            83124     41.58     47.75     48.29     55.54     63.33    142.41     48.08
+                                                83124 ops/s (20781 per thread), 3.90x of 1 thread
+threads/sign/ed25519/1024/own-key/8T           161588     47.37     48.54     49.46     66.33     75.33   3994.08     49.42
+                                               161588 ops/s (20198 per thread), 7.58x of 1 thread
+threads/sign/ed25519/1024/own-key/12T          158781     46.66     48.37     49.58    168.20   3071.12   6060.29     75.50
+                                               158781 ops/s (13232 per thread), 7.45x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/1T       409898      2.00      2.33      2.46      3.04     11.08     67.16      2.39
+                                               409898 ops/s (409898 per thread), 1.00x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/2T       745705      2.08      2.62      2.71      2.92      7.75     49.12      2.64
+                                               745705 ops/s (372852 per thread), 1.82x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/4T      1207772      2.25      2.92      4.29      4.75     11.67    797.42      3.27
+                                              1207772 ops/s (301943 per thread), 2.95x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/8T      1647387      2.25      4.67      5.25      6.25     17.67    113.00      4.77
+                                              1647387 ops/s (205923 per thread), 4.02x of 1 thread
+threads/enc/aes-256-gcm/32/shared-key/12T     1674503      2.21      4.62      5.25      6.25     19.83   9014.03      7.11
+                                              1674503 ops/s (139542 per thread), 4.09x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/1T          421966      2.00      2.33      2.38      2.54      6.71     67.91      2.33
+                                               421966 ops/s (421966 per thread), 1.03x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/2T          785547      2.08      2.50      2.58      3.00      7.21     74.08      2.51
+                                               785547 ops/s (392774 per thread), 1.92x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/4T         1478483      2.17      2.58      2.75      3.79      9.42     81.41      2.66
+                                              1478483 ops/s (369621 per thread), 3.61x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/8T         2159292      2.29      3.50      4.08      5.46     16.96   1717.34      3.64
+                                              2159292 ops/s (269912 per thread), 5.27x of 1 thread
+threads/enc/aes-256-gcm/32/own-key/12T        2190292      2.21      3.50      4.04      5.17     16.96  12012.94      5.41
+                                              2190292 ops/s (182524 per thread), 5.34x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/1T       466681      1.79      2.08      2.12      2.29      6.83     36.50      2.11
+                                               466681 ops/s (466681 per thread), 1.00x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/2T       818948      1.88      2.38      2.50      2.67      7.42    164.58      2.41
+                                               818948 ops/s (409474 per thread), 1.75x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/4T      1216662      2.04      2.79      4.08      4.50     11.00    184.83      3.24
+                                              1216662 ops/s (304166 per thread), 2.61x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/8T      1707641      2.12      4.54      5.17      6.12     17.00   1631.35      4.63
+                                              1707641 ops/s (213455 per thread), 3.66x of 1 thread
+threads/dec/aes-256-gcm/32/shared-key/12T     1710379      2.08      4.54      5.17      6.25     20.04   6019.49      6.93
+                                              1710379 ops/s (142532 per thread), 3.66x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/1T          466241      1.79      2.08      2.12      2.29      6.71     28.33      2.11
+                                               466241 ops/s (466241 per thread), 1.00x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/2T          852904      1.83      2.29      2.33      2.71      7.29     91.20      2.30
+                                               852904 ops/s (426452 per thread), 1.83x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/4T         1646397      2.08      2.33      2.46      3.12      8.04    138.16      2.39
+                                              1646397 ops/s (411599 per thread), 3.53x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/8T         2214307      2.12      3.42      4.04      5.12     15.79   3118.32      3.55
+                                              2214307 ops/s (276788 per thread), 4.74x of 1 thread
+threads/dec/aes-256-gcm/32/own-key/12T        2253239      2.08      3.38      4.00      5.08     17.46   6015.40      5.24
+                                              2253239 ops/s (187770 per thread), 4.83x of 1 thread
+== file key store ==
+measurement (µs)                                   n       min       p50       p90       p99     p99.9       max      mean
+create_key/file/up-to-100                         100    650.89    949.25   1408.48   2296.23   2296.23   2296.23   1015.92
+ctx_open/file/100-keys                              5    824.55    832.34   1146.28   1146.28   1146.28   1146.28    895.48
+create_key/file/up-to-1000                        900    558.60    707.47    856.96   1066.83   2368.44   2368.44    729.50
+ctx_open/file/1000-keys                             5   5917.40   6062.94   7522.41   7522.41   7522.41   7522.41   6324.60
+== syscalls ==
+getpid()                                         118.9 ns
+getentropy(12 bytes)  (one AEAD nonce)           210.4 ns
+getentropy(32 bytes)  (one hedge)                204.7 ns
+now_ns() (the harness clock)                      14.4 ns
+(per-operation syscall counts need macOS task_info; use strace -c on Linux)
+== stack high-water mark (bytes, net of an empty thread) ==
+empty thread start-up: 22544 bytes (subtracted below)
+operation                                         bytes      KiB
+agc_ctx_open + 12 policies                        16384     16.0
+create_key/ed25519 (first use)                    10600     10.4
+create_key/ed25519 (again)                        10600     10.4
+sign/ed25519/1024/L3a                             11872     11.6
+verify/ed25519/1024                               12744     12.4
+create_key/ecdsa-p256-sha256-der (first use)       8208      8.0
+create_key/ecdsa-p256-sha256-der (again)           8208      8.0
+sign/ecdsa-p256-sha256-der/1024/L3a               11872     11.6
+verify/ecdsa-p256-sha256-der/1024                 15200     14.8
+create_key/ecdsa-p384-sha384-der (first use)       8664      8.5
+create_key/ecdsa-p384-sha384-der (again)           8664      8.5
+sign/ecdsa-p384-sha384-der/1024/L3a               11920     11.6
+verify/ecdsa-p384-sha384-der/1024                 19432     19.0
+create_key/ecdsa-p521-sha512-der (first use)      10408     10.2
+create_key/ecdsa-p521-sha512-der (again)          10408     10.2
+sign/ecdsa-p521-sha512-der/1024/L3a               11920     11.6
+verify/ecdsa-p521-sha512-der/1024                 26040     25.4
+create_key/ml-dsa-44 (first use)                 282688    276.1
+create_key/ml-dsa-44 (again)                     282688    276.1
+sign/ml-dsa-44/1024/L3a                          231984    226.5
+verify/ml-dsa-44/1024                             88272     86.2
+create_key/ml-dsa-65 (first use)                 363024    354.5
+create_key/ml-dsa-65 (again)                     363024    354.5
+sign/ml-dsa-65/1024/L3a                          317776    310.3
+verify/ml-dsa-65/1024                            134288    131.1
+create_key/ml-dsa-87 (first use)                 664384    648.8
+create_key/ml-dsa-87 (again)                     664384    648.8
+sign/ml-dsa-87/1024/L3a                          531872    519.4
+verify/ml-dsa-87/1024                            208032    203.2
+create_key/aes-128-gcm-128-96                      8208      8.0
+enc/aes-128-gcm-128-96/32/L3a                      9600      9.4
+dec/aes-128-gcm-128-96/32/L3a                     11680     11.4
+enc/aes-128-gcm-128-96/1048576/L3a                 9552      9.3
+dec/aes-128-gcm-128-96/1048576/L3a                11712     11.4
+create_key/aes-256-gcm-128-96                      8208      8.0
+enc/aes-256-gcm-128-96/32/L3a                      9600      9.4
+dec/aes-256-gcm-128-96/32/L3a                     11680     11.4
+enc/aes-256-gcm-128-96/1048576/L3a                 9552      9.3
+dec/aes-256-gcm-128-96/1048576/L3a                11712     11.4
+create_key/chacha20-poly1305                       8208      8.0
+enc/chacha20-poly1305/32/L3a                       9600      9.4
+dec/chacha20-poly1305/32/L3a                      11680     11.4
+enc/chacha20-poly1305/1048576/L3a                  9552      9.3
+dec/chacha20-poly1305/1048576/L3a                 11680     11.4
+create_key/aes-256-cbc-pkcs7-128                   8208      8.0
+enc/aes-256-cbc-pkcs7-128/32/L3a                   9600      9.4
+dec/aes-256-cbc-pkcs7-128/32/L3a                  11632     11.4
+enc/aes-256-cbc-pkcs7-128/1048576/L3a              9504      9.3
+dec/aes-256-cbc-pkcs7-128/1048576/L3a             11632     11.4
+create_key/aes-256-ctr                             8208      8.0
+enc/aes-256-ctr/32/L3a                             9600      9.4
+dec/aes-256-ctr/32/L3a                            11632     11.4
+enc/aes-256-ctr/1048576/L3a                        9504      9.3
+dec/aes-256-ctr/1048576/L3a                       11712     11.4

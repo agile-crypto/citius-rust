@@ -1,0 +1,9 @@
+# ML-DSA sign p50 over 400 calls on threads with a 16 MiB, 512 KiB (macOS default) and 128 KiB (musl
+# default) stack; macOS arm64, release; two runs each. Source: ../phase-3-7-linux/stack-hop.c
+# (built against benches/c/bench.c). main: the sign budget is the key expansion's. ml-dsa-stack:
+# a version with a sealed expanded key signs with its own, smaller budget.
+main:         ml-dsa-44 16384 KiB 137.6 | 512 KiB 118.5 | 128 KiB 126.2   ml-dsa-87 16384 KiB 191.9 | 512 KiB 224.2 | 128 KiB 225.4
+main:         ml-dsa-44 16384 KiB  97.0 | 512 KiB  96.8 | 128 KiB 126.1   ml-dsa-87 16384 KiB 192.1 | 512 KiB 223.5 | 128 KiB 224.0
+ml-dsa-stack: ml-dsa-44 16384 KiB 133.2 | 512 KiB 122.4 | 128 KiB 129.5   ml-dsa-87 16384 KiB 192.2 | 512 KiB 192.3 | 128 KiB 224.2
+ml-dsa-stack: ml-dsa-44 16384 KiB 100.3 | 512 KiB  96.8 | 128 KiB 127.3   ml-dsa-87 16384 KiB 192.8 | 512 KiB 192.5 | 128 KiB 220.9
+(The first ML-DSA-44 column of each first run includes warm-up.)

@@ -1,12 +1,14 @@
 # Performance of citius-rust compared with RustCrypto
 
-Status: **measurements done (2026-11-19/20) on macOS (Rust layers and the C path) and Linux in an
-arm64 VM; defects fixed on `main` (2026-11-20); improvements done (2026-11-21), see §7**: phases
-0–2 on `main`, phases 3–7 and the read-mostly stores on branches (docs/improvement-plan.md,
-Status). The findings below describe the code before the improvements. This file collects every finding as the basis
-for a discussion about improvements. The performance findings are unchanged in the library and
-open for that discussion. The defects they uncovered are fixed: F8 (keys silently unlocked), F12
-(stack overflows) and B1 (the build needed rustfmt), plus the related defects in §4.1.
+Status (2026-11-21): **measured, fixed and improved; everything is on `main`.**
+- Measurements: 2026-11-19/20, on macOS (Rust layers and the C path) and on Linux in an arm64 VM.
+- Defects they uncovered, fixed on 2026-11-20: F8 (keys silently unlocked), F12 (stack
+  overflows), B1 (the build needed rustfmt) and the related defects in §4.1.
+- Improvements, 2026-11-21: phases 0–7 and the read-mostly stores (docs/improvement-plan.md).
+  Their results are in §7, on macOS and Linux.
+
+§1–§6 describe the code **before** the improvements and keep their numbers as the baseline. For
+where a finding stands now, read §4's table and §7.
 
 Goal: tell clients who care about performance, or who have real-time constraints, how much using
 `agc_*` (citius-c-api) through citius-rust costs them, compared with calling RustCrypto directly.
@@ -274,23 +276,23 @@ buffer on top of that.
 ## 4. Findings, ranked by impact
 
 Each finding has the evidence for it, its status, and a candidate fix with its expected gain.
-The performance fixes are for later discussion and have not been implemented. The defects are
-fixed on `main`.
+The evidence and numbers below are from before the improvements; the table shows where each
+finding stands now.
 
-| # | Finding | Status (2026-11-20) |
+| # | Finding | Status (2026-11-21) |
 |---|---|---|
-| F1 | Key parsed and expanded on every operation | open, for discussion: biggest gain (signing 1.5–3×, ML-DSA verify 2.4–3.1×, ML-DSA stack) |
-| F2 | Wiping the decrypted plaintext, ~0.4 ms/MiB | open, for discussion (with F6) |
-| F3 | Two lookups and copies of key/policy/template per call | open, for discussion |
+| F1 | Key parsed and expanded on every operation | **improved** (phases 3, 4, 7): signing −35 to −65 %, ML-DSA verify −56 to −67 % (§7) |
+| F2 | Wiping the decrypted plaintext, ~0.4 ms/MiB | **improved** (phase 2): decrypt 1 MiB ~2× faster |
+| F3 | Two lookups and copies of key/policy/template per call | **fixed** (phase 1): one lookup, no copies; ~110 → 11–20 allocations per call |
 | F4 | ECDSA layer gaps | resolved: measurement artefacts |
-| F5 | Syscalls: `getentropy`; `getpid` on Linux | open, for discussion |
-| F6 | Data copies | partly fixed: the copies left unwiped by outgrown buffers (§4.1); the rest open |
-| F7 | Small operations scale to ~5× across threads | open, for discussion |
-| F8 | Memory per key and context; **keys silently unlocked past `RLIMIT_MEMLOCK`** | **locking fixed** (`require_locked_memory`); memory per key/context open |
+| F5 | Syscalls: `getentropy`; `getpid` on Linux | open: caps encryption across threads on macOS; userspace randomness needs a security review (§7) |
+| F6 | Data copies | **improved** (phases 2, 5): no internal plaintext or ciphertext copy |
+| F7 | Small operations scale to ~5× across threads | **fixed for our locks** (read-mostly stores); encryption on macOS still limited by F5 (§7) |
+| F8 | Memory per key and context; **keys silently unlocked past `RLIMIT_MEMLOCK`** | **locking fixed**; each context after the first: 358 KiB → 512 B (phase 6); one page per key unchanged |
 | F9 | File store create ~8 ms (2× F_FULLFSYNC) | open (by design for durability) |
 | F10 | ML-DSA latency tail | inherent to FIPS 204 |
-| F11 | Binary size ~2.2 MiB per client | open, for discussion |
-| F12 | **Stack overflows crash the process** (ML-DSA, first P-521 use) | **fixed** (stack guard); depth itself open (F1) |
+| F11 | Binary size ~2.2 MiB per client | open: only if clients ask |
+| F12 | **Stack overflows crash the process** (ML-DSA, first P-521 use) | **fixed** (stack guard); depth after the improvements in §7 |
 | B1 | **The build needed rustfmt** | **fixed** |
 
 ### F1. The private key is decoded and expanded on every operation (biggest cost for signatures)
@@ -789,6 +791,11 @@ Neither found an out-of-bounds access.
 
 ## 5. What performance-sensitive and real-time clients will want to know
 
+The numbers in this section are from before the improvements. What changed is in §7: on both
+platforms signing takes 35–66 % less time, small symmetric operations about half, allocations per
+call dropped from ~110 to 11–20, small operations scale with the cores (on macOS, encryption is
+still capped by `getentropy`), and ML-DSA signing needs ~130 KiB of stack instead of ~510.
+
 | Topic | Status |
 |---|---|
 | Mean time per operation, overhead compared with RustCrypto | §2.1–2.3; the C boundary itself is ≈ free |
@@ -873,8 +880,10 @@ output (e.g. a generated `const`) rather than from text.
 
 ## 7. After the improvements (2026-11-21)
 
-Raw results and how they were produced: `docs/perf-results/phase-0-2/README.md` and
-`docs/perf-results/phase-3-7/README.md`. macOS arm64, before and after measured in one session.
+Raw results and how they were produced: `docs/perf-results/phase-0-2/README.md`,
+`docs/perf-results/phase-3-7/README.md` (macOS arm64) and `docs/perf-results/phase-3-7-linux/README.md`
+(Linux arm64 VM, 2026-11-23). On each platform, before and after were measured in one session.
+The numbers in 7.1 are macOS; Linux shows the same changes (7.4).
 
 ### 7.1 Where each finding stands
 
@@ -888,7 +897,7 @@ Raw results and how they were produced: `docs/perf-results/phase-0-2/README.md` 
 | F8 memory per context | phase 6 | each context after the first: 358 KiB, 217k allocations → 512 B, 7 allocations |
 | F5 randomness per call | open | limits encryption across threads on macOS (7.2) |
 | F9, F10, F11 | not addressed | file-store fsyncs, ML-DSA's own tail, binary size |
-| F12 stack | indirectly | a sealed ML-DSA key signs without re-expanding; budgets not re-measured |
+| F12 stack | phase 7, budgets re-measured (7.5) | ML-DSA signing needs 71–130 KiB instead of 221–519; ML-DSA-87 signs inline on a 512 KiB thread again |
 
 ### 7.2 Threads: two limits, one ours
 
@@ -907,6 +916,54 @@ Raw results and how they were produced: `docs/perf-results/phase-0-2/README.md` 
 
 ### 7.3 Still open
 
-- F5 on macOS, after a security review; the Linux thread numbers (vDSO `getrandom`).
-- Stack budgets re-measured after phase 7.
-- A bare-metal Linux host for the published figures (§6, item 6).
+- F5 on macOS, after a security review. Linux does not need it (7.4).
+- A bare-metal Linux host, ideally x86-64, for published absolute figures and tails (§6, item 6).
+- Deferred by the plan, only if clients ask: fork detection without `getpid`, binary size (F11).
+- By design: F9 (file-store fsyncs), F10 (ML-DSA's own tail).
+
+### 7.4 Linux (arm64 VM, 2026-11-23)
+
+Raw results: `docs/perf-results/phase-3-7-linux/`. Before is the code after the defect fixes and
+before any improvement; after is `main` at ecc88ef.
+
+| operation, C path p50 | before | after | change |
+|---|---|---|---|
+| sign Ed25519 / ECDSA P-256 / ML-DSA-65 (1 KiB) | 47 / 127 / 290 µs | 23 / 44 / 183 µs | −51 / −66 / −37 % |
+| verify ML-DSA-44 / 65 / 87 | 43 / 68 / 111 µs | 19 / 27 / 39 µs | −56 to −65 % |
+| AES-GCM-256 encrypt / decrypt 32 B | 2.21 / 2.00 µs | 1.08 / 0.71 µs | −51 / −65 % |
+| AES-GCM-256 decrypt 1 MiB | 651 µs | 338 µs | −48 % |
+| AES-GCM 32 B encrypt, 8 threads (one key each) | 2.1 M ops/s | 6.4 M ops/s | 7.3× of one thread |
+| AES-GCM 32 B decrypt, 8 threads | 2.2 M ops/s | 9.0 M ops/s | 6.9× of one thread |
+| each context after the first | +220 KiB | +0 KiB | |
+
+- Small symmetric operations take about half the time, as on macOS.
+- **Threads scale to the 8 vCPUs for encryption too.** glibc's `getrandom` (0.21 µs) does not
+  serialize threads, so the macOS `getentropy` limit is macOS-only.
+- Slower: key creation in the memory store (+1 µs for AES, +4 µs for Ed25519) and the first calls
+  in a process (`agc_ctx_open` +95 µs), from setting up the caches once.
+- A VM is not bare metal: the changes carry over, the absolute numbers and tails only roughly.
+
+### 7.5 Stack after the improvements
+
+Re-measured on macOS and Linux (`cargo xtask bench --only stack`; `phase-3-7/stack-after-macos.txt`,
+`phase-3-7-linux/glibc-*.txt`). KiB:
+
+| ML-DSA-44 / 65 / 87 | before | after |
+|---|---|---|
+| sign | 227 / 310 / 519 | 73 / 99 / 130 |
+| sign, the version's first (expands the key) | same | 227 / 311 / 520 |
+| verify (macOS, public key cached) | 86 / 128 / 200 | 58 / 65 / 83 |
+| create key | 276 / 355 / 649 | unchanged |
+
+Symmetric operations and Ed25519/ECDSA need 5–12 KiB, `agc_ctx_open` 7 KiB (was 16).
+
+The stack guard's budgets (`adapters/providers/stack_budget.rs`) still assumed every signature
+expands the key, so ML-DSA-87 signing kept moving to a helper thread on a 512 KiB thread. **Fixed:**
+a version whose expanded key is sealed now signs with its own budget (130 KiB ×1.5 for ML-DSA-87),
+which fits a 512 KiB thread inline. ML-DSA-87 sign p50 on a macOS default thread: 224 → 192 µs,
+the same as on a 16 MiB stack (`phase-3-7/stack-hop-macos.txt`). On musl's 128 KiB threads ML-DSA
+still moves to a helper thread (~30 µs); key creation and a version's first signature do
+everywhere below ~1 MiB.
+
+For clients: size threads that sign with ML-DSA at ≥ 320 KiB and keep keys in a context (so their
+expanded keys are sealed), and no signature needs a helper thread after the first.
